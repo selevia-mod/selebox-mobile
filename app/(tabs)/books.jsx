@@ -447,6 +447,7 @@ const Books = () => {
                   renderItem={renderSection}
                   keyExtractor={keyExtractor}
                   estimatedItemSize={300}
+                  removeClippedSubviews={false}
                   contentContainerStyle={{ paddingBottom: 50 }}
                   showsVerticalScrollIndicator={false}
                   onRefresh={refreshBooks}
