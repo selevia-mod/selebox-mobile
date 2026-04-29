@@ -247,7 +247,7 @@ const ProfileHomeTab = ({ userVideos, userId, nestedScrollEnabled = false, heade
             <Text className="text-base font-semibold" style={{ color: theme.text }}>
               {title}
             </Text>
-            <Text className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: theme.textSoft }}>
+            <Text className="text-[11px] font-semibold" style={{ color: theme.textSoft }}>
               {subtitle}
             </Text>
           </View>
@@ -255,7 +255,7 @@ const ProfileHomeTab = ({ userVideos, userId, nestedScrollEnabled = false, heade
 
         {actionLabel ? (
           <TouchableOpacity disabled={actionDisabled} onPress={onActionPress} className={actionDisabled ? "opacity-40" : ""}>
-            <Text className="text-xs font-semibold uppercase tracking-wider" style={{ color: theme.primary }}>
+            <Text className="text-xs font-semibold" style={{ color: theme.primary }}>
               {actionLabel}
             </Text>
           </TouchableOpacity>

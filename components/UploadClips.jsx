@@ -178,7 +178,7 @@ const UploadClips = ({ showMessage }) => {
     <View className="mx-auto h-full w-full px-4 pb-5">
       {/* Video */}
       <View className="pb-3">
-        <Text className="items-center text-lg font-bold font-semibold uppercase" style={{ color: theme.text }}>
+        <Text className="items-center text-lg font-bold font-semibold" style={{ color: theme.text }}>
           Clip
         </Text>
         <Text className="items-center text-xs font-bold font-semibold" style={{ color: theme.textSoft }}>
@@ -200,7 +200,7 @@ const UploadClips = ({ showMessage }) => {
 
       {/* Thumbnail */}
       <View className="py-3">
-        <Text className="items-center text-lg font-bold font-semibold uppercase" style={{ color: theme.text }}>
+        <Text className="items-center text-lg font-bold font-semibold" style={{ color: theme.text }}>
           Thumbnail
         </Text>
         <TouchableOpacity className="py-2" onPress={() => openPicker("images")}>
@@ -223,7 +223,7 @@ const UploadClips = ({ showMessage }) => {
       {/* Title */}
       <View className="py-3">
         <View className="flex-row items-center justify-between">
-          <Text className="items-center text-lg font-bold font-semibold uppercase" style={{ color: theme.text }}>
+          <Text className="items-center text-lg font-bold font-semibold" style={{ color: theme.text }}>
             Title
           </Text>
           <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`${clipForm?.title?.length || 0}/${sizeLimitTitleChars}`}</Text>
@@ -244,7 +244,7 @@ const UploadClips = ({ showMessage }) => {
 
       {/* Description */}
       <View className="py-3">
-        <Text className="items-center text-lg font-bold font-semibold uppercase" style={{ color: theme.text }}>
+        <Text className="items-center text-lg font-bold font-semibold" style={{ color: theme.text }}>
           Description
         </Text>
         <TextInput

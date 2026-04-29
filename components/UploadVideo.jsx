@@ -322,7 +322,7 @@ const UploadVideo = ({ showMessage }) => {
       {/* Video */}
       <View className="mb-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
         <View className="flex-row items-center justify-between">
-          <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+          <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
             Video
           </Text>
           <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitVideoUpload / 1024 / 1024}MB`}</Text>
@@ -354,7 +354,7 @@ const UploadVideo = ({ showMessage }) => {
       {/* Thumbnail */}
       <View className="mb-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
         <View className="flex-row items-center justify-between">
-          <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+          <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
             Thumbnail
           </Text>
           <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitThumbnailUpload / 1024 / 1024}MB`}</Text>
@@ -387,7 +387,7 @@ const UploadVideo = ({ showMessage }) => {
       {/* Title */}
       <View className="mb-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
         <View className="flex-row items-center justify-between">
-          <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+          <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
             Title
           </Text>
           <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`${videoForm?.title?.length || 0}/${sizeLimitTitleChars}`}</Text>
@@ -409,7 +409,7 @@ const UploadVideo = ({ showMessage }) => {
       {/* Description */}
       <View className="mb-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
         <View className="flex-row items-center justify-between">
-          <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+          <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
             Description
           </Text>
           <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>
@@ -431,7 +431,7 @@ const UploadVideo = ({ showMessage }) => {
       {/* Tags */}
       <View className="mb-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
         <View className="flex-row items-center justify-between">
-          <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+          <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
             Tags
           </Text>
           <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitTags}`}</Text>
@@ -465,7 +465,7 @@ const UploadVideo = ({ showMessage }) => {
 
       {/* Publish Settings */}
       <View className="mb-6 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
-        <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+        <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
           Publish Settings
         </Text>
         <Text className="mt-1 text-xs" style={{ color: theme.textSoft }}>

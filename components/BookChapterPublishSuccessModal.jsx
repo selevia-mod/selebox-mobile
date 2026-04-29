@@ -76,7 +76,7 @@ const BookChapterPublishSuccessModal = ({ visible, onClose, onViewBook, book, ch
 
         <View className="mb-5 flex-row items-center justify-between">
           <View>
-            <Text className="text-[11px] font-semibold uppercase tracking-[3px]" style={{ color: theme.primary }}>
+            <Text className="text-[11px] font-semibold" style={{ color: theme.primary }}>
               Published
             </Text>
             <Text className="mt-1 text-[22px] font-bold" style={{ color: theme.text }}>
@@ -84,7 +84,7 @@ const BookChapterPublishSuccessModal = ({ visible, onClose, onViewBook, book, ch
             </Text>
           </View>
           <TouchableOpacity onPress={onClose} className="rounded-full px-4 py-2" style={{ backgroundColor: theme.surfaceMuted }}>
-            <Text className="text-xs font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+            <Text className="text-xs font-semibold" style={{ color: theme.textMuted }}>
               Done
             </Text>
           </TouchableOpacity>
@@ -99,7 +99,7 @@ const BookChapterPublishSuccessModal = ({ visible, onClose, onViewBook, book, ch
               className="self-start rounded-full px-3 py-1"
               style={{ borderWidth: 1, borderColor: theme.accentGreen, backgroundColor: theme.accentGreenSoft }}
             >
-              <Text className="text-[11px] font-semibold uppercase tracking-[2px]" style={{ color: theme.accentGreen }}>
+              <Text className="text-[11px] font-semibold" style={{ color: theme.accentGreen }}>
                 Now live
               </Text>
             </View>
@@ -130,7 +130,7 @@ const BookChapterPublishSuccessModal = ({ visible, onClose, onViewBook, book, ch
                 )}
               </View>
 
-              <Text className="mt-4 text-[11px] font-semibold uppercase tracking-[2px]" style={{ color: theme.primary }}>
+              <Text className="mt-4 text-[11px] font-semibold" style={{ color: theme.primary }}>
                 {chapterLabel}
               </Text>
               <Text className="mt-2 text-center text-lg font-bold" style={{ color: theme.text }}>
@@ -143,7 +143,7 @@ const BookChapterPublishSuccessModal = ({ visible, onClose, onViewBook, book, ch
           </View>
 
           <View className="mt-4 rounded-[24px] px-4 py-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
-            <Text className="mb-2 text-[11px] font-semibold uppercase tracking-[2px]" style={{ color: theme.textSubtle }}>
+            <Text className="mb-2 text-[11px] font-semibold" style={{ color: theme.textSubtle }}>
               Found under
             </Text>
             {tags.length ? (
@@ -164,7 +164,7 @@ const BookChapterPublishSuccessModal = ({ visible, onClose, onViewBook, book, ch
           </View>
 
           <View className="mt-4 rounded-[24px] px-4 py-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
-            <Text className="text-[11px] font-semibold uppercase tracking-[2px]" style={{ color: theme.textSubtle }}>
+            <Text className="text-[11px] font-semibold" style={{ color: theme.textSubtle }}>
               Share and grow
             </Text>
             <View className="mt-4 flex-row space-x-3">

@@ -654,7 +654,7 @@ const BookEditor = () => {
         >
           <TouchableOpacity onPress={openPicker} className="rounded-2xl p-4" style={cardStyle}>
             <View className="flex-row items-center justify-between">
-              <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+              <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
                 Book Cover
               </Text>
               <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitThumbnailUpload / 1024 / 1024}MB`}</Text>
@@ -695,7 +695,7 @@ const BookEditor = () => {
 
           <View className="rounded-2xl p-4" style={cardStyle}>
             <View className="flex-row items-center justify-between">
-              <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+              <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
                 Book Title
               </Text>
               <Text
@@ -718,7 +718,7 @@ const BookEditor = () => {
 
           <View className="rounded-2xl p-4" style={cardStyle}>
             <View className="flex-row items-center justify-between">
-              <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+              <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
                 Description
               </Text>
               <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Words ${getWordCount(bookForm.synopsis)}`}</Text>
@@ -736,7 +736,7 @@ const BookEditor = () => {
 
           <View className="rounded-2xl p-4" style={cardStyle}>
             <View className="flex-row items-center justify-between">
-              <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+              <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
                 Tags
               </Text>
               <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitTags}`}</Text>

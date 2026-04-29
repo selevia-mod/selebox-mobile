@@ -354,7 +354,7 @@ const Description = ({ item, onOpenComments, onDownloadPress, downloadStatus, do
 
         {(joinedTags || item?.description) && (
           <View className="mt-3 rounded-xl p-1" style={{ backgroundColor: theme.surfaceMuted }}>
-            <Text className="mb-2 font-sans text-xs font-semibold uppercase tracking-[1.5px]" style={{ color: theme.textMuted }}>
+            <Text className="mb-2 font-sans text-xs font-semibold" style={{ color: theme.textMuted }}>
               Description
             </Text>
             {joinedTags ? (
@@ -4247,7 +4247,7 @@ const VideoPlayer = () => {
                       >
                         <View className="flex-row items-start justify-between space-x-3">
                           <View className="flex-1">
-                            <Text className="font-sans text-[11px] uppercase tracking-[2px]" style={{ color: theme.textSubtle }}>
+                            <Text className="font-sans text-[11px]" style={{ color: theme.textSubtle }}>
                               {primaryCategory ? `${primaryCategory} · Up Next` : "Up Next"}
                             </Text>
                             <Text className="mt-1 font-sans text-sm font-semibold" style={{ color: theme.text }} numberOfLines={2}>

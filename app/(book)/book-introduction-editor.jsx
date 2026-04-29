@@ -1033,7 +1033,7 @@ const BookIntroductionEditor = () => {
 
               <TouchableOpacity onPress={openPicker} className="rounded-2xl p-4" style={sectionCardStyle}>
                 <View className="flex-row items-center justify-between">
-                  <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+                  <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
                     {isIntroductionEntry ? "Introduction Cover" : "Part Cover"}
                   </Text>
                   <Text
@@ -1079,7 +1079,7 @@ const BookIntroductionEditor = () => {
               <View className="rounded-2xl p-4" style={sectionCardStyle}>
                 <View>
                   <View className="flex-row items-center justify-between">
-                    <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+                    <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
                       {isIntroductionEntry ? "Introduction Title" : "Part Title"}
                     </Text>
                     <Text
@@ -1106,7 +1106,7 @@ const BookIntroductionEditor = () => {
               <View className="rounded-2xl p-4" style={sectionCardStyle}>
                 <View className="flex-row items-center justify-between">
                   <View>
-                    <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+                    <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
                       {isIntroductionEntry ? "Introduction Content" : "Chapter Content"}
                     </Text>
                     <Text
@@ -1193,7 +1193,7 @@ const BookIntroductionEditor = () => {
                     className="mt-2 flex-row items-center justify-center rounded-full px-4 py-4"
                     style={{ backgroundColor: theme.primary }}
                   >
-                    <Text className="font-semibold uppercase tracking-[1px]" style={{ color: theme.primaryContrast }}>
+                    <Text className="font-semibold" style={{ color: theme.primaryContrast }}>
                       Add Part
                     </Text>
                   </TouchableOpacity>

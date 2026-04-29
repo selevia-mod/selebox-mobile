@@ -171,7 +171,7 @@ const Earnings = () => {
                   style={{ backgroundColor: getWithdrawalStatusColor(latestWithdrawal.status).dotColor }}
                 />
                 <Text
-                  className="text-[13px] font-semibold uppercase"
+                  className="text-[13px] font-semibold"
                   style={{ color: getWithdrawalStatusColor(latestWithdrawal.status).textColor }}
                   adjustsFontSizeToFit
                   ellipsizeMode="tail"

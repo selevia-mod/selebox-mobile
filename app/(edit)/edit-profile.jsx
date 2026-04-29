@@ -80,7 +80,7 @@ const SectionCard = ({ title, children, accentColor = "#60a5fa", theme }) => (
   <View className="mb-4 rounded-2xl px-3 py-3" style={{ backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border }}>
     <View className="flex-row items-center space-x-2">
       <View style={{ width: 3, height: 14, backgroundColor: accentColor, borderRadius: 2 }} />
-      <Text className="text-[11px] font-semibold uppercase tracking-[3px]" style={{ color: theme.textSoft }}>
+      <Text className="text-[11px] font-semibold" style={{ color: theme.textSoft }}>
         {title}
       </Text>
     </View>
@@ -959,7 +959,7 @@ const EditProfile = () => {
           </Text>
           {roleUnlockDate ? (
             <View className="mt-4 rounded-2xl px-3 py-3" style={{ backgroundColor: theme.surfaceMuted }}>
-              <Text className="text-xs font-semibold uppercase tracking-[2px]" style={{ color: theme.textSubtle }}>
+              <Text className="text-xs font-semibold" style={{ color: theme.textSubtle }}>
                 Role Duration
               </Text>
               <Text className="mt-1 text-sm font-semibold" style={{ color: theme.text }}>

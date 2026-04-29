@@ -298,7 +298,7 @@ const CreatePost = () => {
 
               <View className="mt-4">
                 <View className="flex-row items-center justify-between">
-                  <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+                  <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
                     Post
                   </Text>
                   <Text
@@ -332,7 +332,7 @@ const CreatePost = () => {
 
               <View className="mt-4">
                 <View className="flex-row items-center justify-between">
-                  <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+                  <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
                     Attachments
                   </Text>
                   <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitPostAttachments}`}</Text>

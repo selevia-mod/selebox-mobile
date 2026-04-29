@@ -997,7 +997,7 @@ const ChapterEditor = () => {
               {/* Thumbnail */}
               <TouchableOpacity onPress={openPicker} className="rounded-2xl p-4" style={sectionCardStyle}>
                 <View className="flex-row items-center justify-between">
-                  <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+                  <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
                     Part Cover
                   </Text>
                   <Text
@@ -1043,7 +1043,7 @@ const ChapterEditor = () => {
               <View className="rounded-2xl p-4" style={sectionCardStyle}>
                 <View>
                   <View className="flex-row items-center justify-between">
-                    <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+                    <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
                       Part Title
                     </Text>
                     <Text
@@ -1069,7 +1069,7 @@ const ChapterEditor = () => {
               <View className="rounded-2xl p-4" style={sectionCardStyle}>
                 <View className="flex-row items-center justify-between">
                   <View>
-                    <Text className="text-sm font-semibold uppercase tracking-[2px]" style={{ color: theme.textMuted }}>
+                    <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
                       Part Content
                     </Text>
                     <Text

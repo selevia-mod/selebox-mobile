@@ -9,7 +9,7 @@ const StyledFormField = ({ title, value, placeholder, handleChangeText, icon, ..
 
   return (
     <View className="w-full space-y-2" {...props}>
-      <Text className="ml-1 font-pmedium text-sm uppercase tracking-wider" style={{ color: theme.textSoft }}>
+      <Text className="ml-1 font-pmedium text-sm" style={{ color: theme.textSoft }}>
         {title}
       </Text>
 

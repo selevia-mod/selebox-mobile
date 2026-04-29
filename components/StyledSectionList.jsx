@@ -108,7 +108,7 @@ function StyledSectionList({ sections, onRefresh = async () => {}, ...props }) {
         renderSectionHeader={({ section: { title } }) => (
           <View className="flex-row items-center space-x-2 px-2 py-2" style={{ backgroundColor: theme.background }}>
             <MaterialIcons name="multitrack-audio" size={16} color={theme.icon} />
-            <Text className="font-pbold text-sm uppercase tracking-[4px]" style={{ color: theme.text }}>
+            <Text className="font-pbold text-sm" style={{ color: theme.text }}>
               {title}
             </Text>
           </View>

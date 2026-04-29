@@ -7,7 +7,7 @@ function StyledTitle({ title, titleStyle, icon, ...props }) {
   return (
     <View className="flex-row items-center space-x-2 py-4" {...props}>
       {icon}
-      <Text className="font-sans text-sm font-bold uppercase tracking-[4px]" style={[{ color: theme.text }, titleStyle]}>
+      <Text className="font-sans text-sm font-bold" style={[{ color: theme.text }, titleStyle]}>
         {title}
       </Text>
     </View>

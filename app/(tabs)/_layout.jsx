@@ -302,7 +302,6 @@ const TabsLayout = () => {
           tabBarLabelStyle: {
             fontSize: 9,
             marginBottom: 0,
-            textTransform: "uppercase",
             includeFontPadding: false,
           },
           tabBarStyle: {

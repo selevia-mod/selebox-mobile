@@ -388,7 +388,7 @@ export default function CampaignAdModal({ enabled, userId, onMessage, onModalOpe
               onPress={handleClose}
               disabled={isActionPending}
             >
-              <Text className="text-xs font-semibold uppercase tracking-wide" style={{ color: theme.textMuted }}>
+              <Text className="text-xs font-semibold" style={{ color: theme.textMuted }}>
                 Close
               </Text>
             </TouchableOpacity>

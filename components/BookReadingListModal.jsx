@@ -212,7 +212,7 @@ const BookReadingListModal = ({ isVisible, onClose, userId, bookId, isBookInLibr
           </TouchableOpacity>
 
           <View className="mb-2 flex-row items-center justify-between">
-            <Text className="text-sm font-semibold uppercase tracking-wider" style={{ color: theme.textSoft }}>
+            <Text className="text-sm font-semibold" style={{ color: theme.textSoft }}>
               Your Reading Lists
             </Text>
           </View>

@@ -262,13 +262,13 @@ const Store = () => {
             </View>
             <View className="mt-3 flex-row items-center space-x-2">
               <View className="rounded-full px-2 py-0.5" style={{ backgroundColor: theme.surfaceMuted }}>
-                <Text className="text-[10px] font-psemibold uppercase tracking-[2px]" style={{ color: theme.textSoft }}>
+                <Text className="text-[10px] font-psemibold" style={{ color: theme.textSoft }}>
                   Bonus {bonusPercent}%
                 </Text>
               </View>
               {isBestValue && (
                 <View className="rounded-full px-2 py-0.5" style={{ backgroundColor: theme.accentGreenSoft }}>
-                  <Text className="text-[10px] font-psemibold uppercase tracking-[2px]" style={{ color: theme.accentGreen }}>
+                  <Text className="text-[10px] font-psemibold" style={{ color: theme.accentGreen }}>
                     Best value
                   </Text>
                 </View>
@@ -284,7 +284,7 @@ const Store = () => {
                 {priceLabel}
               </Text>
             </View>
-            <Text className="mt-2 text-[10px] font-psemibold uppercase tracking-[2px]" style={{ color: theme.textSoft }}>
+            <Text className="mt-2 text-[10px] font-psemibold" style={{ color: theme.textSoft }}>
               Tap to buy
             </Text>
           </View>
@@ -440,7 +440,7 @@ const Store = () => {
             ListFooterComponent={
               <View className="mt-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
                 <StyledDivider color={theme.divider}>
-                  <Text className="text-center font-sans text-[10px] font-bold uppercase tracking-[4px]" style={{ color: theme.textSoft }}>
+                  <Text className="text-center font-sans text-[10px] font-bold" style={{ color: theme.textSoft }}>
                     Disclaimer
                   </Text>
                 </StyledDivider>

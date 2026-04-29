@@ -22,7 +22,7 @@ const BookTag = ({ tagName }) => {
 
   return (
     <View className="mr-1 self-start rounded-md px-2 py-0.5" style={{ backgroundColor: style.bg }}>
-      <Text className="text-xs font-semibold uppercase" style={{ color: style.text }}>
+      <Text className="text-xs font-semibold" style={{ color: style.text }}>
         {tagName}
       </Text>
     </View>

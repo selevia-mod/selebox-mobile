@@ -160,7 +160,7 @@ const BookCard = ({ item, progress, customWidth, customHeight, customFontSize, h
           >
             <Text
               style={{ color: sashTextColor, letterSpacing: 0.6 }}
-              className="text-[9px] text-center font-bold uppercase"
+              className="text-[9px] text-center font-bold"
               numberOfLines={1}
               ellipsizeMode="clip"
             >

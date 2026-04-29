@@ -434,7 +434,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
               <Text className="text-base font-bold" style={{ color: theme.text }}>
                 {FormatNumber(following || 0)}
               </Text>
-              <Text className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: theme.textSoft }}>
+              <Text className="text-[10px] font-semibold" style={{ color: theme.textSoft }}>
                 Following
               </Text>
             </TouchableOpacity>
@@ -449,7 +449,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
                   {FormatNumber(followers || 0)}
                 </Text>
               </Animated.View>
-              <Text className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: theme.textSoft }}>
+              <Text className="text-[10px] font-semibold" style={{ color: theme.textSoft }}>
                 Followers
               </Text>
             </TouchableOpacity>
@@ -458,7 +458,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
               <Text className="text-base font-bold" style={{ color: theme.text }}>
                 {videos?.length ?? 0}
               </Text>
-              <Text className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: theme.textSoft }}>
+              <Text className="text-[10px] font-semibold" style={{ color: theme.textSoft }}>
                 Videos
               </Text>
             </View>
@@ -509,7 +509,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
 
       <View className="mt-3 rounded-2xl p-3" style={{ backgroundColor: theme.card }}>
         <View className="flex-row items-center justify-between">
-          <Text className="text-[11px] font-semibold uppercase tracking-widest" style={{ color: theme.textSoft }}>
+          <Text className="text-[11px] font-semibold" style={{ color: theme.textSoft }}>
             Bio
           </Text>
           {isLoggedInUser && !isEditingBio ? (
@@ -520,7 +520,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
               style={{ backgroundColor: theme.surfaceMuted }}
             >
               <MaterialIcons name="edit" size={12} color={theme.icon} />
-              <Text className="ml-1 text-[11px] font-semibold uppercase tracking-wide" style={{ color: theme.text }}>
+              <Text className="ml-1 text-[11px] font-semibold" style={{ color: theme.text }}>
                 {savedBio ? "Edit" : "Add"}
               </Text>
             </TouchableOpacity>
@@ -602,7 +602,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
                 >
                   <MaterialIcons name={icon} size={16} color={isActive ? theme.primary : theme.iconMuted} />
                   <Text
-                    className="mt-1 text-[10px] font-semibold uppercase tracking-wider"
+                    className="mt-1 text-[10px] font-semibold"
                     style={{ color: isActive ? theme.primary : theme.textSoft }}
                   >
                     {title}

@@ -179,7 +179,7 @@ const Catalog = () => {
         <View className="mb-3 flex-row items-center justify-between">
           <View className="flex-row items-center space-x-2">
             <View className="h-3.5 w-1 rounded-full" style={{ backgroundColor: theme.accentAmber }} />
-            <Text className="text-[11px] font-semibold uppercase tracking-[3px]" style={{ color: theme.textSoft }}>
+            <Text className="text-[11px] font-semibold" style={{ color: theme.textSoft }}>
               Offline Drafts
             </Text>
           </View>
@@ -234,7 +234,7 @@ const Catalog = () => {
         <View className="mb-3 flex-row items-center justify-between">
           <View className="flex-row items-center space-x-2">
             <View className="h-3.5 w-1 rounded-full" style={{ backgroundColor: theme.accentBlue }} />
-            <Text className="text-[11px] font-semibold uppercase tracking-[3px]" style={{ color: theme.textSoft }}>
+            <Text className="text-[11px] font-semibold" style={{ color: theme.textSoft }}>
               My Books
             </Text>
           </View>

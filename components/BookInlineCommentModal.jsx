@@ -1558,7 +1558,7 @@ const BookInlineCommentModal = ({ anchor, chapter, isVisible, onClose, onThreadU
         <View className="flex-row items-center justify-between">
           <View className="mr-3 flex-row items-center">
             <MaterialCommunityIcons name="format-quote-open" size={15} color={passageMetaColor} />
-            <Text className="ml-2 font-sans text-[11px] font-semibold uppercase tracking-widest" style={{ color: passageMetaColor }}>
+            <Text className="ml-2 font-sans text-[11px] font-semibold" style={{ color: passageMetaColor }}>
               Highlighted Passage
             </Text>
           </View>

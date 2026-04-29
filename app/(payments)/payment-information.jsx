@@ -263,7 +263,7 @@ const PaymentInformation = () => {
           <AttachmentIcon family={iconFamily} name={iconName} color={theme.primary} />
         </View>
         <View className="flex-1 flex-row items-center">
-          <Text className="text-sm font-semibold uppercase tracking-wide" style={{ color: theme.textSoft }} numberOfLines={2}>
+          <Text className="text-sm font-semibold" style={{ color: theme.textSoft }} numberOfLines={2}>
             {label}
           </Text>
           {required && <View className="ml-1.5 h-1.5 w-1.5 rounded-full" style={{ backgroundColor: theme.danger }} />}
@@ -335,7 +335,7 @@ const PaymentInformation = () => {
       <View className="mb-6 rounded-2xl p-5" style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}>
         <View className="mb-4 flex-row items-center">
           <View className="mr-2 h-1 w-3 rounded-full" style={{ backgroundColor: theme.primary }} />
-          <Text className="text-sm font-semibold uppercase tracking-wide" style={{ color: theme.textSoft }}>
+          <Text className="text-sm font-semibold" style={{ color: theme.textSoft }}>
             Basic Information
           </Text>
         </View>
@@ -372,7 +372,7 @@ const PaymentInformation = () => {
       <View className="mb-6 rounded-2xl p-5" style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}>
         <View className="mb-4 flex-row items-center">
           <View className="mr-2 h-1 w-3 rounded-full" style={{ backgroundColor: theme.accentGreen }} />
-          <Text className="text-sm font-semibold uppercase tracking-wide" style={{ color: theme.textSoft }}>
+          <Text className="text-sm font-semibold" style={{ color: theme.textSoft }}>
             Method of Payment
           </Text>
           <View className="ml-1.5 h-1.5 w-1.5 rounded-full" style={{ backgroundColor: theme.danger }} />
