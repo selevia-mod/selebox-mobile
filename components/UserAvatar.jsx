@@ -1,0 +1,112 @@
+import { Text, View } from "react-native";
+import FastImage from "react-native-fast-image";
+import useAppTheme from "../hooks/useAppTheme";
+
+// Returns true when the URI is a non-empty string. Empty strings, null, undefined,
+// and non-string values all fall through to the monogram fallback.
+const hasValidAvatar = (uri) => typeof uri === "string" && uri.trim().length > 0;
+
+// "Marniel Ardiente" -> "MA"
+// "Zeke"             -> "ZE"
+// "C2"               -> "C2"
+// ""                 -> "?"
+const getInitials = (name) => {
+  if (!name || typeof name !== "string") return "?";
+  const trimmed = name.trim();
+  if (!trimmed) return "?";
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  }
+  return trimmed.slice(0, 2).toUpperCase();
+};
+
+// Deterministic color picker — same name always picks the same palette slot.
+const getMonogramColor = (name, theme) => {
+  const palette = [
+    theme.primary,
+    theme.accentTeal,
+    theme.accentPink,
+    theme.accentBlue,
+    theme.accentGreen,
+    theme.accentAmber,
+  ];
+  if (!name || typeof name !== "string") return palette[0];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash << 5) - hash + name.charCodeAt(i);
+    hash |= 0;
+  }
+  return palette[Math.abs(hash) % palette.length];
+};
+
+/**
+ * UserAvatar — square avatar tile with consistent fallback behavior.
+ *
+ * Renders the user's photo when avatarUri is a non-empty string. When it's
+ * missing/empty/invalid, renders a colored monogram tile with the user's
+ * initials instead. Color is deterministic from the name.
+ *
+ * Props:
+ *   - name        : string. Used for initials + deterministic color.
+ *   - avatarUri   : string|null. Photo URL. Falls through to monogram if empty.
+ *   - size        : number (px). Default 48.
+ *   - borderRadius: number (px). Default 12 (matches Tailwind rounded-xl).
+ *   - borderColor : string|null. If provided, applies a 1px border.
+ *   - style       : object. Additional style overrides for the outer container.
+ */
+const UserAvatar = ({
+  name,
+  avatarUri,
+  size = 48,
+  borderRadius = 12,
+  borderColor = null,
+  style,
+  ...rest
+}) => {
+  const { theme } = useAppTheme();
+  const showPhoto = hasValidAvatar(avatarUri);
+  const monogramColor = getMonogramColor(name, theme);
+
+  // Initials font size scales with avatar size; 40% of size, floor 12.
+  const fontSize = Math.max(12, Math.round(size * 0.4));
+
+  const containerStyle = [
+    {
+      width: size,
+      height: size,
+      borderRadius,
+    },
+    borderColor ? { borderWidth: 1, borderColor } : null,
+    style,
+  ];
+
+  if (showPhoto) {
+    return (
+      <FastImage
+        source={{ uri: avatarUri, priority: FastImage.priority.high }}
+        style={[...containerStyle, { backgroundColor: theme.surfaceMuted }]}
+        resizeMode={FastImage.resizeMode.cover}
+        accessibilityLabel={`${name || "User"} avatar`}
+        {...rest}
+      />
+    );
+  }
+
+  return (
+    <View
+      style={[
+        ...containerStyle,
+        { backgroundColor: monogramColor, alignItems: "center", justifyContent: "center" },
+      ]}
+      accessibilityLabel={`${name || "User"} avatar`}
+      {...rest}
+    >
+      <Text style={{ color: theme.primaryContrast, fontSize, fontWeight: "700" }}>
+        {getInitials(name)}
+      </Text>
+    </View>
+  );
+};
+
+export default UserAvatar;
