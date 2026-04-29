@@ -19,6 +19,7 @@ const BooksRecentlyUploaded = () => {
     <View className="space-y-2">
       <BooksSectionTitle title={"Recently Uploaded"} />
       <FlatList
+        removeClippedSubviews={false}
         horizontal
         showsHorizontalScrollIndicator={false}
         keyExtractor={(item, index) => item?.$id || `${item.type}-${index}`}

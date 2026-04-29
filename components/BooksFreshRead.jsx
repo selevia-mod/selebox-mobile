@@ -19,6 +19,7 @@ const BooksFreshRead = () => {
     <View className="space-y-2">
       <BooksSectionTitle title={"Fresh Reads"} />
       <FlatList
+        removeClippedSubviews={false}
         horizontal
         showsHorizontalScrollIndicator={false}
         keyExtractor={(item, index) => item?.$id || `${item.type}-${index}`}

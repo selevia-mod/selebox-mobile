@@ -856,6 +856,7 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
   return (
     <View className="flex-1">
       <FlatList
+        removeClippedSubviews={false}
         ref={listRef}
         data={picksForYou}
         keyExtractor={(item, index) => item?.id || item?.book?.$id || `pick-${index}`}

@@ -19,6 +19,7 @@ const BooksContinueReading = () => {
     <View className="space-y-2">
       <BooksSectionTitle title={"Continue Reading"} />
       <FlatList
+        removeClippedSubviews={false}
         horizontal
         showsHorizontalScrollIndicator={false}
         keyExtractor={(item, index) => item?.$id || `${item.type}-${index}`}

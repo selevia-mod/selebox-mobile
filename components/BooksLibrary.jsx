@@ -181,6 +181,7 @@ const BooksLibrary = ({ isActive = false }) => {
   return (
     <View className="flex-1">
       <FlatList
+        removeClippedSubviews={false}
         data={userLibrary}
         refreshing={refreshing}
         keyExtractor={(item, index) => item?.$id || `${item.type}-${index}`}

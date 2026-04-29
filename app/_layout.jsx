@@ -12,7 +12,6 @@ import "react-native-gesture-handler";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { Provider } from "react-redux";
 import { PersistGate } from "redux-persist/integration/react";
-import { Chat, OverlayProvider } from "stream-chat-expo";
 import { BookStatsProvider } from "../context/book-stats-provider";
 import { ClipsStatsProvider } from "../context/clip-stats-provider";
 import GlobalProvider, { useGlobalContext } from "../context/global-provider";
@@ -25,7 +24,6 @@ import {
   buildPostNotificationNavigationParams,
   buildVideoNotificationNavigationParams,
 } from "../lib/notifications";
-import { streamClient } from "../lib/stream";
 import store, { persistor } from "../store";
 import { ThemedStatusBar } from "../components";
 
@@ -169,8 +167,6 @@ const InnerLayout = () => {
     initializeCrashlytics();
   }, []);
 
-  // Android back uses default behavior (system + navigation handling)
-
   // Hide splash once fonts are ready, then check for OTA updates in background
   useEffect(() => {
     const bootstrapApp = async () => {
@@ -289,7 +285,6 @@ const InnerLayout = () => {
   useEffect(() => {
     if (!initialized || !initialUrl || !isLogged) return;
 
-    // Navigate to deep link after short delay
     setTimeout(() => {
       const { path, queryParams = {} } = Linking.parse(initialUrl);
       let normalizedPath = path?.startsWith("/") ? path.slice(1) : path;
@@ -380,89 +375,26 @@ const InnerLayout = () => {
   if (!fontsLoaded) return null;
 
   return (
-    <GestureHandlerRootView>
-      <OverlayProvider
-        value={{
-          style: {
-            channelPreview: {
-              container: {
-                backgroundColor: "#111827",
-                borderBottomWidth: 1,
-                borderBottomColor: "#374151",
-              },
-              title: {
-                color: "#fff",
-              },
-              avatar: {
-                size: 45,
-              },
-            },
-            messageList: {
-              container: {
-                backgroundColor: "#111827",
-              },
-              inlineUnreadIndicator: {
-                container: {
-                  backgroundColor: "#1f2937",
-                },
-              },
-            },
-            messageInput: {
-              container: {
-                backgroundColor: "#1f2937",
-                borderTopWidth: 1,
-                borderColor: "#374151",
-              },
-              inputBoxContainer: {
-                backgroundColor: "#111827",
-                borderColor: "#374151",
-              },
-              inputBox: {
-                color: "#fff",
-              },
-              editingStateHeader: {
-                editingBoxHeaderTitle: {
-                  color: "#fff",
-                },
-              },
-            },
-            channelListSkeleton: {
-              background: {
-                backgroundColor: "#111827",
-              },
-              container: {
-                borderBottomColor: "#374151",
-              },
-              animationTime: 1000,
-              gradientStop: {
-                stopColor: "#4d179a",
-              },
-            },
-          },
-        }}
-      >
-        <Chat client={streamClient}>
-          <Stack screenOptions={{ animation: "none" }}>
-            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-            <Stack.Screen name="(video)" options={{ headerShown: false }} />
-            <Stack.Screen name="(edit)" options={{ headerShown: false }} />
-            <Stack.Screen name="index" options={{ headerShown: false }} />
-            <Stack.Screen name="search" options={{ headerShown: false }} />
-            <Stack.Screen name="(store)" options={{ headerShown: false }} />
-            <Stack.Screen name="(studio)" options={{ headerShown: false }} />
-            <Stack.Screen name="(profile)" options={{ headerShown: false }} />
-            <Stack.Screen name="(post)" options={{ headerShown: false }} />
-            <Stack.Screen name="(message)" options={{ headerShown: false }} />
-            <Stack.Screen name="(notification)" options={{ headerShown: false }} />
-            <Stack.Screen name="(book)" options={{ headerShown: false }} />
-            <Stack.Screen name="(payments)" options={{ headerShown: false }} />
-            <Stack.Screen name="books" options={{ headerShown: false }} />
-            <Stack.Screen name="(story)" options={{ headerShown: false }} />
-          </Stack>
-          <ThemedStatusBar />
-        </Chat>
-      </OverlayProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <Stack screenOptions={{ animation: "none" }}>
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+        <Stack.Screen name="(video)" options={{ headerShown: false }} />
+        <Stack.Screen name="(edit)" options={{ headerShown: false }} />
+        <Stack.Screen name="index" options={{ headerShown: false }} />
+        <Stack.Screen name="search" options={{ headerShown: false }} />
+        <Stack.Screen name="(store)" options={{ headerShown: false }} />
+        <Stack.Screen name="(studio)" options={{ headerShown: false }} />
+        <Stack.Screen name="(profile)" options={{ headerShown: false }} />
+        <Stack.Screen name="(post)" options={{ headerShown: false }} />
+        <Stack.Screen name="(message)" options={{ headerShown: false }} />
+        <Stack.Screen name="(notification)" options={{ headerShown: false }} />
+        <Stack.Screen name="(book)" options={{ headerShown: false }} />
+        <Stack.Screen name="(payments)" options={{ headerShown: false }} />
+        <Stack.Screen name="books" options={{ headerShown: false }} />
+        <Stack.Screen name="(story)" options={{ headerShown: false }} />
+      </Stack>
+      <ThemedStatusBar />
     </GestureHandlerRootView>
   );
 };

@@ -455,6 +455,7 @@ const BooksRanking = ({ isActive = false }) => {
     <View className="flex-1">
       <View className="pb-2 pt-1">
         <FlatList
+          removeClippedSubviews={false}
           horizontal
           data={tagOptions}
           keyExtractor={(item) => `ranking-tag-${item.key}`}

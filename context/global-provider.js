@@ -1,5 +1,6 @@
 import { getTrackingPermissionsAsync, PermissionStatus, requestTrackingPermissionsAsync } from "expo-tracking-transparency";
 import { createContext, useContext, useEffect, useState } from "react";
+import { InteractionManager } from "react-native";
 import MobileAds from "react-native-google-mobile-ads";
 import { useDispatch, useSelector } from "react-redux";
 import { getCurrentUserWithoutStream, getGlobalSettings, getStars, getUserCoins, updateUserExpoPushToken } from "../lib/appwrite";
@@ -22,6 +23,21 @@ const isNetworkError = (error) => {
   );
 };
 
+// Helper: run a non-critical task after the next interactive frame, with an
+// additional delay so it doesn't compete with first-paint work.
+const deferredTask = (delayMs, task) => {
+  const handle = InteractionManager.runAfterInteractions(() => {
+    setTimeout(() => {
+      try {
+        task();
+      } catch (error) {
+        console.warn("Deferred task failed:", error?.message || error);
+      }
+    }, delayMs);
+  });
+  return () => handle?.cancel?.();
+};
+
 export default function GlobalProvider({ children }) {
   const { user: userReducer } = useSelector((state) => state.auth);
   const dispatch = useDispatch();
@@ -39,15 +55,29 @@ export default function GlobalProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [currentChat, setCurrentChat] = useState(false);
   const [starsData, setStarsData] = useState(null);
-  const [streamConnectionState, setStreamConnectionState] = useState("disconnected");
 
+  // Stream Chat is disabled but components like StreamChatLoader still read
+  // streamConnectionState from context. Keep it as a stable "disconnected"
+  // value so nothing crashes; will be removed when Phase 7 ports DMs to Supabase.
+  const streamConnectionState = "disconnected";
+  const setStreamConnectionState = () => {};
+
+  // When user becomes available: keep critical paths immediate (Crashlytics user,
+  // balance/stars for topbar pill, avatar) and defer push registration since
+  // it's a one-time setup that doesn't affect first paint.
   useEffect(() => {
     setCrashlyticsUser(user);
 
-    if (user) {
-      refetchBalance(user?.$id);
-      setAvatar(user?.avatar);
-      refetchStars();
+    if (!user) return;
+
+    // Critical for topbar pill — keep immediate.
+    refetchBalance(user?.$id);
+    setAvatar(user?.avatar);
+    refetchStars();
+
+    // Push notification registration — defer 5s after first paint.
+    // Native prompt doesn't need to fire instantly on launch.
+    return deferredTask(5000, () => {
       RegisterForPushNotificationsAsync()
         .then((token) => {
           if (token) {
@@ -58,18 +88,24 @@ export default function GlobalProvider({ children }) {
           }
         })
         .catch((error) => console.warn("Push notification registration failed:", error?.message || error));
-    }
+    });
   }, [user]);
 
-  // Non-navigation side effects when user logs in (data fetching, ads)
+  // Non-navigation side effects when user is logged in (ads, clip cache).
+  // These do NOT need to fire before first paint — defer them.
   useEffect(() => {
     if (isLogged !== true) return;
 
-    FetchAllClipsLength(setAllClipsLength).catch((error) => {
-      console.warn("FetchAllClipsLength failed:", error?.message || error);
+    // Clips length cache — defer 2s. Used in some UI counters but not for first paint.
+    const cancelClipsFetch = deferredTask(2000, () => {
+      FetchAllClipsLength(setAllClipsLength).catch((error) => {
+        console.warn("FetchAllClipsLength failed:", error?.message || error);
+      });
     });
 
-    (async () => {
+    // AdMob initialization — defer 3s. No ads render in first 3 seconds anyway,
+    // and ATT permission prompt doesn't need to interrupt initial flow.
+    const cancelAdsInit = deferredTask(3000, async () => {
       try {
         const { status } = await getTrackingPermissionsAsync();
         if (status === PermissionStatus.UNDETERMINED) await requestTrackingPermissionsAsync();
@@ -77,14 +113,19 @@ export default function GlobalProvider({ children }) {
       } catch (error) {
         console.warn("MobileAds initialization failed:", error?.message || error);
       }
-    })();
+    });
+
+    return () => {
+      cancelClipsFetch();
+      cancelAdsInit();
+    };
   }, [isLogged]);
 
   useEffect(() => {
     let isMounted = true;
 
     const bootstrapAuth = async () => {
-      // Load global settings (non-blocking)
+      // Load global settings (non-blocking).
       getGlobalSettings()
         .then((res) => {
           const settings = {};
@@ -105,25 +146,16 @@ export default function GlobalProvider({ children }) {
         setIsLogged(true);
         dispatch(setUserReducer(res));
         dispatch(setIsLoggedReducer(true));
-
-        // Connect Stream Chat in background (non-blocking)
-        // streamConnectionManager
-        //   .connect(res.$id)
-        //   .then(() => isMounted && setStreamConnectionState("connected"))
-        //   .catch((err) => {
-        //     console.error("Stream connection failed:", err?.message);
-        //     if (isMounted) setStreamConnectionState("error");
-        //   });
       } catch (error) {
         console.warn("Auth bootstrap failed:", error?.message);
         if (!isMounted) return;
 
         if (isNetworkError(error) && userReducer?.$id) {
-          // Offline mode: use cached user
+          // Offline mode: use cached user.
           setUser(userReducer);
           setIsLogged(true);
         } else {
-          // Auth failure or no cached data: log out
+          // Auth failure or no cached data: log out.
           dispatch(setIsLoggedReducer(false));
           setIsLogged(false);
           setUser(null);
