@@ -357,7 +357,7 @@ const StoryBar = ({ user, forceUpdate }) => {
         <View className="absolute bottom-0 w-full items-center">
           <View className="w-full items-center rounded-b-xl p-2 pt-4" style={{ backgroundColor: theme.accentPurple }}>
             <Text className="text-center text-[12px] font-semibold shadow-lg" style={{ color: theme.primaryContrast }}>
-              Post a moment on SeLeBox
+              Post a moment on Selebox
             </Text>
           </View>
 

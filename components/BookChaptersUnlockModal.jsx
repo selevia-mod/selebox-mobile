@@ -187,7 +187,7 @@ const BookChaptersUnlockModal = ({
             {/* Banner */}
             <View className="m-4 items-center rounded-xl px-4 py-2" style={{ backgroundColor: theme.accentPurpleSoft, borderWidth: 1, borderColor: theme.accentPurple }}>
               <FastImage className="mt-[-10] h-20 w-20" source={images.logo} resizeMode={FastImage.resizeMode.stretch} />
-              <Text className="mt-[-10] text-center text-base font-bold" style={{ color: theme.text }}>SeleBox Originals</Text>
+              <Text className="mt-[-10] text-center text-base font-bold" style={{ color: theme.text }}>Selebox Originals</Text>
             </View>
 
             {/* Divider */}

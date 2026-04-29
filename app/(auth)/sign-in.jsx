@@ -248,7 +248,7 @@ const SignIn = () => {
               Welcome Back!
             </Text>
             <Text className="mt-1 text-center font-pregular text-sm" style={{ color: theme.textSoft }}>
-              Sign in to continue to SeLeBox
+              Sign in to continue to Selebox
             </Text>
 
             <View className="mt-8 w-full space-y-4">

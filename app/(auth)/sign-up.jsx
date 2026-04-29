@@ -53,7 +53,7 @@ const SignUp = () => {
               Create Account
             </Text>
             <Text className="mt-1 text-center font-pregular text-sm" style={{ color: theme.textSoft }}>
-              Join the SeLeBox community
+              Join the Selebox community
             </Text>
 
             <View className="mt-8 w-full space-y-4">

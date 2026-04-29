@@ -1712,7 +1712,7 @@ const Home = () => {
       <View className="flex-1 w-full ">
         <View className="px-4 pt-1.5 pb-2">
           <MainScreensHeader
-            title="selebox"
+            title="Selebox"
             searchPlaceholder="Search Posts."
             searchQuery={searchQuery}
             setSearchQuery={setSearchQuery}

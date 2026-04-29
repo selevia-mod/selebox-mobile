@@ -153,9 +153,9 @@ function StyledPlaylistButton({ videoId, refetchFunction = async () => {}, ...pr
                 to: JSON.parse(globalSettings["ADMIN_EMAILS"]).join(","),
                 cc: user.email,
                 bcc: JSON.parse(globalSettings["BCC_EMAILS"]).join(","),
-                subject: `${user.username} | SeLeBox | Reported Video`,
+                subject: `${user.username} | Selebox | Reported Video`,
                 html: `
-                  <p><strong>Dear SeLeBox Team,</strong></p>
+                  <p><strong>Dear Selebox Team,</strong></p>
                   <p>I am writing to report this video <b><u>${secrets.WEBSITE}${videoId}</u></b>. Please find this report for your review.</p>
                   <p><strong>Report Detail:</strong></p>
                   <p>${reportDetails}</p>

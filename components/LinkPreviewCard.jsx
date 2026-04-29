@@ -47,9 +47,9 @@ const buildVideoPreview = (video, videoId) => {
   if (!video) return null;
 
   const uploader = getUploader(video);
-  const uploaderName = uploader?.username || "SeLeBox Creator";
+  const uploaderName = uploader?.username || "Selebox Creator";
   const title = video.title || "Video";
-  const description = video.description || `Watch ${title} by ${uploaderName} on SeLeBox.`;
+  const description = video.description || `Watch ${title} by ${uploaderName} on Selebox.`;
   const image = video.thumbnail || "https://www.selebox.com/logo/icon.png";
   const tags = Array.isArray(video.tags) ? video.tags.filter(Boolean) : [];
 
@@ -58,7 +58,7 @@ const buildVideoPreview = (video, videoId) => {
     title,
     description,
     images: [image],
-    siteName: "SeLeBox",
+    siteName: "Selebox",
     mediaType: "video.other",
     source: "selebox-video",
     video,
