@@ -136,7 +136,6 @@ const InnerLayout = () => {
   const handledNotificationResponseRef = useRef(null);
 
   const [fontsLoaded] = useFonts({
-    "Poppins-Black": require("../assets/fonts/Poppins-Black.ttf"),
     "Poppins-Bold": require("../assets/fonts/Poppins-Bold.ttf"),
     "Poppins-ExtraBold": require("../assets/fonts/Poppins-ExtraBold.ttf"),
     "Poppins-ExtraLight": require("../assets/fonts/Poppins-ExtraLight.ttf"),
@@ -144,7 +143,6 @@ const InnerLayout = () => {
     "Poppins-Medium": require("../assets/fonts/Poppins-Medium.ttf"),
     "Poppins-Regular": require("../assets/fonts/Poppins-Regular.ttf"),
     "Poppins-SemiBold": require("../assets/fonts/Poppins-SemiBold.ttf"),
-    "Poppins-Thin": require("../assets/fonts/Poppins-Thin.ttf"),
     "Inter-Thin": require("../assets/fonts/Inter-Thin.ttf"),
     "Inter-ExtraLight": require("../assets/fonts/Inter-ExtraLight.ttf"),
     "Inter-Light": require("../assets/fonts/Inter-Light.ttf"),
