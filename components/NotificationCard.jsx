@@ -28,6 +28,38 @@ const appendSnippet = (baseText, snippet, maxLength) => {
   return `${baseText}: "${snippetText}"`;
 };
 
+// Avatar fallback helpers
+const hasValidAvatar = (uri) => typeof uri === "string" && uri.trim().length > 0;
+
+const getInitials = (name) => {
+  if (!name || typeof name !== "string") return "?";
+  const trimmed = name.trim();
+  if (!trimmed) return "?";
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  }
+  return trimmed.slice(0, 2).toUpperCase();
+};
+
+const getMonogramColor = (name, theme) => {
+  const palette = [
+    theme.primary,
+    theme.accentTeal,
+    theme.accentPink,
+    theme.accentBlue,
+    theme.accentGreen,
+    theme.accentAmber,
+  ];
+  if (!name || typeof name !== "string") return palette[0];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash << 5) - hash + name.charCodeAt(i);
+    hash |= 0;
+  }
+  return palette[Math.abs(hash) % palette.length];
+};
+
 const NotificationCard = ({ item, onViewed }) => {
   const { theme } = useAppTheme();
   const notificationService = new NotificationService();
@@ -205,6 +237,9 @@ const NotificationCard = ({ item, onViewed }) => {
     }
   };
 
+  const showPhoto = hasValidAvatar(avatarUri);
+  const monogramColor = getMonogramColor(senderName, theme);
+
   return (
     <TouchableOpacity
       onPress={handleNotificationPress}
@@ -219,13 +254,29 @@ const NotificationCard = ({ item, onViewed }) => {
       }}
     >
       <View className="relative">
-        <FastImage
-          source={{ uri: avatarUri, priority: FastImage.priority.high }}
-          className="h-12 w-12 rounded-xl"
-          style={{ backgroundColor: theme.surfaceMuted, borderWidth: 1, borderColor: isUnread ? theme.primary : theme.border }}
-          resizeMode={FastImage.resizeMode.cover}
-          accessibilityLabel="Sender Avatar"
-        />
+        {showPhoto ? (
+          <FastImage
+            source={{ uri: avatarUri, priority: FastImage.priority.high }}
+            className="h-12 w-12 rounded-xl"
+            style={{ backgroundColor: theme.surfaceMuted, borderWidth: 1, borderColor: isUnread ? theme.primary : theme.border }}
+            resizeMode={FastImage.resizeMode.cover}
+            accessibilityLabel="Sender Avatar"
+          />
+        ) : (
+          <View
+            className="h-12 w-12 items-center justify-center rounded-xl"
+            style={{
+              backgroundColor: monogramColor,
+              borderWidth: 1,
+              borderColor: isUnread ? theme.primary : theme.border,
+            }}
+            accessibilityLabel="Sender Avatar"
+          >
+            <Text className="text-base font-bold" style={{ color: theme.primaryContrast }}>
+              {getInitials(senderName)}
+            </Text>
+          </View>
+        )}
         {isUnread && <View className="absolute -right-1 -top-1 h-3 w-3 rounded-full border" style={{ borderColor: theme.background, backgroundColor: theme.primary }} />}
       </View>
 
