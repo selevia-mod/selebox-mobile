@@ -12,6 +12,7 @@ import {
   View,
 } from "react-native";
 import FastImage from "react-native-fast-image";
+import UserAvatar from "./UserAvatar";
 import LoaderKit from "react-native-loader-kit";
 import Modal from "react-native-modal";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -130,13 +131,11 @@ const ClipCommentModal = ({ isVisible, onClose, item, onCommentPosted }) => {
       <TouchableWithoutFeedback>
         <View className="mb-5 flex flex-row space-x-2">
           <TouchableOpacity onPress={handleUserPress}>
-            <FastImage
-              source={{
-                uri: item?.commentOwner?.avatar || "",
-                priority: FastImage.priority.high,
-              }}
-              className="h-10 w-10 rounded-full"
-              style={{ backgroundColor: theme.surfaceStrong }}
+            <UserAvatar
+              name={item?.commentOwner?.username}
+              avatarUri={item?.commentOwner?.avatar}
+              size={40}
+              borderRadius={20}
             />
           </TouchableOpacity>
 

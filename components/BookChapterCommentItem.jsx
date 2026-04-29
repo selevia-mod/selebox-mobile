@@ -2,11 +2,11 @@ import { MaterialCommunityIcons, MaterialIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { InteractionManager, Text, TouchableOpacity, View } from "react-native";
-import FastImage from "react-native-fast-image";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { BookChapterCommentsService } from "../lib/book-chapter-comments";
 import TimeAgo from "../lib/time-ago";
+import UserAvatar from "./UserAvatar";
 
 const INITIAL_VISIBLE_REPLIES = 3;
 
@@ -191,10 +191,11 @@ const BookChapterCommentItem = ({
     <View className="mb-4">
       <View className="flex-row items-start space-x-2">
         <TouchableOpacity onPress={() => handleUserPress(null)}>
-          <FastImage
-            source={{ uri: item?.commentOwner?.avatar || "" }}
-            className="h-10 w-10 rounded-full"
-            style={{ backgroundColor: theme.surfaceStrong }}
+          <UserAvatar
+            name={item?.commentOwner?.username}
+            avatarUri={item?.commentOwner?.avatar}
+            size={40}
+            borderRadius={20}
           />
         </TouchableOpacity>
 
@@ -248,10 +249,11 @@ const BookChapterCommentItem = ({
                       return (
                         <View key={reply?.$id} className="mb-3 flex-row items-center space-x-2">
                           <TouchableOpacity onPress={() => handleUserPress(reply)}>
-                            <FastImage
-                              source={{ uri: reply?.commentOwner?.avatar || "" }}
-                              className="h-7 w-7 rounded-full"
-                              style={{ backgroundColor: theme.surfaceStrong }}
+                            <UserAvatar
+                              name={reply?.commentOwner?.username}
+                              avatarUri={reply?.commentOwner?.avatar}
+                              size={28}
+                              borderRadius={14}
                             />
                           </TouchableOpacity>
 

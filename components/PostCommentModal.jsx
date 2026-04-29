@@ -16,6 +16,7 @@ import {
 } from "react-native";
 import { Query } from "react-native-appwrite";
 import FastImage from "react-native-fast-image";
+import UserAvatar from "./UserAvatar";
 import LoaderKit from "react-native-loader-kit";
 import Modal from "react-native-modal";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -242,10 +243,11 @@ const PostCommentItem = memo(
       <View className="mb-4">
         <View className="flex-row items-start space-x-2">
           <TouchableOpacity onPress={() => handleUserPress(item)}>
-            <FastImage
-              source={{ uri: item?.commentOwner?.avatar || "", priority: FastImage.priority.high }}
-              className="h-10 w-10 rounded-full"
-              style={{ backgroundColor: theme.surfaceStrong }}
+            <UserAvatar
+              name={item?.commentOwner?.username}
+              avatarUri={item?.commentOwner?.avatar}
+              size={40}
+              borderRadius={20}
             />
           </TouchableOpacity>
 
@@ -307,10 +309,11 @@ const PostCommentItem = memo(
                           onLayout={(event) => onReplyLayout?.(item?.$id, reply?.$id, event)}
                         >
                           <TouchableOpacity onPress={() => handleUserPress(reply)}>
-                            <FastImage
-                              source={{ uri: reply?.commentOwner?.avatar || "", priority: FastImage.priority.high }}
-                              className="h-7 w-7 rounded-full"
-                              style={{ backgroundColor: theme.surfaceStrong }}
+                            <UserAvatar
+                              name={reply?.commentOwner?.username}
+                              avatarUri={reply?.commentOwner?.avatar}
+                              size={28}
+                              borderRadius={14}
                             />
                           </TouchableOpacity>
 
