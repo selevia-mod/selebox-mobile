@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 70" width="100" height="70">
+  <defs>
+    <mask id="holes-mask">
+      <!-- Full white background (everything visible by default) -->
+      <rect x="0" y="0" width="100" height="70" fill="white"/>
+      <!-- Cut out holes (drawn in black) -->
+      <!-- Left bar holes -->
+      <rect x="8" y="8.8" width="8" height="8" rx="2" ry="2" fill="black"/>
+      <rect x="8" y="23.6" width="8" height="8" rx="2" ry="2" fill="black"/>
+      <rect x="8" y="38.4" width="8" height="8" rx="2" ry="2" fill="black"/>
+      <rect x="8" y="53.2" width="8" height="8" rx="2" ry="2" fill="black"/>
+      <!-- Right bar holes -->
+      <rect x="84" y="8.8" width="8" height="8" rx="2" ry="2" fill="black"/>
+      <rect x="84" y="23.6" width="8" height="8" rx="2" ry="2" fill="black"/>
+      <rect x="84" y="38.4" width="8" height="8" rx="2" ry="2" fill="black"/>
+      <rect x="84" y="53.2" width="8" height="8" rx="2" ry="2" fill="black"/>
+    </mask>
+  </defs>
+
+  <!-- Outer frame -->
+  <rect x="2" y="2" width="96" height="66" rx="6" ry="6" fill="none" stroke="currentColor" stroke-width="4" mask="url(#holes-mask)"/>
+
+  <!-- Left black bar (with holes masked) -->
+  <rect x="2" y="2" width="20" height="66" fill="currentColor" mask="url(#holes-mask)"/>
+
+  <!-- Right black bar (with holes masked) -->
+  <rect x="78" y="2" width="20" height="66" fill="currentColor" mask="url(#holes-mask)"/>
+
+  <!-- Play button (no mask) -->
+  <polygon points="42,20 68,35 42,50" fill="currentColor"/>
+</svg>

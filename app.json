@@ -1,0 +1,214 @@
+{
+  "expo": {
+    "name": "SeLeBox",
+    "slug": "tales-of-siren",
+    "version": "2.4.17",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "appwrite-callback-66b8be7400121b5d4697",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#111827"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.talesofsiren.talesofsiren",
+      "associatedDomains": ["applinks:www.selebox.com", "applinks:selebox.com"],
+      "usesAppleSignIn": true,
+      "infoPlist": {
+        "UIBackgroundModes": ["audio", "fetch"],
+        "NSPhotoLibraryUsageDescription": "We need access to your photos to let you upload a profile picture or set a custom avatar. Your photos will remain private and secure.",
+        "NSCameraUsageDescription": "We need access to your camera to allow photo or video selection.",
+        "NSMicrophoneUsageDescription": "We need access to your microphone for video-related features.",
+        "NSAppTransportSecurity": {
+          "NSExceptionDomains": {
+            "sg.storage.bunnycdn.com": {
+              "NSIncludesSubdomains": true,
+              "NSExceptionAllowsInsecureHTTPLoads": true
+            }
+          }
+        }
+      },
+      "appleTeamId": "Y3NK8Z38H8",
+      "googleServicesFile": "./GoogleService-Info.plist"
+    },
+    "android": {
+      "softwareKeyboardLayoutMode": "resize",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
+      },
+      "package": "com.talesofsiren.talesofsiren",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "https",
+              "host": "selebox.com",
+              "pathPrefix": "/books/"
+            },
+            {
+              "scheme": "https",
+              "host": "www.selebox.com",
+              "pathPrefix": "/books/"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"],
+          "autoVerify": true
+        },
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "talesofsiren",
+              "host": "books"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ],
+      "permissions": [
+        "android.permission.WAKE_LOCK",
+        "android.permission.INTERNET",
+        "android.permission.RECORD_AUDIO",
+        "com.google.android.gms.permission.AD_ID"
+      ],
+      "googleServicesFile": "./google-services.json"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      "expo-image-picker",
+      "expo-apple-authentication",
+      "@react-native-firebase/app",
+      "@react-native-firebase/crashlytics",
+      "react-native-iap",
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.152263386495-7pe1l8fd6cogl5du6n7hc2frs8p3g9sp"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#FFFFFF"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35,
+            "minSdkVersion": 24
+          },
+          "ios": {
+            "useFrameworks": "static"
+          }
+        }
+      ],
+      [
+        "expo-tracking-transparency",
+        {
+          "userTrackingPermission": "We request your permission to collect app-related data. This helps us deliver a personalized experience, including tailored ads and app improvements. Your privacy is important to us."
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "backgroundColor": "#111827",
+          "imageWidth": 200
+        }
+      ],
+      [
+        "expo-video",
+        {
+          "supportsBackgroundPlayback": true,
+          "supportsPictureInPicture": true
+        }
+      ],
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-4714499530381413~5438356093",
+          "iosAppId": "ca-app-pub-4714499530381413~4125274423",
+          "userTrackingUsageDescription": "We request your permission to collect app-related data. This helps us deliver a personalized experience, including tailored ads and app improvements. Your privacy is important to us.",
+          "skAdNetworkItems": [
+            "cstr6suwn9.skadnetwork",
+            "4fzdc2evr5.skadnetwork",
+            "2fnua5tdw4.skadnetwork",
+            "ydx93a7ass.skadnetwork",
+            "p78axxw29g.skadnetwork",
+            "v72qych5uu.skadnetwork",
+            "ludvb6z3bs.skadnetwork",
+            "cp8zw746q7.skadnetwork",
+            "3sh42y64q3.skadnetwork",
+            "c6k4g5qg8m.skadnetwork",
+            "s39g8k73mm.skadnetwork",
+            "3qy4746246.skadnetwork",
+            "hs6bdukanm.skadnetwork",
+            "mlmmfzh3r3.skadnetwork",
+            "v4nxqhlyqp.skadnetwork",
+            "wzmmz9fp6w.skadnetwork",
+            "su67r6k2v3.skadnetwork",
+            "yclnxrl5pm.skadnetwork",
+            "7ug5zh24hu.skadnetwork",
+            "gta9lk7p23.skadnetwork",
+            "vutu7akeur.skadnetwork",
+            "y5ghdn5j9k.skadnetwork",
+            "v9wttpbfk9.skadnetwork",
+            "n38lu8286q.skadnetwork",
+            "47vhws6wlr.skadnetwork",
+            "kbd757ywx3.skadnetwork",
+            "9t245vhmpl.skadnetwork",
+            "a2p9lx4jpn.skadnetwork",
+            "22mmun2rn5.skadnetwork",
+            "4468km3ulz.skadnetwork",
+            "2u9pt9hc89.skadnetwork",
+            "8s468mfl3y.skadnetwork",
+            "ppxm28t8ap.skadnetwork",
+            "uw77j35x4d.skadnetwork",
+            "pwa73g5rt2.skadnetwork",
+            "578prtvx9j.skadnetwork",
+            "4dzt52r2t5.skadnetwork",
+            "tl55sbb4fm.skadnetwork",
+            "e5fvkxwrpn.skadnetwork",
+            "8c4e2ghe7u.skadnetwork",
+            "3rd42ekr43.skadnetwork",
+            "3qcr597p9d.skadnetwork"
+          ]
+        }
+      ],
+      [
+        "react-native-share",
+        {
+          "ios": ["fb", "instagram", "twitter", "tiktoksharesdk"],
+          "android": ["com.facebook.katana", "com.instagram.android", "com.twitter.android", "com.zhiliaoapp.musically"],
+          "enableBase64ShareAndroid": true
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "52be2c74-ac07-4e4f-b72d-7ceb775a5bd8",
+        "deepLinkHost": "www.selebox.com"
+      }
+    },
+    "updates": {
+      "fallbackToCacheTimeout": 0,
+      "enabled": true,
+      "url": "https://u.expo.dev/52be2c74-ac07-4e4f-b72d-7ceb775a5bd8"
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "owner": "talesofsiren"
+  }
+}

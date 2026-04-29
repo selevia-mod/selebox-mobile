@@ -1,0 +1,57 @@
+{
+  "cli": {
+    "version": ">= 12.4.1",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal"
+    },
+    "production-apk": {
+      "android": {
+        "buildType": "apk",
+        "image": "latest"
+      },
+      "distribution": "store",
+      "autoIncrement": true,
+      "channel": "main"
+    },
+    "production-aab": {
+      "android": {
+        "buildType": "app-bundle",
+        "image": "latest"
+      },
+      "distribution": "store",
+      "autoIncrement": true,
+      "channel": "main"
+    },
+    "production-ios": {
+      "ios": {
+        "image": "latest"
+      },
+      "distribution": "store",
+      "autoIncrement": true,
+      "channel": "main"
+    }
+  },
+  "submit": {
+    "production": {
+      "android": {
+        "serviceAccountKeyPath": "./google-play-console-service-account.json",
+        "track": "internal"
+      },
+      "ios": {
+        "appleId": "juncalague06@gmail.com",
+        "ascAppId": "6736897349",
+        "appleTeamId": "ZJUXCU97LV",
+        "ascApiKeyPath": "./IOS-Submit-Auth-Key.p8",
+        "ascApiKeyIssuerId": "bab5ebb6-92dd-47b8-bf91-db986c989853",
+        "ascApiKeyId": "5T9B546R4F"
+      }
+    }
+  }
+}

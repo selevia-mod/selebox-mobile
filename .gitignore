@@ -1,0 +1,59 @@
+# Credentials — NEVER commit
+google-services.json
+GoogleService-Info.plist
+google-play-console-service-account*.json
+IOS-Submit-Auth-Key.p8
+*.p8
+*.p12
+*.jks
+*.keystore
+*.mobileprovision
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Expo
+.expo/
+.expo-shared/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native build artifacts
+ios/Pods/
+ios/build/
+ios/.xcode.env.local
+ios/DerivedData/
+android/build/
+android/.gradle/
+android/app/build/
+android/.idea/
+android/local.properties
+*.iml
+
+# Metro
+.metro-health-check*
+
+# Logs
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# OS junk
+.DS_Store
+._*
+*.orig.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# TypeScript
+*.tsbuildinfo
+private/
