@@ -1,0 +1,70 @@
+# .easignore — overrides .gitignore for EAS Build uploads.
+# Same as .gitignore EXCEPT we let Firebase config files reach the build,
+# which is required at compile time and not actually secret.
+
+# Truly sensitive credentials — KEEP excluded
+google-play-console-service-account*.json
+IOS-Submit-Auth-Key.p8
+*.p8
+*.p12
+*.jks
+*.keystore
+*.mobileprovision
+.env
+.env.*
+!.env.example
+
+# NOTE: Firebase config files are intentionally NOT listed here.
+#   google-services.json       — needed by EAS for Android builds
+#   GoogleService-Info.plist   — needed by EAS for iOS builds
+# Both ship inside the final app bundle anyway. They're allowed to reach EAS.
+
+# Dependencies
+node_modules/
+
+# Expo
+.expo/
+.expo-shared/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native build artifacts
+ios/Pods/
+ios/build/
+ios/.xcode.env.local
+ios/DerivedData/
+android/build/
+android/.gradle/
+android/app/build/
+android/.idea/
+android/local.properties
+*.iml
+
+# Metro
+.metro-health-check*
+
+# Logs
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# OS junk
+.DS_Store
+._*
+*.orig.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# TypeScript
+*.tsbuildinfo
+
+# Defense in depth (sensitive files moved outside the project)
+
+# Local rollback backups
+*.OLD.*

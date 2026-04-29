@@ -6,20 +6,29 @@ export const THEME_MODES = {
 export const DEFAULT_THEME_MODE = THEME_MODES.light;
 
 const sharedColors = {
-  primary: "#2563eb",
-  primarySoft: "rgba(37,99,235,0.16)",
+  // Primary — Selebox violet (matches selebox.com)
+  primary: "#8b5cf6",                       // violet-500
+  primaryStrong: "#7c3aed",                 // violet-600 — pressed/active
+  primaryDark: "#5b21b6",                   // violet-800
+  primaryDeepest: "#4c1d95",                // violet-900 — gradient end
+  primaryLight: "#a78bfa",                  // violet-400
+  primaryLightest: "#c4b5fd",               // violet-300
+  primarySoft: "rgba(139,92,246,0.16)",
   primaryContrast: "#ffffff",
-  accentPurple: "#8b86f8",
-  accentPurpleSoft: "rgba(139,134,248,0.16)",
+
+  // Accents
+  accentPink: "#ec4899",                    // matches web --pink
   accentBlue: "#3ec5ff",
   accentBlueSoft: "rgba(62,197,255,0.16)",
   accentGreen: "#22c55e",
   accentGreenSoft: "rgba(34,197,94,0.16)",
   accentTeal: "#14b8a6",
   accentTealSoft: "rgba(20,184,166,0.16)",
-  accentAmber: "#f59e0b",
-  accentAmberSoft: "rgba(245,158,11,0.16)",
-  danger: "#ef4444",
+  accentAmber: "#fbbf24",                   // matches web --accent (coins)
+  accentAmberSoft: "rgba(251,191,36,0.16)",
+
+  // Semantic
+  danger: "#ef4444",                        // matches web --red
   dangerSoft: "rgba(239,68,68,0.16)",
   like: "#ff4d6d",
   likeSoft: "rgba(255,77,109,0.18)",
@@ -32,60 +41,62 @@ const sharedColors = {
 };
 
 export const themeColors = {
+  // Dark mode — YouTube-inspired neutrals + Selebox violet accent
   [THEME_MODES.dark]: {
     mode: THEME_MODES.dark,
     isDark: true,
     ...sharedColors,
-    background: "#0b1220",
-    backgroundMuted: "#111827",
-    surface: "rgba(255,255,255,0.06)",
-    surfaceElevated: "#101827",
-    surfaceMuted: "rgba(255,255,255,0.08)",
-    surfaceStrong: "#1f2937",
-    card: "rgba(255,255,255,0.08)",
-    cardStrong: "#161f2f",
-    border: "rgba(255,255,255,0.1)",
+    background: "#0f0f0f",                  // YouTube page bg
+    backgroundMuted: "#181818",
+    surface: "#1f1f1f",                     // cards
+    surfaceElevated: "#272727",             // popovers / modals
+    surfaceMuted: "rgba(255,255,255,0.04)",
+    surfaceStrong: "#3a3a3a",               // pressed
+    card: "#1f1f1f",
+    cardStrong: "#272727",
+    border: "rgba(255,255,255,0.08)",
     borderStrong: "rgba(255,255,255,0.14)",
-    divider: "rgba(255,255,255,0.12)",
-    text: "#f8fafc",
-    textMuted: "rgba(255,255,255,0.72)",
+    divider: "rgba(255,255,255,0.08)",
+    text: "#f1f1f1",
+    textMuted: "#aaaaaa",
     textSoft: "rgba(255,255,255,0.56)",
     textSubtle: "rgba(255,255,255,0.4)",
-    textInverse: "#0f172a",
-    icon: "#f8fafc",
-    iconMuted: "rgba(255,255,255,0.72)",
-    placeholder: "#9ca3af",
-    inputBackground: "rgba(255,255,255,0.06)",
+    textInverse: "#0f0f0f",
+    icon: "#f1f1f1",
+    iconMuted: "#aaaaaa",
+    placeholder: "#717171",
+    inputBackground: "#272727",
     inputBorder: "rgba(255,255,255,0.12)",
-    inputText: "#f8fafc",
-    searchBackground: "#ffffff",
+    inputText: "#f1f1f1",
+    searchBackground: "#121212",
     searchBorder: "rgba(255,255,255,0.14)",
-    searchText: "#0f172a",
-    searchPlaceholder: "#94a3b8",
-    handle: "#4b5563",
+    searchText: "#f1f1f1",
+    searchPlaceholder: "#717171",
+    handle: "#3a3a3a",
     overlay: "rgba(0,0,0,0.32)",
     overlayStrong: "rgba(0,0,0,0.5)",
-    backdrop: "rgba(0,0,0,0.62)",
+    backdrop: "rgba(0,0,0,0.8)",
     mediaBackground: "#000000",
     mediaOverlay: "rgba(0,0,0,0.3)",
     mediaOverlayStrong: "rgba(0,0,0,0.5)",
-    skeletonBase: "rgba(255,255,255,0.08)",
-    skeletonHighlight: "rgba(255,255,255,0.2)",
+    skeletonBase: "rgba(255,255,255,0.06)",
+    skeletonHighlight: "rgba(255,255,255,0.18)",
     badge: "#ef4444",
-    badgeBorder: "rgba(12,15,20,0.96)",
+    badgeBorder: "#0f0f0f",
   },
+  // Light mode — soft violet-tinted surfaces (matches web's #faf8ff)
   [THEME_MODES.light]: {
     mode: THEME_MODES.light,
     isDark: false,
     ...sharedColors,
-    background: "#f4f7fb",
-    backgroundMuted: "#e8eef8",
+    background: "#faf8ff",                  // subtle violet tint
+    backgroundMuted: "#f1f1f7",
     surface: "#ffffff",
     surfaceElevated: "#ffffff",
-    surfaceMuted: "#eef3fb",
-    surfaceStrong: "#e2e8f0",
+    surfaceMuted: "#f7f5ff",
+    surfaceStrong: "#e9e3fc",
     card: "#ffffff",
-    cardStrong: "#f8fafc",
+    cardStrong: "#fbfaff",
     border: "rgba(15,23,42,0.08)",
     borderStrong: "rgba(15,23,42,0.14)",
     divider: "rgba(15,23,42,0.08)",
@@ -97,11 +108,11 @@ export const themeColors = {
     icon: "#0f172a",
     iconMuted: "#475569",
     placeholder: "#94a3b8",
-    inputBackground: "#f8fafc",
-    inputBorder: "rgba(148,163,184,0.3)",
+    inputBackground: "#fbfaff",
+    inputBorder: "rgba(124,58,237,0.18)",
     inputText: "#0f172a",
     searchBackground: "#ffffff",
-    searchBorder: "rgba(148,163,184,0.3)",
+    searchBorder: "rgba(124,58,237,0.18)",
     searchText: "#0f172a",
     searchPlaceholder: "#94a3b8",
     handle: "#cbd5e1",
