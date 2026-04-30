@@ -11,20 +11,48 @@ import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import useResetOnBlur from "../../hooks/useResetOnBlur";
 import { NotificationService } from "../../lib/notifications";
+import {
+  loadDmNotifications,
+  markAllDmNotificationsRead,
+  subscribeToDmNotifications,
+} from "../../lib/notifications-supabase";
 import { markNotificationViewed, setNotificationsCache } from "../../store/reducers/notifications";
 
 // Categorize a notification into the All / You / Following tabs.
 // "you" = something happened TO you (someone followed you, commented on
-// your content, replied to your comment, etc.)
+// your content, replied to your comment, sent you a DM, etc.)
 // "following" = someone you follow CREATED something (new video, new clip)
 const categorizeNotification = (notification) => {
   const type = (notification?.type || "").toLowerCase();
   if (!type) return "all";
   if (type === "follow") return "you";
+  if (type === "dm_message") return "you";
   if (type.endsWith("-comment") || type.endsWith("-reply")) return "you";
   if (type.startsWith("inline")) return "you";
   if (type === "video-upload" || type === "clip") return "following";
   return "all"; // catch-all — visible only in the All tab
+};
+
+// Sort merged Appwrite + Supabase notifications by timestamp desc. Both
+// surfaces use the same `$createdAt` field on the adapted shape.
+const sortByCreatedAtDesc = (a, b) => {
+  const aTs = a?.$createdAt ? Date.parse(a.$createdAt) : 0;
+  const bTs = b?.$createdAt ? Date.parse(b.$createdAt) : 0;
+  return bTs - aTs;
+};
+
+// Merge two notification arrays by `$id`, sorted by timestamp desc. The
+// existing Appwrite mergeNotifications inside the component handles INCOMING
+// vs CURRENT for pagination; this helper handles the cross-backend fan-in.
+const mergeAcrossBackends = (appwrite = [], supabase = []) => {
+  const seen = new Set();
+  const merged = [];
+  for (const n of [...supabase, ...appwrite]) {
+    if (!n?.$id || seen.has(n.$id)) continue;
+    seen.add(n.$id);
+    merged.push(n);
+  }
+  return merged.sort(sortByCreatedAtDesc);
 };
 
 const Notification = () => {
@@ -115,10 +143,19 @@ const Notification = () => {
 
   const fetchUserNotification = async () => {
     try {
-      const notificationData = await notificationService.fetchNotifications({ userId: user?.$id, limit: 10 });
+      // Fetch Appwrite (existing types) + Supabase (dm_message) in parallel.
+      // Supabase rows are returned in the Appwrite-shaped form so the merge
+      // is just a sort + dedupe; see lib/notifications-supabase.js.
+      const [notificationData, supabaseDms] = await Promise.all([
+        notificationService.fetchNotifications({ userId: user?.$id, limit: 10 }),
+        loadDmNotifications({ limit: 30 }),
+      ]);
       const documents = notificationData?.documents || [];
       const notificationIDS = documents.map((item) => item.$id);
-      setNotifications(documents);
+      const merged = mergeAcrossBackends(documents, supabaseDms);
+      setNotifications(merged);
+      // lastId tracks the Appwrite cursor only — pagination requests more
+      // Appwrite docs; Supabase dm_message rows are loaded in full per fetch.
       setLastId(documents.length ? documents[documents.length - 1].$id : undefined);
       setHasMore(documents.length < notificationData.total);
       setNotificationsLoading(false);
@@ -134,9 +171,12 @@ const Notification = () => {
 
   const silentRefreshNotifications = async () => {
     try {
-      const notificationData = await notificationService.fetchNotifications({ userId: user?.$id, limit: 10 });
+      const [notificationData, supabaseDms] = await Promise.all([
+        notificationService.fetchNotifications({ userId: user?.$id, limit: 10 }),
+        loadDmNotifications({ limit: 30 }),
+      ]);
       const incomingNotifications = notificationData?.documents || [];
-      if (incomingNotifications.length === 0) {
+      if (incomingNotifications.length === 0 && supabaseDms.length === 0) {
         if (notificationsLoading) setNotificationsLoading(false);
         hasLoadedRef.current = true;
         return;
@@ -144,7 +184,12 @@ const Notification = () => {
       let mergedCount = 0;
       let mergedList = [];
       setNotifications((prev) => {
-        const merged = mergeNotifications(prev, incomingNotifications);
+        // Drop the previous Supabase rows from `prev` first — we'll re-add
+        // the freshly-fetched set below. Without this the read-state of
+        // existing rows wouldn't reflect server-side updates.
+        const prevAppwrite = prev.filter((n) => n?._backend !== "supabase");
+        const mergedAppwrite = mergeNotifications(prevAppwrite, incomingNotifications);
+        const merged = mergeAcrossBackends(mergedAppwrite, supabaseDms);
         mergedCount = merged.length;
         mergedList = merged;
         return merged;
@@ -205,13 +250,43 @@ const Notification = () => {
     setMarkingAllViewed(true);
     setNotifications((prev) => prev.map((notification) => ({ ...notification, isViewed: true })));
 
-    const success = await notificationService.markAllAsViewed({ userId: user.$id });
-    if (!success) {
+    // Run both backends in parallel — the bell-panel "Mark all read" should
+    // clear Appwrite (video / post / book / etc.) AND Supabase dm_message
+    // rows in one user gesture.
+    const [appwriteSuccess] = await Promise.all([
+      notificationService.markAllAsViewed({ userId: user.$id }),
+      markAllDmNotificationsRead().catch(() => null),
+    ]);
+    if (!appwriteSuccess) {
       setNotifications(previousNotifications);
     }
 
     setMarkingAllViewed(false);
   };
+
+  // Realtime — prepend / patch Supabase dm_message rows live so the bell
+  // panel stays current while it's open. Appwrite types still rely on
+  // poll-on-focus (their service has no realtime channel today).
+  useEffect(() => {
+    if (!user?.$id) return;
+    const unsubscribe = subscribeToDmNotifications({
+      onInsert: (doc) => {
+        setNotifications((prev) => {
+          const exists = prev.some((n) => n.$id === doc.$id);
+          if (exists) {
+            return prev.map((n) => (n.$id === doc.$id ? doc : n)).sort(sortByCreatedAtDesc);
+          }
+          return [doc, ...prev].sort(sortByCreatedAtDesc);
+        });
+      },
+      onUpdate: (doc) => {
+        setNotifications((prev) =>
+          prev.map((n) => (n.$id === doc.$id ? doc : n)).sort(sortByCreatedAtDesc),
+        );
+      },
+    });
+    return unsubscribe;
+  }, [user?.$id]);
 
   const renderListEmptyComponent = () => {
     return notificationsLoading ? (

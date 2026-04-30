@@ -208,9 +208,7 @@
       "enabled": true,
       "url": "https://u.expo.dev/52be2c74-ac07-4e4f-b72d-7ceb775a5bd8"
     },
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
+    "runtimeVersion": "2.4.17",
     "owner": "talesofsiren"
   }
 }
