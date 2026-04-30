@@ -13,6 +13,8 @@ import {
 } from "../../components";
 import useAppTheme from "../../hooks/useAppTheme";
 import { createRecoveryEmail } from "../../lib/appwrite";
+import { USE_SUPABASE_AUTH } from "../../lib/feature-flags";
+import { sendPasswordResetEmail as supabaseSendPasswordResetEmail } from "../../lib/supabase-auth";
 import { useModalMessage } from "../../hooks/useModalMessage";
 
 const ForgotPassword = () => {
@@ -30,7 +32,14 @@ const ForgotPassword = () => {
     }
     setSubmitting(true);
     try {
-      await createRecoveryEmail(form.email);
+      // Phase B.3 — gated by USE_SUPABASE_AUTH. Both providers send a
+      // recovery email pointing back at the same WEBSITE host, which
+      // already handles the deep link into (auth)/link-verification.
+      if (USE_SUPABASE_AUTH) {
+        await supabaseSendPasswordResetEmail(form.email);
+      } else {
+        await createRecoveryEmail(form.email);
+      }
       showMessage("Please check your email for the password reset link.", 300, () => {
         router.dismissTo("/sign-in");
       });

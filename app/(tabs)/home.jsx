@@ -45,7 +45,24 @@ import useIsOffline from "../../hooks/useIsOffline";
 import useResetOnBlur from "../../hooks/useResetOnBlur";
 import { FollowService } from "../../lib/follows";
 import { consumePostCommentModalResume } from "../../lib/post-comment-modal-resume";
-import { attachIsLikedByCurrentUser, deletePost, fetchDiscoverPosts, fetchFollowingPosts, fetchGeneratedPosts, getPost, recordPostView } from "../../lib/posts";
+import {
+  attachIsLikedByCurrentUser,
+  deletePost,
+  fetchDiscoverPosts,
+  fetchFollowingPosts,
+  fetchGeneratedPosts,
+  getPost,
+  recordPostView,
+} from "../../lib/posts";
+import { USE_SUPABASE_POSTS } from "../../lib/feature-flags";
+import { adaptSupabasePostToAppwriteShape, fetchFeedPage, fetchFollowingFeedPage, fetchPostStats } from "../../lib/posts-supabase";
+// Phase E.3 — gate feed video autoplay by device tier. Low-tier devices
+// pause everything (autoplay is the single biggest battery + jank source);
+// mid/high devices keep the existing topmost-only behavior.
+// Phase E.5 — getFlashListConfig hands back tier-tuned drawDistance +
+// removeClippedSubviews + onEndReachedThreshold so the feed shrinks its
+// pre-rendered window on low-end phones.
+import { getFlashListConfig, isLowTier } from "../../lib/device-tier";
 import { hasRoleKey, SELECTABLE_ROLE_KEYS } from "../../lib/user-roles";
 import { blockUser, hideContent, listBlockedUsers, listHiddenContent, listUserReports, recordEulaAcceptance, reportContent } from "../../lib/safety";
 import tabNavigationEvents from "../../lib/tab-navigation-events";
@@ -97,15 +114,61 @@ const extractVideoIds = (feedItems) => {
   return ids;
 };
 
+// Phase C — runs a Supabase posts fetcher (Discover / Following /
+// For-You / profile), fetches batched like + comment stats, adapts each
+// row into the Appwrite-shaped object PostCard / PostInformation /
+// PostCommentModal expect, and wraps each adapted post in the
+// `{ type, data, key }` feed entry shape `renderItem` destructures.
+//
+// Centralizing this means the three tab branches in loadFeed +
+// fetchMorePosts share one path — easier to reason about, harder to
+// drift out of sync. Returns { entries, cursor, more }:
+//   - entries: feed entries ready to feed normalizeFeed/renderItem
+//   - cursor: oldest post's created_at (ISO) for `before`-style pagination
+//   - more:   whether the page filled (heuristic: page.length === PAGE_SIZE)
+const loadSupabaseFeedPage = async (fetcher, pageSize) => {
+  const supabasePosts = (await fetcher()) || [];
+  if (supabasePosts.length === 0) {
+    return { entries: [], cursor: null, more: false };
+  }
+  const postIds = supabasePosts.map((p) => p?.id).filter(Boolean);
+  const stats = await fetchPostStats(postIds);
+  const entries = supabasePosts
+    .map((p) => {
+      const adapted = adaptSupabasePostToAppwriteShape(p, stats);
+      if (!adapted?.$id) return null;
+      return { type: "post", data: adapted, key: `post-${adapted.$id}` };
+    })
+    .filter(Boolean);
+  const cursor = supabasePosts[supabasePosts.length - 1]?.created_at || null;
+  // A page that filled exactly is taken as a strong "probably more"
+  // signal. False negative on the last page is harmless — onEndReached
+  // will simply no-op.
+  const more = pageSize ? supabasePosts.length >= pageSize : false;
+  return { entries, cursor, more };
+};
+
 // Walks a list of FeedEntry items, collects all post documents, asks
 // lib/posts to attach the viewer's like state in ONE batched query, then
 // merges the enriched docs back into the entries. Replaces the prior
 // behaviour where every PostCard fetched its own like state on mount.
+//
+// Phase C.6+ — Supabase-shaped posts (with `_supabase` set by the adapter)
+// are skipped here. PostInformation handles their like state through the
+// reactions table on mount; running this Appwrite query against UUIDs
+// would produce nothing and waste a roundtrip.
 const enrichEntriesWithLikeState = async (entries, viewerUserId) => {
   if (!Array.isArray(entries) || entries.length === 0) return entries;
   if (!viewerUserId) return entries;
 
-  const postEntries = entries.filter((e) => e?.type === "post" && e?.data?.$id);
+  const postEntries = entries.filter(
+    // Skip Supabase-shaped posts — PostInformation reads their like
+    // state from the reactions table on mount, and querying Appwrite's
+    // postsLike with a UUID would return nothing while still costing a
+    // roundtrip + (worse) writing isLikedByCurrentUser=false back onto
+    // the post, which PostInformation honors before its Supabase branch.
+    (e) => e?.type === "post" && e?.data?.$id && !e?.data?._supabase,
+  );
   if (postEntries.length === 0) return entries;
 
   const enrichedPosts = await attachIsLikedByCurrentUser(
@@ -115,7 +178,7 @@ const enrichEntriesWithLikeState = async (entries, viewerUserId) => {
   const byId = new Map(enrichedPosts.map((p) => [p?.$id, p]));
 
   return entries.map((entry) => {
-    if (entry?.type !== "post" || !entry?.data?.$id) return entry;
+    if (entry?.type !== "post" || !entry?.data?.$id || entry?.data?._supabase) return entry;
     const enriched = byId.get(entry.data.$id);
     return enriched ? { ...entry, data: enriched } : entry;
   });
@@ -577,8 +640,11 @@ const Home = () => {
   );
   const AUTO_PLAY_VISIBLE_PERCENT = 35;
   const FEED_ESTIMATED_ITEM_SIZE = 430;
-  const FEED_DRAW_DISTANCE = Math.round(screenHeight * 2.4);
-  const FEED_ON_END_REACHED_THRESHOLD = 1.1;
+  // Phase E.5 — drawDistance + removeClippedSubviews + threshold
+  // come from the tier-aware helper. Memoize once per render via
+  // useMemo so the FlashList prop identity doesn't change every
+  // render and force re-layout. screenHeight is module-level constant.
+  const flashListConfig = useMemo(() => getFlashListConfig({ screenHeight }), []);
   const FEED_PREFETCH_VIEWPORT_MULTIPLIER = 2;
   const FEED_PREFETCH_COOLDOWN_MS = 280;
   const viewabilityConfig = {
@@ -885,27 +951,65 @@ const Home = () => {
       let hasMoreRes = false;
 
       if (activeTab === "following") {
-        const res = await fetchFollowingPosts({ userId: user?.$id, limit: PAGE_SIZE, ...safetyParams });
-        feed = res.feed || [];
-        nextCursor = res.nextCursor;
-        hasMoreRes = res.hasMore;
-        setFollowingCount(typeof res.followingCount === "number" ? res.followingCount : null);
+        // Phase C.8 — Supabase Following read path. Same flag as Discover
+        // (USE_SUPABASE_POSTS): when on, we query posts WHERE user_id IN
+        // (people I follow) ordered by created_at desc. The Appwrite
+        // path additionally returns a followingCount for the empty-state
+        // CTA; on Supabase we leave that as null (the home screen handles
+        // null gracefully — it just hides the count chip).
+        if (USE_SUPABASE_POSTS) {
+          const result = await loadSupabaseFeedPage(() => fetchFollowingFeedPage({ userId: user?.$id, limit: PAGE_SIZE }), PAGE_SIZE);
+          feed = result.entries;
+          nextCursor = result.cursor;
+          hasMoreRes = result.more;
+          setFollowingCount(null);
+        } else {
+          const res = await fetchFollowingPosts({ userId: user?.$id, limit: PAGE_SIZE, ...safetyParams });
+          feed = res.feed || [];
+          nextCursor = res.nextCursor;
+          hasMoreRes = res.hasMore;
+          setFollowingCount(typeof res.followingCount === "number" ? res.followingCount : null);
+        }
       } else if (activeTab === "discover") {
-        const res = await fetchDiscoverPosts({ userId: user?.$id, limit: PAGE_SIZE, ...safetyParams });
-        feed = res.feed || [];
-        nextCursor = res.nextCursor;
-        hasMoreRes = res.hasMore;
+        // Phase C.5 — Supabase Discover read path. Gated by USE_SUPABASE_POSTS.
+        // When on, all post data flows through `loadSupabaseFeedPage`:
+        // single Supabase read → batched stats → adapter → feed entries.
+        // Reposts come hydrated with `original` so PostCard's C.4
+        // dual-section render path lights up.
+        if (USE_SUPABASE_POSTS) {
+          const result = await loadSupabaseFeedPage(() => fetchFeedPage({ limit: PAGE_SIZE }), PAGE_SIZE);
+          feed = result.entries;
+          nextCursor = result.cursor;
+          hasMoreRes = result.more;
+        } else {
+          const res = await fetchDiscoverPosts({ userId: user?.$id, limit: PAGE_SIZE, ...safetyParams });
+          feed = res.feed || [];
+          nextCursor = res.nextCursor;
+          hasMoreRes = res.hasMore;
+        }
       } else {
-        // For You — personalized via feed generator API
-        const res = await fetchGeneratedPosts({
-          limit: PAGE_SIZE,
-          userId: user?.$id,
-          ...seenPayload,
-          refresh: refreshMode,
-        });
-        feed = res.feed || [];
-        nextCursor = res.nextCursor;
-        hasMoreRes = res.hasMore;
+        // For You — personalized via feed generator API on Appwrite, or
+        // a plain recency-ordered Supabase feed when USE_SUPABASE_POSTS
+        // is on. Phase C.8: For-You falls back to the same Supabase
+        // posts feed as Discover during the cross-platform transition;
+        // the Appwrite-only personalization recommender will be
+        // reintroduced as a follow-up (server-side).
+        if (USE_SUPABASE_POSTS) {
+          const result = await loadSupabaseFeedPage(() => fetchFeedPage({ limit: PAGE_SIZE }), PAGE_SIZE);
+          feed = result.entries;
+          nextCursor = result.cursor;
+          hasMoreRes = result.more;
+        } else {
+          const res = await fetchGeneratedPosts({
+            limit: PAGE_SIZE,
+            userId: user?.$id,
+            ...seenPayload,
+            refresh: refreshMode,
+          });
+          feed = res.feed || [];
+          nextCursor = res.nextCursor;
+          hasMoreRes = res.hasMore;
+        }
       }
 
       globalKeyCounter.current = 0; // Reset counter on fresh load
@@ -982,25 +1086,55 @@ const Home = () => {
       let more = false;
 
       if (activeTab === "following") {
-        const res = await fetchFollowingPosts({ userId: user?.$id, limit: PAGE_SIZE, lastId, ...safetyParams });
-        feed = res.feed || [];
-        apiNextCursor = res.nextCursor;
-        more = res.hasMore;
+        // Phase C.8 — Supabase Following pagination. `lastId` is the
+        // oldest post's created_at from the previous page (stashed by
+        // loadFeed/fetchFollowingFeedPage as a string cursor).
+        if (USE_SUPABASE_POSTS) {
+          const result = await loadSupabaseFeedPage(() => fetchFollowingFeedPage({ userId: user?.$id, limit: PAGE_SIZE, before: lastId }), PAGE_SIZE);
+          feed = result.entries;
+          apiNextCursor = result.cursor;
+          more = result.more;
+        } else {
+          const res = await fetchFollowingPosts({ userId: user?.$id, limit: PAGE_SIZE, lastId, ...safetyParams });
+          feed = res.feed || [];
+          apiNextCursor = res.nextCursor;
+          more = res.hasMore;
+        }
       } else if (activeTab === "discover") {
-        const res = await fetchDiscoverPosts({ userId: user?.$id, limit: PAGE_SIZE, lastId, ...safetyParams });
-        feed = res.feed || [];
-        apiNextCursor = res.nextCursor;
-        more = res.hasMore;
+        // Phase C.5 — Supabase pagination. `lastId` here is the oldest
+        // post's created_at from the previous page, stashed by loadFeed.
+        if (USE_SUPABASE_POSTS) {
+          const result = await loadSupabaseFeedPage(() => fetchFeedPage({ limit: PAGE_SIZE, before: lastId }), PAGE_SIZE);
+          feed = result.entries;
+          apiNextCursor = result.cursor;
+          more = result.more;
+        } else {
+          const res = await fetchDiscoverPosts({ userId: user?.$id, limit: PAGE_SIZE, lastId, ...safetyParams });
+          feed = res.feed || [];
+          apiNextCursor = res.nextCursor;
+          more = res.hasMore;
+        }
       } else {
-        const res = await fetchGeneratedPosts({
-          limit: PAGE_SIZE,
-          lastId,
-          userId: user?.$id,
-          ...buildSeenPayload(cachedPosts.length ? cachedPosts : posts),
-        });
-        feed = res.feed || [];
-        apiNextCursor = res.nextCursor;
-        more = res.hasMore;
+        // For-You pagination. Phase C.8 mirrors the loadFeed branch:
+        // when on Supabase, paginate the global recent-posts feed via
+        // fetchFeedPage; otherwise fall through to the Appwrite
+        // recommender.
+        if (USE_SUPABASE_POSTS) {
+          const result = await loadSupabaseFeedPage(() => fetchFeedPage({ limit: PAGE_SIZE, before: lastId }), PAGE_SIZE);
+          feed = result.entries;
+          apiNextCursor = result.cursor;
+          more = result.more;
+        } else {
+          const res = await fetchGeneratedPosts({
+            limit: PAGE_SIZE,
+            lastId,
+            userId: user?.$id,
+            ...buildSeenPayload(cachedPosts.length ? cachedPosts : posts),
+          });
+          feed = res.feed || [];
+          apiNextCursor = res.nextCursor;
+          more = res.hasMore;
+        }
       }
 
       const normalized = normalizeFeed(feed);
@@ -1076,7 +1210,11 @@ const Home = () => {
 
   const syncPlaybackToKey = useCallback(
     (mainKey) => {
-      if (!mainKey) {
+      // Phase E.3 — On low-tier devices, syncPlaybackToKey is a pure
+      // pause-everything operation regardless of mainKey. This catches
+      // the modal-close + tab-focus paths that call this directly, not
+      // just onViewableItemsChanged.
+      if (!mainKey || isLowTier()) {
         Object.values(videoRefs.current).forEach((ref) => ref?.pauseVideo?.());
         currentlyPlayingKey.current = null;
         pendingPlaybackKey.current = null;
@@ -1497,6 +1635,19 @@ const Home = () => {
     const visibleKeys = viewableItems.map((v) => v.item?.key).filter(Boolean);
     lastViewableKeysRef.current = visibleKeys;
 
+    // Phase E.3 — Low-tier devices skip feed autoplay entirely. The
+    // user can still tap a video to play it on the dedicated player
+    // screen; we just don't burn battery + GPU autoplaying carousels
+    // of muted previews on phones that strain to keep up. Mid + high
+    // tiers fall through to the existing "topmost visible video plays"
+    // logic below.
+    if (isLowTier()) {
+      Object.values(videoRefs.current).forEach((ref) => ref?.pauseVideo?.());
+      currentlyPlayingKey.current = null;
+      pendingPlaybackKey.current = null;
+      return;
+    }
+
     if (!isHomeFocused.current) {
       Object.values(videoRefs.current).forEach((ref) => ref?.pauseVideo?.());
       currentlyPlayingKey.current = null;
@@ -1783,12 +1934,16 @@ const Home = () => {
           getItemType={getFeedItemType}
           extraData={extraData}
           onEndReached={triggerPaginationPrefetch}
-          onEndReachedThreshold={FEED_ON_END_REACHED_THRESHOLD}
+          onEndReachedThreshold={flashListConfig.onEndReachedThreshold}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={viewabilityConfig}
-          removeClippedSubviews={false} // 🔥 prevents flicker
+          // Phase E.5 — `removeClippedSubviews` and `drawDistance` come
+          // from `getFlashListConfig`, which returns tier-tuned values:
+          // mid/high keep flicker-free behavior; low-tier opts into the
+          // small-window mode to reduce mounted-row count + memory.
+          removeClippedSubviews={flashListConfig.removeClippedSubviews}
           estimatedItemSize={FEED_ESTIMATED_ITEM_SIZE}
-          drawDistance={FEED_DRAW_DISTANCE}
+          drawDistance={flashListConfig.drawDistance}
           onScroll={handleScroll}
           scrollEventThrottle={16}
           showsVerticalScrollIndicator={false}
@@ -1837,7 +1992,7 @@ const Home = () => {
                           fontSize: 13,
                           fontWeight: isActive ? "700" : "500",
                           letterSpacing: 0.1,
-                          color: isActive ? theme.primaryContrast ?? "#ffffff" : theme.textMuted ?? theme.text,
+                          color: isActive ? (theme.primaryContrast ?? "#ffffff") : (theme.textMuted ?? theme.text),
                         }}
                       >
                         {tab.label}
@@ -1867,9 +2022,7 @@ const Home = () => {
                   {followingCount === 0 ? "Follow people to see their posts here" : "No new posts from people you follow"}
                 </Text>
                 <Text className="mt-2 text-center text-sm" style={{ color: theme.textSoft }}>
-                  {followingCount === 0
-                    ? "Discover creators you'd love to follow."
-                    : "Check back later — or browse Discover for fresh content."}
+                  {followingCount === 0 ? "Discover creators you'd love to follow." : "Check back later — or browse Discover for fresh content."}
                 </Text>
                 <TouchableOpacity
                   onPress={() => handleSwitchTab("discover")}
@@ -1882,9 +2035,7 @@ const Home = () => {
                     backgroundColor: theme.primary,
                   }}
                 >
-                  <Text style={{ fontSize: 13, fontWeight: "700", color: theme.primaryContrast ?? "#ffffff" }}>
-                    Browse Discover
-                  </Text>
+                  <Text style={{ fontSize: 13, fontWeight: "700", color: theme.primaryContrast ?? "#ffffff" }}>Browse Discover</Text>
                 </TouchableOpacity>
               </View>
             ) : feedTab === "discover" ? (

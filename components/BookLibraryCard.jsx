@@ -400,22 +400,12 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
                 elevation: 6,
               }}
             >
-              <LoaderKit
-                style={{ width: 18, height: 18, marginRight: 10 }}
-                name="LineScalePulseOutRapid"
-                color={theme.primary}
-              />
+              <LoaderKit style={{ width: 18, height: 18, marginRight: 10 }} name="LineScalePulseOutRapid" color={theme.primary} />
               <View>
-                <Text
-                  className="font-bold"
-                  style={{ color: "#FFFFFF", fontSize: 12, letterSpacing: 0.4, textTransform: "uppercase" }}
-                >
+                <Text className="font-bold" style={{ color: "#FFFFFF", fontSize: 12, letterSpacing: 0.4, textTransform: "uppercase" }}>
                   Downloading
                 </Text>
-                <Text
-                  className="font-medium"
-                  style={{ color: "rgba(229, 231, 245, 0.7)", fontSize: 10, letterSpacing: 0.2, marginTop: 1 }}
-                >
+                <Text className="font-medium" style={{ color: "rgba(229, 231, 245, 0.7)", fontSize: 10, letterSpacing: 0.2, marginTop: 1 }}>
                   Saving for offline reading…
                 </Text>
               </View>
@@ -501,18 +491,10 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
           {/* Book Details */}
           <View className="flex-1 justify-between">
             <View>
-              <Text
-                className="font-bold"
-                style={{ color: theme.text, fontSize: 15, lineHeight: 19, letterSpacing: 0.1 }}
-                numberOfLines={2}
-              >
+              <Text className="font-bold" style={{ color: theme.text, fontSize: 15, lineHeight: 19, letterSpacing: 0.1 }} numberOfLines={2}>
                 {item?.title || "Untitled"}
               </Text>
-              <Text
-                className="mt-1 text-[12px]"
-                style={{ color: theme.textMuted, lineHeight: 16 }}
-                numberOfLines={2}
-              >
+              <Text className="mt-1 text-[12px]" style={{ color: theme.textMuted, lineHeight: 16 }} numberOfLines={2}>
                 {item?.synopsis || "No synopsis available."}
               </Text>
 
@@ -531,10 +513,7 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
                     }}
                   >
                     <Ionicons name="download" size={10} color={theme.accentGreen} />
-                    <Text
-                      className="ml-1 text-[9px] font-bold"
-                      style={{ color: theme.accentGreen, letterSpacing: 0.4, textTransform: "uppercase" }}
-                    >
+                    <Text className="ml-1 text-[9px] font-bold" style={{ color: theme.accentGreen, letterSpacing: 0.4, textTransform: "uppercase" }}>
                       Offline
                     </Text>
                   </View>

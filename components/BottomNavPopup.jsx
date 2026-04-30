@@ -6,6 +6,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import useIsOffline from "../hooks/useIsOffline";
+// Phase E.9 — tier-aware image transform.
+import { optimizedImageUri } from "../lib/utils/image-source";
 
 const BottomNavPopup = ({ handlePlusPress }) => {
   const { theme } = useAppTheme();
@@ -52,7 +54,7 @@ const BottomNavPopup = ({ handlePlusPress }) => {
           className="mb-2 w-[49%] flex-row items-center rounded-[10px] px-1.5 py-4 shadow-sm"
           style={{ backgroundColor: theme.card }}
         >
-          <FastImage source={{ uri: user?.avatar }} className="h-10 w-10 rounded-full" resizeMode="cover" />
+          <FastImage source={{ uri: optimizedImageUri(user?.avatar, { width: 40 }) }} className="h-10 w-10 rounded-full" resizeMode="cover" />
           <View className="flex-1 pl-2">
             <Text className="text-[13px] font-semibold" style={{ color: theme.text }}>
               Create a post

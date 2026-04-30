@@ -6,6 +6,8 @@ import images from "../../assets/images";
 import { StyledButton, StyledFormField, StyledKeyboardAvoidingView, StyledSafeAreaView, SubmitLoadingOverlay } from "../../components";
 import useAppTheme from "../../hooks/useAppTheme";
 import { updateRecoveryUser } from "../../lib/appwrite";
+import { USE_SUPABASE_AUTH } from "../../lib/feature-flags";
+import { updatePasswordFromRecovery as supabaseUpdatePasswordFromRecovery } from "../../lib/supabase-auth";
 
 const normalizeRouteParam = (value) => {
   if (Array.isArray(value)) return value[0] || "";
@@ -39,10 +41,40 @@ const ResetPassword = () => {
     }
     setSubmitting(true);
     try {
-      await updateRecoveryUser(userId, secret, form.newPassword, form.confirmPassword);
+      // Phase B.3 — gated by USE_SUPABASE_AUTH.
+      //
+      // Path difference between the two providers:
+      //   Appwrite — the recovery URL embeds userId + secret query params,
+      //   the screen reads them, and updateRecoveryUser submits both back
+      //   to Appwrite to verify the link before applying the new password.
+      //
+      //   Supabase — the recovery email link, when opened on a device with
+      //   the app installed, lands the user in a brief "recovery" auth
+      //   session (token in the URL fragment, exchanged automatically by
+      //   the supabase-js client). updatePasswordFromRecovery then writes
+      //   the new password against that session via supabase.auth.updateUser
+      //   — no userId/secret needed because the session itself is the proof.
+      //   The link-verification.jsx deep-link handler is responsible for
+      //   feeding the recovery token into supabase.auth.setSession before
+      //   this screen mounts. (Phase B handles that wiring.)
+      if (USE_SUPABASE_AUTH) {
+        await supabaseUpdatePasswordFromRecovery(form.newPassword);
+      } else {
+        await updateRecoveryUser(userId, secret, form.newPassword, form.confirmPassword);
+      }
       Alert.alert("Success", "Your password has been reset");
       router.replace("/sign-in");
     } catch (error) {
+      // Typed Supabase error means the recovery session expired. Bounce
+      // the user to the forgot-password screen so they can request a fresh
+      // link rather than getting stuck on a generic "auth error" Alert.
+      if (error?.name === "RECOVERY_SESSION_MISSING") {
+        Alert.alert("Reset link expired", error.message, [
+          { text: "Cancel", style: "cancel" },
+          { text: "Request new link", onPress: () => router.replace("/forgot-password") },
+        ]);
+        return;
+      }
       Alert.alert("Recovery Error", error.message);
     } finally {
       setSubmitting(false);

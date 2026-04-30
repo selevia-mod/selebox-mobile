@@ -791,10 +791,7 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
               limit: 30,
               // Preserve cross-tab exclusion (books on Popular still won't show here).
               // Only relax diversity caps to find more eligible candidates.
-              excludedBookIds: new Set([
-                ...popularTopIds,
-                ...trendingPrimaryList.map((item) => resolveBookId(item)).filter(Boolean),
-              ]),
+              excludedBookIds: new Set([...popularTopIds, ...trendingPrimaryList.map((item) => resolveBookId(item)).filter(Boolean)]),
               maxPerAuthor: 3,
               maxPerTag: 6,
             }),
@@ -943,13 +940,7 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
       return engagement + freshnessLift * 2 + quality + log1pSafe(reads) * 0.25;
     });
 
-    const dailyPicksExcluded = new Set([
-      ...popularTopIds,
-      ...trendingTopIds,
-      ...newRisingTopIds,
-      ...readersChoiceTopIds,
-      ...hiddenGemTopIds,
-    ]);
+    const dailyPicksExcluded = new Set([...popularTopIds, ...trendingTopIds, ...newRisingTopIds, ...readersChoiceTopIds, ...hiddenGemTopIds]);
     const dailyPicksPrimaryList = selectDiverseFromScored({
       scored: dailyPicksScored,
       limit: 30,
@@ -1081,13 +1072,7 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
   }, []);
 
   const renderDiscoverGridCard = (cardItem) => (
-    <DiscoverGridCard
-      key={cardItem.id}
-      cardItem={cardItem}
-      cardWidth={gridCardWidth}
-      cardHeight={gridCardHeight}
-      onPressBook={handlePressBook}
-    />
+    <DiscoverGridCard key={cardItem.id} cardItem={cardItem} cardWidth={gridCardWidth} cardHeight={gridCardHeight} onPressBook={handlePressBook} />
   );
 
   const renderPickCard = ({ item }) => <DiscoverPickCard item={item} onPressBook={handlePressBook} />;

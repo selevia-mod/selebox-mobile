@@ -112,7 +112,7 @@ const useCommentReactionState = ({ initialLiked = false } = {}) => {
   );
 
   const activeReaction = userReactionKey ? getReactionByKey(userReactionKey) : null;
-  const pickerActiveKey = pickerTargetId === null ? userReactionKey : replyReactions[pickerTargetId] ?? null;
+  const pickerActiveKey = pickerTargetId === null ? userReactionKey : (replyReactions[pickerTargetId] ?? null);
 
   return {
     // State

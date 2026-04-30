@@ -217,10 +217,7 @@ const Notification = () => {
     return notificationsLoading ? (
       <View>
         {[...Array(8)].map((_, index) => (
-          <View
-            key={index}
-            style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12 }}
-          >
+          <View key={index} style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12 }}>
             <AnimatedSkeleton className="h-11 w-11 rounded-full" />
             <View style={{ marginLeft: 12, flex: 1 }}>
               <AnimatedSkeleton className="h-3.5 rounded-md" style={{ width: Math.max(getRandomSkeletonWidth() - 40, 160) }} />
@@ -231,10 +228,7 @@ const Notification = () => {
       </View>
     ) : (
       <View className="flex-1 items-center justify-center px-6 py-16">
-        <View
-          className="items-center rounded-3xl px-6 py-8"
-          style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}
-        >
+        <View className="items-center rounded-3xl px-6 py-8" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
           <View className="h-16 w-16 items-center justify-center rounded-2xl" style={{ backgroundColor: theme.surfaceMuted }}>
             <FontAwesome name="bell" size={30} color={theme.icon} />
           </View>
@@ -287,11 +281,7 @@ const Notification = () => {
               </View>
             </View>
             {unreadCount > 0 ? (
-              <TouchableOpacity
-                onPress={handleMarkAllAsViewed}
-                disabled={markingAllViewed}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
+              <TouchableOpacity onPress={handleMarkAllAsViewed} disabled={markingAllViewed} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 {markingAllViewed ? (
                   <ActivityIndicator size="small" color={theme.primary} />
                 ) : (
@@ -334,7 +324,7 @@ const Notification = () => {
                       fontSize: 13,
                       fontWeight: isActive ? "700" : "500",
                       letterSpacing: 0.1,
-                      color: isActive ? theme.primaryContrast ?? "#ffffff" : theme.textMuted ?? theme.text,
+                      color: isActive ? (theme.primaryContrast ?? "#ffffff") : (theme.textMuted ?? theme.text),
                     }}
                   >
                     {tab.label}
@@ -355,37 +345,37 @@ const Notification = () => {
           {filteredNotifications.length === 0 ? (
             renderListEmptyComponent()
           ) : (
-          <FlashList
-            data={filteredNotifications}
-            refreshing={refreshing}
-            estimatedItemSize={72}
-            keyExtractor={(item) => item.$id}
-            showsVerticalScrollIndicator={false}
-            renderItem={renderItem}
-            onRefresh={onRefresh}
-            onEndReached={fetchMoreNotification}
-            contentContainerStyle={{
-              paddingBottom: 24,
-              paddingTop: 4,
-            }}
-            ListFooterComponent={
-              isFetchingMore ? (
-                <View className="items-center py-4">
-                  <ActivityIndicator size="small" color={theme.primary} />
-                </View>
-              ) : null
-            }
-            refreshControl={
-              <RefreshControl
-                tintColor={theme.primary}
-                titleColor={theme.primary}
-                colors={[theme.primary]}
-                progressBackgroundColor={theme.surface}
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-              />
-            }
-          />
+            <FlashList
+              data={filteredNotifications}
+              refreshing={refreshing}
+              estimatedItemSize={72}
+              keyExtractor={(item) => item.$id}
+              showsVerticalScrollIndicator={false}
+              renderItem={renderItem}
+              onRefresh={onRefresh}
+              onEndReached={fetchMoreNotification}
+              contentContainerStyle={{
+                paddingBottom: 24,
+                paddingTop: 4,
+              }}
+              ListFooterComponent={
+                isFetchingMore ? (
+                  <View className="items-center py-4">
+                    <ActivityIndicator size="small" color={theme.primary} />
+                  </View>
+                ) : null
+              }
+              refreshControl={
+                <RefreshControl
+                  tintColor={theme.primary}
+                  titleColor={theme.primary}
+                  colors={[theme.primary]}
+                  progressBackgroundColor={theme.surface}
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                />
+              }
+            />
           )}
         </View>
       </View>

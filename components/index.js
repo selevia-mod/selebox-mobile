@@ -44,11 +44,12 @@ import ImageViewer from "./ImageViewer";
 import LinkPreviewCard from "./LinkPreviewCard";
 import Loader from "./Loader";
 import MainScreensHeader from "./MainScreensHeader";
-import MessageAddUserModal from "./MessageAddUserModal";
-import MessageAvatars from "./MessageAvatars";
-import MessageBubble from "./MessageBubble";
-import MessageInputSection from "./MessageInputSection";
-import MessageSettingModal from "./MessageSettingModal";
+// Stream-Chat-flavored DM components removed in Phase D — chat is now
+// Supabase-native via SupabaseConversationsList / SupabaseThread /
+// SupabaseNewChat. The deleted exports were:
+//   MessageAddUserModal, MessageAvatars, MessageBubble,
+//   MessageInputSection, MessageSettingModal, StreamChatLoader,
+//   StackedAvatars
 import MusicPickerModal from "./MusicPickerModal";
 import NotificationCard from "./NotificationCard";
 import PaymentBreakdownEarnings from "./PaymentBreakdownEarnings";
@@ -168,11 +169,6 @@ export {
   LinkPreviewCard,
   Loader,
   MainScreensHeader,
-  MessageAddUserModal,
-  MessageAvatars,
-  MessageBubble,
-  MessageInputSection,
-  MessageSettingModal,
   MusicPickerModal,
   NotificationCard,
   PaymentBreakdownEarnings,

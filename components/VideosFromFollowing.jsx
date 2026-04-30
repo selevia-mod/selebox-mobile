@@ -52,22 +52,13 @@ const VideosFromFollowing = ({ videos = [] }) => {
             justifyContent: "center",
           }}
         >
-          <View
-            className="h-14 w-14 items-center justify-center rounded-full"
-            style={{ backgroundColor: theme.primarySoft }}
-          >
+          <View className="h-14 w-14 items-center justify-center rounded-full" style={{ backgroundColor: theme.primarySoft }}>
             <MaterialCommunityIcons name="account-heart-outline" size={28} color={theme.primary} />
           </View>
-          <Text
-            className="mt-4 text-center text-base font-bold"
-            style={{ color: theme.text, letterSpacing: 0.2 }}
-          >
+          <Text className="mt-4 text-center text-base font-bold" style={{ color: theme.text, letterSpacing: 0.2 }}>
             Follow creators you love
           </Text>
-          <Text
-            className="mt-1.5 text-center text-sm"
-            style={{ color: theme.textSoft, maxWidth: 280 }}
-          >
+          <Text className="mt-1.5 text-center text-sm" style={{ color: theme.textSoft, maxWidth: 280 }}>
             Their newest videos will land right here so you never miss what you're into.
           </Text>
           <View

@@ -11,15 +11,33 @@ import { isBookDownloaded, upsertDownloadedChapter } from "../lib/book-downloads
 import { BookUnlocksService } from "../lib/book-unlocks";
 import { BookService, isIntroductionChapter } from "../lib/books";
 import { useModalMessage } from "../hooks/useModalMessage";
+import { USE_SUPABASE_WALLET } from "../lib/feature-flags";
+// Phase F.6 — Supabase chapter unlocks. When the flag is on, chapter
+// + bulk-book unlocks route through Supabase atomic RPCs. The web
+// uses the same RPCs, so balances + unlocks stay in sync.
+import { unlockContent, unlockBookBulk } from "../lib/wallet-supabase";
 import CustomAlertModal from "./CustomAlertModal";
 import StarIcon from "./StarIcon";
 
+// UUID v4 shape — used to safely route to Supabase RPCs only when the
+// book/chapter ID is a real UUID. Books that haven't been migrated
+// from Appwrite yet have 24-char hex IDs that would fail the RPC's
+// uuid parse; we fall back to the Appwrite unlock path for those.
+const SUPABASE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const BalanceItem = ({ label, icon, value, theme }) => (
   <View className="mx-4 mt-4 flex-row items-center justify-between">
-    <Text className="text-base font-bold" style={{ color: theme.text }}>{label}</Text>
-    <View className="flex-row items-center space-x-2 rounded-full border px-3 py-1" style={{ borderColor: theme.borderStrong, backgroundColor: theme.surfaceMuted }}>
+    <Text className="text-base font-bold" style={{ color: theme.text }}>
+      {label}
+    </Text>
+    <View
+      className="flex-row items-center space-x-2 rounded-full border px-3 py-1"
+      style={{ borderColor: theme.borderStrong, backgroundColor: theme.surfaceMuted }}
+    >
       {icon}
-      <Text className="text-base font-bold" style={{ color: theme.text }}>{value}</Text>
+      <Text className="text-base font-bold" style={{ color: theme.text }}>
+        {value}
+      </Text>
     </View>
   </View>
 );
@@ -35,12 +53,20 @@ const UnlockOption = ({ label, subLabel, icon, cost, onPress, badge, loading = f
       <View className="mb-1 flex-row items-center space-x-2">
         {badge && (
           <View className="rounded-full px-2 py-0.5" style={{ backgroundColor: theme.primaryContrast }}>
-            <Text className="text-xs font-bold" style={{ color: theme.textInverse }}>{badge}</Text>
+            <Text className="text-xs font-bold" style={{ color: theme.textInverse }}>
+              {badge}
+            </Text>
           </View>
         )}
-        <Text className="text-base font-semibold" style={{ color: theme.text }}>{label}</Text>
+        <Text className="text-base font-semibold" style={{ color: theme.text }}>
+          {label}
+        </Text>
       </View>
-      {subLabel && <Text className="text-sm" style={{ color: theme.textSoft }}>{subLabel}</Text>}
+      {subLabel && (
+        <Text className="text-sm" style={{ color: theme.textSoft }}>
+          {subLabel}
+        </Text>
+      )}
     </View>
 
     <View className="flex-row items-center space-x-2">
@@ -49,7 +75,9 @@ const UnlockOption = ({ label, subLabel, icon, cost, onPress, badge, loading = f
       ) : (
         <>
           {icon}
-          <Text className="text-base font-semibold" style={{ color: theme.coin }}>{cost}</Text>
+          <Text className="text-base font-semibold" style={{ color: theme.coin }}>
+            {cost}
+          </Text>
           <Ionicons name="chevron-forward" size={18} color={theme.textSubtle} />
         </>
       )}
@@ -125,16 +153,60 @@ const BookChaptersUnlockModal = ({
     confirmUnlock(type, unlockAll ? "Book" : "Chapter", cost, async () => {
       try {
         setUnlockLoading(tempType);
-        await bookUnlockService.unlockBook({
-          bookId: book.$id,
-          chapterId: selectedChapter.$id,
-          userId: user.$id,
-          type: type,
-          contentOwnerId: book.uploader,
-          unlockAll,
-        });
-        await refetchBalance(user.$id);
-        await refetchStars();
+        // Phase F.6 — Supabase atomic unlock path. Server enforces
+        // balance + idempotency + creates the unlocks row(s) all in
+        // one transaction. Currency normalizes from the legacy
+        // "coins"/"stars" labels to the singular form the RPC expects.
+        //
+        // Books are not yet migrated to Supabase (Phase G future work),
+        // so the IDs are still Appwrite-shaped 24-char hex strings.
+        // The unlock RPCs expect UUIDs. Until books migrate, we
+        // detect the ID shape and fall back to the Appwrite path —
+        // that keeps Supabase wallet flag-on safe for users today
+        // without breaking chapter unlocks.
+        const targetId = unlockAll ? book?.$id : selectedChapter?.$id;
+        const isSupabaseTargetId = typeof targetId === "string" && SUPABASE_UUID_RE.test(targetId);
+        if (USE_SUPABASE_WALLET && isSupabaseTargetId) {
+          const currency = type === EarningType.coins ? "coin" : "star";
+          let rpc;
+          try {
+            rpc = unlockAll
+              ? await unlockBookBulk({ bookId: book.$id, currency })
+              : await unlockContent({ targetType: "chapter", targetId: selectedChapter.$id, currency });
+          } catch (rpcError) {
+            console.log("Supabase chapter/book unlock RPC threw:", rpcError?.message);
+            showMessage(rpcError?.message || "Unlock failed — please try again.");
+            setUnlockLoading(undefined);
+            return;
+          }
+          if (!rpc?.ok) {
+            const reason =
+              rpc?.error === "insufficient_balance"
+                ? `Insufficient ${type}`
+                : rpc?.error === "kyc_not_approved"
+                  ? "KYC must be approved first."
+                  : rpc?.error || "Unlock failed";
+            showMessage(reason);
+            setUnlockLoading(undefined);
+            return;
+          }
+          // Realtime wallet subscription will push the new balance.
+          // refetchBalance also updates star_balance from the same
+          // wallet row, so refetchStars would be redundant on
+          // Supabase — skip it.
+          await refetchBalance(user.$id);
+        } else {
+          await bookUnlockService.unlockBook({
+            bookId: book.$id,
+            chapterId: selectedChapter.$id,
+            userId: user.$id,
+            type: type,
+            contentOwnerId: book.uploader,
+            unlockAll,
+          });
+          await refetchBalance(user.$id);
+          await refetchStars();
+        }
         if (isBookDownloaded(book?.$id)) {
           let chapterToSave = selectedChapter;
           if (!chapterToSave?.content) {
@@ -175,7 +247,9 @@ const BookChaptersUnlockModal = ({
           {/* Header */}
           <View className="flex-row items-center justify-between border-b px-4 py-3" style={{ borderColor: theme.border }}>
             <View>
-              <Text className="text-lg font-semibold" style={{ color: theme.text }}>{selectedChapter?.title}</Text>
+              <Text className="text-lg font-semibold" style={{ color: theme.text }}>
+                {selectedChapter?.title}
+              </Text>
               <Text style={{ color: theme.textSoft }}>{remainingLockedParts} parts remaining</Text>
             </View>
             <TouchableOpacity disabled={unlockLoading !== undefined} onPress={onClose}>
@@ -185,9 +259,14 @@ const BookChaptersUnlockModal = ({
 
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 30 }}>
             {/* Banner */}
-            <View className="m-4 items-center rounded-xl px-4 py-2" style={{ backgroundColor: theme.accentPurpleSoft, borderWidth: 1, borderColor: theme.accentPurple }}>
+            <View
+              className="m-4 items-center rounded-xl px-4 py-2"
+              style={{ backgroundColor: theme.accentPurpleSoft, borderWidth: 1, borderColor: theme.accentPurple }}
+            >
               <FastImage className="mt-[-10] h-20 w-20" source={images.logo} resizeMode={FastImage.resizeMode.stretch} />
-              <Text className="mt-[-10] text-center text-base font-bold" style={{ color: theme.text }}>Selebox Originals</Text>
+              <Text className="mt-[-10] text-center text-base font-bold" style={{ color: theme.text }}>
+                Selebox Originals
+              </Text>
             </View>
 
             {/* Divider */}
@@ -210,8 +289,12 @@ const BookChaptersUnlockModal = ({
               style={{ backgroundColor: theme.dangerSoft, borderWidth: 1, borderColor: theme.danger }}
             >
               <View>
-                <Text className="font-semibold" style={{ color: theme.danger }}>Not enough Coins or Stars.</Text>
-                <Text className="mt-1 text-sm" style={{ color: theme.danger }}>Tap to earn or buy more.</Text>
+                <Text className="font-semibold" style={{ color: theme.danger }}>
+                  Not enough Coins or Stars.
+                </Text>
+                <Text className="mt-1 text-sm" style={{ color: theme.danger }}>
+                  Tap to earn or buy more.
+                </Text>
               </View>
               <FontAwesome name="chevron-right" size={20} color={theme.icon} />
             </TouchableOpacity>

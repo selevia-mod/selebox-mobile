@@ -23,6 +23,10 @@ import VideosDownload from "../../components/VideosDownload";
 import VideosPlaylist from "../../components/VideosPlaylist";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
+// Phase E.10 — tier-tuned FlashList window for the Videos tab.
+import { getFlashListConfig } from "../../lib/device-tier";
+
+const { height: VIDEOS_SCREEN_HEIGHT } = Dimensions.get("window");
 import useResetOnBlur from "../../hooks/useResetOnBlur";
 import { ShuffleVideos } from "../../lib/appwrite";
 import { FollowService } from "../../lib/follows";
@@ -119,6 +123,9 @@ const Videos = () => {
   const [videosLoading, setVideosLoading] = useState(true);
   const [videosSections, setVideosSections] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
+  // Phase E.10 — tier-tuned FlashList window. Memoized so prop identity
+  // is stable across re-renders (FlashList re-lays-out on prop changes).
+  const flashListConfig = useMemo(() => getFlashListConfig({ screenHeight: VIDEOS_SCREEN_HEIGHT }), []);
   useResetOnBlur(setRefreshing);
   const [mostPeopleWant, setMostPeopleWant] = useState([]);
   const [fromFollowing, setFromFollowing] = useState([]);
@@ -185,7 +192,6 @@ const Videos = () => {
 
     generateSections();
   }, [globalSettings]);
-
 
   const loadVideosData = useCallback(
     async ({ showLoader = true } = {}) => {
@@ -526,7 +532,7 @@ const Videos = () => {
                       fontSize: 13,
                       fontWeight: isActive ? "700" : "500",
                       letterSpacing: 0.1,
-                      color: isActive ? theme.primaryContrast ?? "#ffffff" : theme.textMuted ?? theme.text,
+                      color: isActive ? (theme.primaryContrast ?? "#ffffff") : (theme.textMuted ?? theme.text),
                     }}
                   >
                     {title}
@@ -553,6 +559,9 @@ const Videos = () => {
                     getItemType={getItemType}
                     contentContainerStyle={{ paddingHorizontal: 12 }}
                     estimatedItemSize={SECTION_ESTIMATED_HEIGHT}
+                    drawDistance={flashListConfig.drawDistance}
+                    removeClippedSubviews={flashListConfig.removeClippedSubviews}
+                    onEndReachedThreshold={flashListConfig.onEndReachedThreshold}
                     ItemSeparatorComponent={SectionSeparator}
                     showsVerticalScrollIndicator={false}
                     onScroll={handleScroll}

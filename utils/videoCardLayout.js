@@ -13,14 +13,7 @@ export const getSectionTitleHeight = () => {
   return lineHeight + SECTION_TITLE_PADDING_Y * 2;
 };
 
-export const getVideoCardLayout = ({
-  cardWidth,
-  aspectRatio = 0.59,
-  avatarSize = 40,
-  fontSize = 14,
-  titleLines = 2,
-  metaLines = 2,
-} = {}) => {
+export const getVideoCardLayout = ({ cardWidth, aspectRatio = 0.59, avatarSize = 40, fontSize = 14, titleLines = 2, metaLines = 2 } = {}) => {
   const fontScale = PixelRatio.getFontScale?.() ?? 1;
   const scaledFontSize = Math.round(fontSize * fontScale);
   const titleLineHeight = Math.round(scaledFontSize * 1.35);

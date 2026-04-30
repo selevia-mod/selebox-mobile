@@ -11,6 +11,7 @@ import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import { useRewardedStar } from "../../hooks/useRewardedStars";
 import { getCoinPacks, updateUserCoins } from "../../lib/appwrite";
+import { USE_SUPABASE_WALLET } from "../../lib/feature-flags";
 import secrets from "../../private/secrets";
 
 const StoreSkeleton = () => {
@@ -187,7 +188,15 @@ const Store = () => {
           purchase: purchase,
           isConsumable: true,
         });
-        await updateUserCoins(user.$id, balance + coins);
+        // Phase F.7 — On Supabase mode, the IAP webhook on the server
+        // credits the wallet row directly (server-authoritative —
+        // matches the StoreKit / Play Billing notification flow).
+        // We skip the Appwrite client-side coin write to avoid
+        // double-crediting and let the realtime wallet subscription
+        // pick up the new balance.
+        if (!USE_SUPABASE_WALLET) {
+          await updateUserCoins(user.$id, balance + coins);
+        }
         await refetchBalance(user.$id);
       }
     } catch (error) {
@@ -202,6 +211,19 @@ const Store = () => {
     try {
       if (price < 20) {
         Alert.alert("Invalid Price", "The price must be greater than ₱20 to process the payment.");
+        return;
+      }
+      // Phase F.7 caveat — Android HitPay flow points at an Appwrite
+      // webhook URL. When USE_SUPABASE_WALLET is on but the webhook
+      // hasn't been migrated to credit Supabase wallets, paid coins
+      // would land in Appwrite where the topbar pill no longer reads
+      // from. Until the webhook is migrated, surface a clear error
+      // instead of letting the user pay and then see no balance.
+      if (USE_SUPABASE_WALLET) {
+        Alert.alert(
+          "Android coin top-up coming soon",
+          "We're upgrading the payment flow on Android. Please check back shortly — your existing balance is unaffected.",
+        );
         return;
       }
       const response = await axios.post(

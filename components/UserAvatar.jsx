@@ -1,6 +1,13 @@
 import { Text, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import useAppTheme from "../hooks/useAppTheme";
+// Phase E.4 — tier-aware image source. Avatars are rendered everywhere
+// (feed cards, comments, message rows, profile lists), so optimizing
+// them at the source has the broadest reach for a tiny diff. The
+// helper appends Bunny Optimizer ?width&quality params on Bunny URLs
+// (no-op on others) so low-tier devices decode smaller bitmaps for
+// the same on-screen tile.
+import { optimizedImageUri } from "../lib/utils/image-source";
 
 // Returns true when the URI is a non-empty string. Empty strings, null, undefined,
 // and non-string values all fall through to the monogram fallback.
@@ -23,14 +30,7 @@ const getInitials = (name) => {
 
 // Deterministic color picker — same name always picks the same palette slot.
 const getMonogramColor = (name, theme) => {
-  const palette = [
-    theme.primary,
-    theme.accentTeal,
-    theme.accentPink,
-    theme.accentBlue,
-    theme.accentGreen,
-    theme.accentAmber,
-  ];
+  const palette = [theme.primary, theme.accentTeal, theme.accentPink, theme.accentBlue, theme.accentGreen, theme.accentAmber];
   if (!name || typeof name !== "string") return palette[0];
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
@@ -59,16 +59,7 @@ const getMonogramColor = (name, theme) => {
  *                   when the avatar IS the focus (profile header, full-screen).
  *   - style       : object. Additional style overrides for the outer container.
  */
-const UserAvatar = ({
-  name,
-  avatarUri,
-  size = 48,
-  borderRadius = 12,
-  borderColor = null,
-  priority = "normal",
-  style,
-  ...rest
-}) => {
+const UserAvatar = ({ name, avatarUri, size = 48, borderRadius = 12, borderColor = null, priority = "normal", style, ...rest }) => {
   const { theme } = useAppTheme();
   const showPhoto = hasValidAvatar(avatarUri);
   const monogramColor = getMonogramColor(name, theme);
@@ -87,15 +78,14 @@ const UserAvatar = ({
   ];
 
   if (showPhoto) {
-    const fastImagePriority =
-      priority === "low"
-        ? FastImage.priority.low
-        : priority === "high"
-        ? FastImage.priority.high
-        : FastImage.priority.normal;
+    const fastImagePriority = priority === "low" ? FastImage.priority.low : priority === "high" ? FastImage.priority.high : FastImage.priority.normal;
+    // We use optimizedImageUri (URL transform only) instead of
+    // optimizedImageSource (URL + priority) so the caller's explicit
+    // `priority` prop is preserved — profile headers passing
+    // priority="high" should still win over the helper's tier default.
     return (
       <FastImage
-        source={{ uri: avatarUri, priority: fastImagePriority }}
+        source={{ uri: optimizedImageUri(avatarUri, { width: size }), priority: fastImagePriority }}
         style={[...containerStyle, { backgroundColor: theme.surfaceMuted }]}
         resizeMode={FastImage.resizeMode.cover}
         accessibilityLabel={`${name || "User"} avatar`}
@@ -106,16 +96,11 @@ const UserAvatar = ({
 
   return (
     <View
-      style={[
-        ...containerStyle,
-        { backgroundColor: monogramColor, alignItems: "center", justifyContent: "center" },
-      ]}
+      style={[...containerStyle, { backgroundColor: monogramColor, alignItems: "center", justifyContent: "center" }]}
       accessibilityLabel={`${name || "User"} avatar`}
       {...rest}
     >
-      <Text style={{ color: theme.primaryContrast, fontSize, fontWeight: "700" }}>
-        {getInitials(name)}
-      </Text>
+      <Text style={{ color: theme.primaryContrast, fontSize, fontWeight: "700" }}>{getInitials(name)}</Text>
     </View>
   );
 };

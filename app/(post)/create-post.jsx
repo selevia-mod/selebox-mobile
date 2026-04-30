@@ -354,12 +354,7 @@ const CreatePost = () => {
                       elevation: tab.active ? 4 : 0,
                     }}
                   >
-                    <Ionicons
-                      name={tab.icon}
-                      size={14}
-                      color={tab.active ? theme.primaryContrast : theme.iconMuted}
-                      style={{ marginRight: 6 }}
-                    />
+                    <Ionicons name={tab.icon} size={14} color={tab.active ? theme.primaryContrast : theme.iconMuted} style={{ marginRight: 6 }} />
                     <Text
                       className="font-sans"
                       style={{

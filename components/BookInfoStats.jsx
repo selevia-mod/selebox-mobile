@@ -223,13 +223,25 @@ const BookInfoStats = ({
           <>
             <TouchableOpacity disabled={true} className="flex-1 items-center">
               <Ionicons name={"eye-outline"} size={20} color={theme.iconMuted} />
-              <Text className="text-sm font-bold" style={{ color: theme.textMuted }}>{FormatNumber(readTotal ?? 0)}</Text>
-              <Text className="text-xs" style={{ color: theme.textSoft }}>Reads</Text>
+              <Text className="text-sm font-bold" style={{ color: theme.textMuted }}>
+                {FormatNumber(readTotal ?? 0)}
+              </Text>
+              <Text className="text-xs" style={{ color: theme.textSoft }}>
+                Reads
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity disabled={disableActions} onPress={handleLike} className="flex-1 items-center">
-              <Ionicons name={`${sharedStats.liked ? "heart" : "heart-outline"}`} size={20} color={sharedStats.liked ? theme.like : theme.iconMuted} />
-              <Text className="text-sm font-bold" style={{ color: theme.textMuted }}>{FormatNumber(sharedStats.likeCount ?? 0)}</Text>
-              <Text className="text-xs" style={{ color: theme.textSoft }}>Hearts</Text>
+              <Ionicons
+                name={`${sharedStats.liked ? "heart" : "heart-outline"}`}
+                size={20}
+                color={sharedStats.liked ? theme.like : theme.iconMuted}
+              />
+              <Text className="text-sm font-bold" style={{ color: theme.textMuted }}>
+                {FormatNumber(sharedStats.likeCount ?? 0)}
+              </Text>
+              <Text className="text-xs" style={{ color: theme.textSoft }}>
+                Hearts
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity
               disabled={disableActions}
@@ -241,18 +253,34 @@ const BookInfoStats = ({
               className="flex-1 items-center"
             >
               <Ionicons name="chatbubble-outline" size={20} color={theme.iconMuted} />
-              <Text className="text-sm font-bold" style={{ color: theme.textMuted }}>{FormatNumber(sharedStats.commentCount ?? 0)}</Text>
-              <Text className="text-xs" style={{ color: theme.textSoft }}>Comments</Text>
+              <Text className="text-sm font-bold" style={{ color: theme.textMuted }}>
+                {FormatNumber(sharedStats.commentCount ?? 0)}
+              </Text>
+              <Text className="text-xs" style={{ color: theme.textSoft }}>
+                Comments
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity disabled={disableActions} onPress={() => setReadingListModalVisible(true)} className="flex-1 items-center">
-              <MaterialIcons name={`${bookmarked ? "bookmark-added" : "bookmark-add"}`} size={20} color={bookmarked ? theme.accentPurple : theme.iconMuted} />
-              <Text className="text-sm font-bold" style={{ color: theme.textMuted }}>{FormatNumber(bookmarkTotal ?? 0)}</Text>
-              <Text className="text-xs" style={{ color: theme.textSoft }}>Saves</Text>
+              <MaterialIcons
+                name={`${bookmarked ? "bookmark-added" : "bookmark-add"}`}
+                size={20}
+                color={bookmarked ? theme.accentPurple : theme.iconMuted}
+              />
+              <Text className="text-sm font-bold" style={{ color: theme.textMuted }}>
+                {FormatNumber(bookmarkTotal ?? 0)}
+              </Text>
+              <Text className="text-xs" style={{ color: theme.textSoft }}>
+                Saves
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={toggleChaptersVisible} className="flex-1 items-center">
               <Ionicons name="list-outline" size={20} color={theme.iconMuted} />
-              <Text className="text-sm font-bold" style={{ color: theme.textMuted }}>{chaptersTotal}</Text>
-              <Text className="text-xs" style={{ color: theme.textSoft }}>Parts</Text>
+              <Text className="text-sm font-bold" style={{ color: theme.textMuted }}>
+                {chaptersTotal}
+              </Text>
+              <Text className="text-xs" style={{ color: theme.textSoft }}>
+                Parts
+              </Text>
             </TouchableOpacity>
           </>
         )}

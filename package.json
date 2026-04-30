@@ -30,6 +30,7 @@
     "@react-navigation/native": "^7.0.14",
     "@reduxjs/toolkit": "^2.10.1",
     "@shopify/flash-list": "^1.8.3",
+    "@supabase/supabase-js": "^2.45.4",
     "axios": "^1.9.0",
     "axis": "^1.0.0",
     "buffer": "^6.0.3",
@@ -101,9 +102,7 @@
     "react-native-webview": "13.12.5",
     "react-redux": "^9.2.0",
     "redux-persist": "^6.0.0",
-    "redux-thunk": "^3.1.0",
-    "stream-chat": "^9.15.0",
-    "stream-chat-expo": "^8.3.3"
+    "redux-thunk": "^3.1.0"
   },
   "devDependencies": {
     "@babel/core": "^7.26.10",

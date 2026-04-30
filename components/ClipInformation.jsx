@@ -9,6 +9,8 @@ import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import FormatNumber from "../lib/utils/format-number";
 import useIsOffline from "../hooks/useIsOffline";
+// Phase E.9 — tier-aware image transform.
+import { optimizedImageUri } from "../lib/utils/image-source";
 import StyledDivider from "./StyledDivider";
 
 const BOTTOM_TAB_BAR_HEIGHT = Platform.OS === "ios" ? 83 : 50;
@@ -111,7 +113,7 @@ const ClipInformation = ({ item, onCommentPress, onSharePress, showControls, var
           {/* Avatar and uploader name */}
           <TouchableOpacity activeOpacity={0.7} onPress={handleCreatorProfilePressed}>
             <View className="mb-1 flex-row items-center">
-              <FastImage source={{ uri: item?.uploader?.avatar }} className="mr-2 h-9 w-9 rounded-full" />
+              <FastImage source={{ uri: optimizedImageUri(item?.uploader?.avatar, { width: 36 }) }} className="mr-2 h-9 w-9 rounded-full" />
               <Text
                 className="font-semibold"
                 style={{

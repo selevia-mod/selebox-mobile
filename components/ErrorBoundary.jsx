@@ -52,9 +52,7 @@ class ErrorBoundary extends Component {
         <View style={styles.inner}>
           <Text style={styles.emoji}>⚠️</Text>
           <Text style={styles.title}>Something went wrong</Text>
-          <Text style={styles.subtitle}>
-            We hit an unexpected error and had to stop the screen. Tap below to try again — your data is safe.
-          </Text>
+          <Text style={styles.subtitle}>We hit an unexpected error and had to stop the screen. Tap below to try again — your data is safe.</Text>
 
           {__DEV__ && (
             <View style={styles.devBox}>

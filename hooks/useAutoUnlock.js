@@ -23,7 +23,13 @@ import { Animated, Dimensions } from "react-native";
 import { Query } from "react-native-appwrite";
 import { useGlobalContext } from "../context/global-provider";
 import { appwriteConfig, databases } from "../lib/appwrite";
+import { USE_SUPABASE_WALLET } from "../lib/feature-flags";
 import { VideoUnlocksService, computeNextThresholdSeconds } from "../lib/video-unlocks";
+// Phase F.5 — Supabase video unlock path. When the flag is on, the
+// hook routes through Supabase's atomic `unlock_video_threshold` RPC
+// instead of the Appwrite Cloud Function. The web client uses the
+// exact same RPC, so balances + unlocks stay in sync across platforms.
+import { getPaidThroughSeconds as getPaidThroughSecondsSupabase, unlockVideoThreshold as unlockVideoThresholdSupabase } from "../lib/wallet-supabase";
 
 const DEFAULT_INITIAL_SECONDS = 180;
 const DEFAULT_RECURRING_SECONDS = 600;
@@ -122,10 +128,14 @@ export default function useAutoUnlock({
 
       let paid = 0;
       try {
-        paid = await videoUnlockService.getPaidThroughSeconds({
-          videoId: video?.$id,
-          userId: user?.$id,
-        });
+        if (USE_SUPABASE_WALLET) {
+          paid = await getPaidThroughSecondsSupabase({ videoId: video?.$id });
+        } else {
+          paid = await videoUnlockService.getPaidThroughSeconds({
+            videoId: video?.$id,
+            userId: user?.$id,
+          });
+        }
       } catch {
         paid = 0;
       }
@@ -229,14 +239,48 @@ export default function useAutoUnlock({
       setIsUnlocking(true);
       setLoadingCurrency(currency);
 
+      let res;
       try {
-        const res = await videoUnlockService.unlockVideo({
-          videoId: video.$id,
-          userId: user.$id,
-          contentOwnerId: video.uploader,
-          currency,
-          threshold: safeThreshold,
-        });
+        if (USE_SUPABASE_WALLET) {
+          // Phase F.5 — Supabase atomic unlock. The RPC returns
+          //   { ok, balance_after, cost, mode: 'permanent' | 'window', error? }
+          // We adapt to the legacy `{ success, used, cost, mode }` shape so
+          // the rest of the function below stays unchanged.
+          let rpc;
+          try {
+            rpc = await unlockVideoThresholdSupabase({
+              videoId: video.$id,
+              currency,
+              thresholdSeconds: safeThreshold,
+            });
+          } catch (rpcError) {
+            // Network / auth error — distinct from app-level "ok: false".
+            // Keep the modal open so the user can retry or pick the
+            // other currency. The server enforces idempotency (a
+            // double-tap on the same threshold is a no-op or returns
+            // already_unlocked), so retries are safe.
+            console.log("Supabase unlock_video_threshold RPC threw:", rpcError?.message);
+            return false;
+          }
+          if (!rpc?.ok) {
+            res = { success: false, requirePurchase: rpc?.error === "insufficient_balance" };
+          } else {
+            res = {
+              success: true,
+              used: currency === "coin" ? "coins" : "stars",
+              cost: rpc.cost,
+              mode: rpc.mode || (currency === "coin" ? "permanent" : "window"),
+            };
+          }
+        } else {
+          res = await videoUnlockService.unlockVideo({
+            videoId: video.$id,
+            userId: user.$id,
+            contentOwnerId: video.uploader,
+            currency,
+            threshold: safeThreshold,
+          });
+        }
 
         if (!res?.success) {
           // Insufficient balance / network error / etc. — keep the modal
@@ -246,14 +290,22 @@ export default function useAutoUnlock({
           return false;
         }
 
-        // Wallet balances refresh — both currencies, since the server may
-        // have charged either one (until backend honors the `currency` param).
-        await refetchStars?.();
-        await refetchCoins?.(user.$id);
+        // Wallet balances refresh. On Supabase, refetchCoins (refetchBalance)
+        // already updates BOTH coin + star state from a single getWallet
+        // call, so we skip the redundant refetchStars to avoid two
+        // round-trips for the same data. The realtime subscription is the
+        // belt-and-suspenders catch-up.
+        if (USE_SUPABASE_WALLET) {
+          await refetchCoins?.(user.$id);
+        } else {
+          await refetchStars?.();
+          await refetchCoins?.(user.$id);
+        }
 
         // Determine effective mode: prefer the server's signal, fall back to
         // the user's pick.
-        const mode = res.mode || (res.used === "coins" ? "permanent" : res.used === "stars" ? "window" : currency === "coin" ? "permanent" : "window");
+        const mode =
+          res.mode || (res.used === "coins" ? "permanent" : res.used === "stars" ? "window" : currency === "coin" ? "permanent" : "window");
 
         if (mode === "permanent") {
           // Coin path — never prompt again on this video.
@@ -269,14 +321,18 @@ export default function useAutoUnlock({
           setModalThreshold(next);
 
           // Persist server-side so the next session resumes at the right
-          // threshold. Defensive — failures don't block playback.
-          videoUnlockService
-            .setPaidThroughSeconds({
-              videoId: video.$id,
-              userId: user.$id,
-              seconds: newPaidThrough,
-            })
-            .catch(() => {});
+          // threshold. Defensive — failures don't block playback. On
+          // Supabase the unlock_video_threshold RPC already updated
+          // video_progress atomically, so this branch is Appwrite-only.
+          if (!USE_SUPABASE_WALLET) {
+            videoUnlockService
+              .setPaidThroughSeconds({
+                videoId: video.$id,
+                userId: user.$id,
+                seconds: newPaidThrough,
+              })
+              .catch(() => {});
+          }
 
           // Flip isUnlocked so the locked-overlay UI dismisses for the
           // duration of the window. The listener will re-prompt at the next

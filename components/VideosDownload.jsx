@@ -145,10 +145,7 @@ const VideosDownload = () => {
         >
           <Ionicons name="cloud-download" size={13} color={theme.primary} />
         </View>
-        <Text
-          className="font-psemibold"
-          style={{ color: theme.text, fontSize: 13, letterSpacing: 1.6, textTransform: "uppercase" }}
-        >
+        <Text className="font-psemibold" style={{ color: theme.text, fontSize: 13, letterSpacing: 1.6, textTransform: "uppercase" }}>
           Downloads
         </Text>
       </View>

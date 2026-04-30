@@ -8,6 +8,8 @@ import { StyledButton, StyledFormField, StyledKeyboardAvoidingView, StyledSafeAr
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import { createUser } from "../../lib/appwrite";
+import { USE_SUPABASE_AUTH } from "../../lib/feature-flags";
+import { signUpWithEmail as supabaseSignUpWithEmail } from "../../lib/supabase-auth";
 import { setIsLoggedReducer, setUserReducer } from "../../store/reducers/auth";
 
 const SignUp = () => {
@@ -30,7 +32,25 @@ const SignUp = () => {
 
     setSubmitting(true);
     try {
-      const result = await createUser(form.email, form.password, form.username);
+      // Phase B.2 — gated by USE_SUPABASE_AUTH. When the flag is on, the
+      // new account is created via Supabase Auth + the lazy-claim trigger
+      // links the auth.users row to a profile (or creates a fresh one).
+      // When off, the original Appwrite createUser path runs unchanged.
+      //
+      // One subtle UX difference between paths: depending on Supabase's
+      // email-confirmation setting, supabaseSignUpWithEmail can resolve to
+      // null when a confirmation email is required (no session yet). We
+      // surface that as a friendly "check your email" message rather than
+      // proceeding into a half-authenticated state.
+      const result = USE_SUPABASE_AUTH
+        ? await supabaseSignUpWithEmail({ email: form.email, password: form.password, username: form.username })
+        : await createUser(form.email, form.password, form.username);
+
+      if (!result) {
+        Alert.alert("Almost there", "We've sent a confirmation email. Tap the link in your inbox to finish signing up.");
+        return;
+      }
+
       dispatch(setUserReducer(result));
       dispatch(setIsLoggedReducer(true));
       setUser(result);

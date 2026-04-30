@@ -3,6 +3,8 @@ import { useEffect, useRef } from "react";
 import { Animated, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import useAppTheme from "../hooks/useAppTheme";
+// Phase E.9 — tier-aware image transform.
+import { optimizedImageUri } from "../lib/utils/image-source";
 import { formatTimeAgo } from "../utils/formatTime";
 
 const StoryHeader = ({ user, story, storyMusic, stories = [], currentStoryIndex = 0, progressWidth, onClose, onDelete, viewerUserId }) => {
@@ -59,7 +61,9 @@ const StoryHeader = ({ user, story, storyMusic, stories = [], currentStoryIndex 
       {/* Header row */}
       <View style={styles.headerRow}>
         <View style={styles.headerLeft}>
-          {user?.avatar && <FastImage source={{ uri: user.avatar }} style={[styles.avatar, { borderColor: theme.accentPurple }]} />}
+          {user?.avatar && (
+            <FastImage source={{ uri: optimizedImageUri(user.avatar, { width: 42 }) }} style={[styles.avatar, { borderColor: theme.accentPurple }]} />
+          )}
           <View>
             <Text style={[styles.headerName, { color: theme.primaryContrast }]}>{user?.name ?? "Unknown User"}</Text>
             <Text style={[styles.headerTime, { color: "rgba(255,255,255,0.8)" }]}>{formatTimeAgo(new Date(story?.createdAt))}</Text>

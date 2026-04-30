@@ -197,12 +197,7 @@ function StyledPlaylistButton({
           >
             <View className="flex flex-row items-center justify-between">
               <View className="flex flex-row items-center">
-                <MaterialIcons
-                  name={isInPlaylist ? "playlist-add-check" : "playlist-add"}
-                  size={22}
-                  color={theme.icon}
-                  style={{ marginRight: 12 }}
-                />
+                <MaterialIcons name={isInPlaylist ? "playlist-add-check" : "playlist-add"} size={22} color={theme.icon} style={{ marginRight: 12 }} />
                 <View>
                   <Text className="text-base font-semibold" style={{ color: theme.text }}>
                     {isInPlaylist ? "Remove from playlist" : "Add to playlist"}

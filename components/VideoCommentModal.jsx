@@ -262,12 +262,7 @@ const VideoCommentItem = memo(
       <View className="mb-4">
         <View className="flex-row items-start space-x-2">
           <TouchableOpacity onPress={() => handleUserPress(item)}>
-            <UserAvatar
-              name={item?.commentOwner?.username}
-              avatarUri={item?.commentOwner?.avatar}
-              size={40}
-              borderRadius={20}
-            />
+            <UserAvatar name={item?.commentOwner?.username} avatarUri={item?.commentOwner?.avatar} size={40} borderRadius={20} />
           </TouchableOpacity>
 
           <View className="flex-1 flex-row items-start">
@@ -342,12 +337,7 @@ const VideoCommentItem = memo(
                       {visibleReplies.map((reply) => (
                         <View key={reply?.$id} className="mb-3 flex-row items-center space-x-2">
                           <TouchableOpacity onPress={() => handleUserPress(reply)}>
-                            <UserAvatar
-                              name={reply?.commentOwner?.username}
-                              avatarUri={reply?.commentOwner?.avatar}
-                              size={28}
-                              borderRadius={14}
-                            />
+                            <UserAvatar name={reply?.commentOwner?.username} avatarUri={reply?.commentOwner?.avatar} size={28} borderRadius={14} />
                           </TouchableOpacity>
 
                           <View className="flex-1">
@@ -393,9 +383,7 @@ const VideoCommentItem = memo(
                                 style={{ flexDirection: "row", alignItems: "center" }}
                               >
                                 {reactions.getReplyReaction(reply.$id) ? (
-                                  <Text style={{ fontSize: 13, lineHeight: 16 }}>
-                                    {reactions.getReplyReaction(reply.$id).emoji}
-                                  </Text>
+                                  <Text style={{ fontSize: 13, lineHeight: 16 }}>{reactions.getReplyReaction(reply.$id).emoji}</Text>
                                 ) : (
                                   <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.textSoft }}>
                                     React
@@ -436,7 +424,6 @@ const VideoCommentItem = memo(
                 </View>
               )}
             </View>
-
           </View>
         </View>
 

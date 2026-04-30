@@ -213,7 +213,10 @@ const VideosPlaylist = () => {
   const handleOpenVideo = useCallback(
     (video) => {
       if (!video?.uri) return;
-      const playlistUris = visibleVideos.map((v) => v?.uri).filter(Boolean).join(",");
+      const playlistUris = visibleVideos
+        .map((v) => v?.uri)
+        .filter(Boolean)
+        .join(",");
       const playlistIndex = visibleVideos.findIndex((v) => v?.uri === video.uri);
       router.push({
         pathname: "video-player",
@@ -235,7 +238,7 @@ const VideosPlaylist = () => {
   }, [handleOpenVideo, visibleVideos]);
 
   const ROW_THUMB_WIDTH = 116;
-  const ROW_THUMB_HEIGHT = Math.round(ROW_THUMB_WIDTH * 9 / 16);
+  const ROW_THUMB_HEIGHT = Math.round((ROW_THUMB_WIDTH * 9) / 16);
 
   const renderItem = useCallback(
     ({ item, index }) => {
@@ -289,9 +292,7 @@ const VideosPlaylist = () => {
                   backgroundColor: "rgba(0,0,0,0.78)",
                 }}
               >
-                <Text style={{ color: "#ffffff", fontSize: 10, fontWeight: "600", letterSpacing: 0.2 }}>
-                  {durationLabel}
-                </Text>
+                <Text style={{ color: "#ffffff", fontSize: 10, fontWeight: "600", letterSpacing: 0.2 }}>{durationLabel}</Text>
               </View>
             ) : null}
           </View>
@@ -341,7 +342,7 @@ const VideosPlaylist = () => {
   const keyExtractor = useCallback((item, index) => item?.$id || item?.uri || `playlist-${index}`, []);
 
   const heroVideo = visibleVideos[0];
-  const heroHeight = Math.round((width - 32) * 9 / 16);
+  const heroHeight = Math.round(((width - 32) * 9) / 16);
 
   const renderHeader = useCallback(() => {
     if (!heroVideo) return null;
@@ -449,7 +450,8 @@ const VideosPlaylist = () => {
               Your playlist is empty
             </Text>
             <Text className="mt-2 text-center text-sm" style={{ color: theme.textSoft, maxWidth: 280 }}>
-              Tap the three dots on any video and choose <Text style={{ color: theme.text, fontWeight: "600" }}>Add to playlist</Text> to save it here.
+              Tap the three dots on any video and choose <Text style={{ color: theme.text, fontWeight: "600" }}>Add to playlist</Text> to save it
+              here.
             </Text>
           </View>
         }
@@ -488,7 +490,12 @@ const VideosPlaylist = () => {
               Removed from playlist
             </Text>
           </View>
-          <TouchableOpacity onPress={handleUndoRemove} activeOpacity={0.85} className="ml-3 rounded-full px-3 py-1.5" style={{ backgroundColor: theme.primarySoft }}>
+          <TouchableOpacity
+            onPress={handleUndoRemove}
+            activeOpacity={0.85}
+            className="ml-3 rounded-full px-3 py-1.5"
+            style={{ backgroundColor: theme.primarySoft }}
+          >
             <Text className="text-sm font-bold" style={{ color: theme.primary, letterSpacing: 0.2 }}>
               Undo
             </Text>

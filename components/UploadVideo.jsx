@@ -212,9 +212,7 @@ const UploadVideo = ({ showMessage }) => {
         ? [Math.floor(safeDurationMs * 0.25), Math.floor(safeDurationMs * 0.5), Math.floor(safeDurationMs * 0.75)]
         : [1000, 3000, 5000]; // fallback when duration is unknown — sample early frames
 
-      const results = await Promise.all(
-        timestamps.map((t) => VideoThumbnails.getThumbnailAsync(videoUri, { time: t }).catch(() => null)),
-      );
+      const results = await Promise.all(timestamps.map((t) => VideoThumbnails.getThumbnailAsync(videoUri, { time: t }).catch(() => null)));
       const validResults = results.filter(Boolean);
       setGeneratedThumbnails(validResults);
 
@@ -487,11 +485,7 @@ const UploadVideo = ({ showMessage }) => {
                 ) : (
                   <View className="items-center justify-center px-1">
                     <Ionicons name="cloud-upload-outline" size={20} color={theme.iconMuted} />
-                    <Text
-                      className="mt-1 text-[9px] font-semibold uppercase"
-                      style={{ color: theme.textSoft, letterSpacing: 0.4 }}
-                      numberOfLines={1}
-                    >
+                    <Text className="mt-1 text-[9px] font-semibold uppercase" style={{ color: theme.textSoft, letterSpacing: 0.4 }} numberOfLines={1}>
                       Upload
                     </Text>
                   </View>
@@ -592,7 +586,10 @@ const UploadVideo = ({ showMessage }) => {
               Title
             </Text>
           </View>
-          <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`${videoForm?.title?.length || 0}/${sizeLimitTitleChars}`}</Text>
+          <Text
+            className="text-[10px] font-medium"
+            style={{ color: theme.textSoft }}
+          >{`${videoForm?.title?.length || 0}/${sizeLimitTitleChars}`}</Text>
         </View>
         <TextInput
           value={videoForm?.title}
@@ -735,16 +732,8 @@ const UploadVideo = ({ showMessage }) => {
               elevation: publishNow ? 2 : 0,
             }}
           >
-            <Ionicons
-              name="flash"
-              size={14}
-              color={publishNow ? theme.primaryContrast : theme.iconMuted}
-              style={{ marginRight: 6 }}
-            />
-            <Text
-              className="font-semibold"
-              style={{ fontSize: 13, color: publishNow ? theme.primaryContrast : theme.textMuted, letterSpacing: 0.1 }}
-            >
+            <Ionicons name="flash" size={14} color={publishNow ? theme.primaryContrast : theme.iconMuted} style={{ marginRight: 6 }} />
+            <Text className="font-semibold" style={{ fontSize: 13, color: publishNow ? theme.primaryContrast : theme.textMuted, letterSpacing: 0.1 }}>
               Publish now
             </Text>
           </TouchableOpacity>
@@ -765,12 +754,7 @@ const UploadVideo = ({ showMessage }) => {
               elevation: !publishNow ? 2 : 0,
             }}
           >
-            <Ionicons
-              name="calendar-outline"
-              size={14}
-              color={!publishNow ? theme.primaryContrast : theme.iconMuted}
-              style={{ marginRight: 6 }}
-            />
+            <Ionicons name="calendar-outline" size={14} color={!publishNow ? theme.primaryContrast : theme.iconMuted} style={{ marginRight: 6 }} />
             <Text
               className="font-semibold"
               style={{ fontSize: 13, color: !publishNow ? theme.primaryContrast : theme.textMuted, letterSpacing: 0.1 }}
@@ -782,10 +766,7 @@ const UploadVideo = ({ showMessage }) => {
 
         {/* Show Scheduled Date */}
         {!publishNow && (
-          <View
-            className="mt-4 rounded-xl p-3"
-            style={{ backgroundColor: theme.primarySoft, borderWidth: 1, borderColor: theme.primary }}
-          >
+          <View className="mt-4 rounded-xl p-3" style={{ backgroundColor: theme.primarySoft, borderWidth: 1, borderColor: theme.primary }}>
             <View className="flex-row items-center">
               <Ionicons name="time-outline" size={16} color={theme.primary} style={{ marginRight: 8 }} />
               <Text className="flex-1 font-medium" style={{ color: theme.text }}>
@@ -883,12 +864,7 @@ const UploadVideo = ({ showMessage }) => {
         >
           <View className="flex-1 pr-3">
             <View className="flex-row items-center">
-              <MaterialIcons
-                name="paid"
-                size={16}
-                color={isMonetizationEligible ? theme.primary : theme.iconMuted}
-                style={{ marginRight: 6 }}
-              />
+              <MaterialIcons name="paid" size={16} color={isMonetizationEligible ? theme.primary : theme.iconMuted} style={{ marginRight: 6 }} />
               <Text className="font-semibold" style={{ color: theme.text, letterSpacing: 0.1 }}>
                 Enable monetization
               </Text>
@@ -966,7 +942,12 @@ const UploadVideo = ({ showMessage }) => {
               />
             </View>
             {canCancelUpload && (
-              <TouchableOpacity className="mt-4 w-full rounded-full py-2" style={{ backgroundColor: theme.danger }} onPress={handleCancelUpload} activeOpacity={0.8}>
+              <TouchableOpacity
+                className="mt-4 w-full rounded-full py-2"
+                style={{ backgroundColor: theme.danger }}
+                onPress={handleCancelUpload}
+                activeOpacity={0.8}
+              >
                 <Text className="text-center font-semibold" style={{ color: theme.primaryContrast }}>
                   Cancel Upload
                 </Text>

@@ -7,27 +7,41 @@ import FormatNumber from "../lib/utils/format-number";
 import logger from "../lib/utils/logger";
 import { createPostLike, deletePostLike, getPostLike, updatePost } from "../lib/posts";
 import { DEFAULT_REACTION_KEY, getReactionByKey } from "../lib/reactions";
+import { getMyReaction, removeMyReaction, setReaction } from "../lib/reactions-supabase";
 import ReactionPicker from "./ReactionPicker";
+import RepostModal from "./RepostModal";
 
 // Premium action bar — mirrors web's post-actions layout (Like alone-left, then
 // Comment / Repost / Share grouped right) with a violet-tinted reaction picker
-// surfaced on long-press of the Like button. Backend wiring stays binary
-// like/unlike (Appwrite's existing model); reaction selection is local UI
-// state that maps to a "liked" record. Real per-emoji storage will land with
-// Phase 5 of the Supabase migration (web's `reactions` table).
+// surfaced on long-press of the Like button. On Supabase posts (detected via
+// `_supabase`) the picked emoji writes through to the polymorphic `reactions`
+// table; on legacy Appwrite posts it stays a local-only UI flourish over the
+// backend's binary like/unlike model.
 const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSharePress, onLikeChange, onDarkSurface = false }) => {
   const postID = item?.$id;
   const { user } = useGlobalContext();
   const { theme } = useAppTheme();
+
+  // Phase C.6 — detect whether this post came from Supabase. Posts shaped by
+  // `adaptSupabasePostToAppwriteShape` carry their raw row under `_supabase`,
+  // which is our signal to read/write reactions through `lib/reactions-supabase`
+  // instead of the legacy Appwrite postsLike collection. Posts authored on
+  // Appwrite (Following + For-You tabs while USE_SUPABASE_POSTS is half-rolled)
+  // continue down the original path.
+  const isSupabasePost = Boolean(item?._supabase);
 
   const [liked, setLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(item?.postLikes ?? 0);
   const [userReactionKey, setUserReactionKey] = useState(null);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [pickerAnchor, setPickerAnchor] = useState(null);
+  // Phase C — repost modal visibility. Tapping the Repost button opens
+  // the RepostModal, which writes to Supabase via createRepost.
+  const [repostModalVisible, setRepostModalVisible] = useState(false);
 
   const likedRef = useRef(false);
   const likeCountRef = useRef(0);
+  const userReactionKeyRef = useRef(null);
   const debounceRef = useRef(null);
   const likeButtonRef = useRef(null);
 
@@ -38,6 +52,7 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
 
   likedRef.current = liked;
   likeCountRef.current = likeCount;
+  userReactionKeyRef.current = userReactionKey;
 
   useEffect(() => {
     setLikeCount(item?.postLikes ?? 0);
@@ -45,6 +60,36 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
 
   useEffect(() => {
     let isCancelled = false;
+
+    // Phase C.6 — Supabase posts ALWAYS read their like state from the
+    // reactions table. Order matters: this branch runs before the
+    // `isLikedByCurrentUser` shortcut because the home feed's batched
+    // Appwrite enricher may stamp `isLikedByCurrentUser=false` on
+    // adapted Supabase posts (UUIDs don't exist in postsLike), and
+    // honoring it would silently mark reacted posts as unliked. The
+    // returned emoji string IS our reaction key (web's REACTIONS match:
+    // heart/laugh/sad/cry/angry).
+    if (isSupabasePost && postID && user?.$id) {
+      const handleGetSupabaseReaction = async () => {
+        try {
+          const emoji = await getMyReaction({ targetType: "post", targetId: postID });
+          if (!isCancelled) {
+            setUserReactionKey(emoji || null);
+            setLiked(Boolean(emoji));
+          }
+        } catch (error) {
+          logger.error("PostInformation", "getMyReaction (supabase) failed", error);
+          if (!isCancelled) {
+            setLiked(false);
+            setUserReactionKey(null);
+          }
+        }
+      };
+      handleGetSupabaseReaction();
+      return () => {
+        isCancelled = true;
+      };
+    }
 
     if (typeof item?.isLikedByCurrentUser === "boolean") {
       setLiked(item.isLikedByCurrentUser);
@@ -84,10 +129,26 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
     return () => {
       isCancelled = true;
     };
-  }, [item?.isLikedByCurrentUser, postID, user?.$id]);
+  }, [item?.isLikedByCurrentUser, postID, user?.$id, isSupabasePost]);
 
   const syncLike = async () => {
     try {
+      // Phase C.6 — Supabase write path. The reactions table is the source of
+      // truth for like state on Supabase posts; counts are derived via
+      // fetchPostStats so we don't denormalize a post_likes column. We just
+      // mirror userReactionKeyRef into the table:
+      //   - has key  → setReaction (idempotent — handles new + change cases)
+      //   - cleared  → removeMyReaction (idempotent — no-op if nothing there)
+      if (isSupabasePost) {
+        const currentKey = userReactionKeyRef.current;
+        if (currentKey) {
+          await setReaction({ targetType: "post", targetId: postID, emoji: currentKey });
+        } else {
+          await removeMyReaction({ targetType: "post", targetId: postID });
+        }
+        return;
+      }
+
       if (likedRef.current) {
         const existing = await getPostLike({ postId: postID, likeOwner: user?.$id });
         if (!existing?.documents?.length) await createPostLike({ postId: postID, likeOwner: user?.$id });
@@ -135,18 +196,42 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
   };
 
   const handlePickReaction = (key) => {
+    const wasLiked = liked;
+    const previousKey = userReactionKey;
     setUserReactionKey(key);
-    if (!liked) applyLikeChange(true);
+
+    if (!wasLiked) {
+      // Transitioning from unliked → liked. applyLikeChange bumps the count
+      // and schedules syncLike, which on Supabase will write the picked emoji
+      // (because userReactionKeyRef updates synchronously each render).
+      applyLikeChange(true);
+      return;
+    }
+
+    // Already liked — only the emoji is changing. For Supabase posts we still
+    // need to push the change to the reactions table; for Appwrite posts the
+    // emoji is purely client-side UI so no roundtrip needed.
+    if (isSupabasePost && previousKey !== key) {
+      onLikeChange?.(postID, likeCountRef.current, true);
+      clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(syncLike, 500);
+    }
   };
 
   const handleComment = () => handleCommentPress?.(item);
   const handleShowLikes = () => handleLikesPress?.(item);
   const handleShare = async () => handleSharePress?.(item);
-  const handleRepost = () =>
-    Alert.alert(
-      "Repost — coming soon",
-      "Reposts ship with Phase 5 of the Supabase migration. The button is here so you can preview the new home feed layout.",
-    );
+  const handleRepost = () => setRepostModalVisible(true);
+
+  // Closes the repost modal. If `repost` is passed, the user successfully
+  // submitted — surface a friendly Alert so they know it landed. The home
+  // feed picks up the new repost on next focus / pull-to-refresh.
+  const handleRepostClose = (repost) => {
+    setRepostModalVisible(false);
+    if (repost) {
+      Alert.alert("Reposted!", "Your repost is live and visible to everyone on Selebox.");
+    }
+  };
 
   const activeReaction = userReactionKey ? getReactionByKey(userReactionKey) : null;
   const likeLabel = activeReaction?.label ?? "Like";
@@ -160,9 +245,9 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
   // When rendered over a dark image-viewer overlay, force high-contrast white-ish
   // colors instead of the theme's regular muted tones (which can vanish on black
   // backgrounds in light mode).
-  const labelColor = onDarkSurface ? "rgba(255,255,255,0.92)" : theme.textMuted ?? theme.text;
+  const labelColor = onDarkSurface ? "rgba(255,255,255,0.92)" : (theme.textMuted ?? theme.text);
   const iconColor = onDarkSurface ? "rgba(255,255,255,0.92)" : theme.icon;
-  const subtleTextColor = onDarkSurface ? "rgba(255,255,255,0.7)" : theme.textSoft ?? labelColor;
+  const subtleTextColor = onDarkSurface ? "rgba(255,255,255,0.7)" : (theme.textSoft ?? labelColor);
   const dividerColor = onDarkSurface ? "rgba(255,255,255,0.18)" : theme.border;
 
   return (
@@ -181,9 +266,7 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
           {safeLikeCount > 0 ? (
             <TouchableOpacity onPress={handleShowLikes} activeOpacity={0.7} style={{ flexDirection: "row", alignItems: "center" }}>
               <Text style={{ fontSize: 14, marginRight: 6 }}>{summaryEmoji}</Text>
-              <Text style={{ fontSize: 12, fontWeight: "500", color: subtleTextColor }}>
-                {FormatNumber(safeLikeCount)}
-              </Text>
+              <Text style={{ fontSize: 12, fontWeight: "500", color: subtleTextColor }}>{FormatNumber(safeLikeCount)}</Text>
             </TouchableOpacity>
           ) : (
             <View />
@@ -267,6 +350,8 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
         onSelect={handlePickReaction}
         onClose={() => setPickerVisible(false)}
       />
+
+      <RepostModal visible={repostModalVisible} onClose={handleRepostClose} originalPost={item} currentUser={user} />
     </View>
   );
 };

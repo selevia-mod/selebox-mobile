@@ -37,6 +37,24 @@ import {
   threadPostComments,
   updatePost,
 } from "../lib/posts";
+// Phase C.7 — Supabase comments service. Used when the modal is opened on
+// a post adapted by `adaptSupabasePostToAppwriteShape` (detected via the
+// `_supabase` mirror field). Same dual-shape branching pattern used in
+// PostInformation: existing Appwrite paths run unchanged for Appwrite posts,
+// Supabase paths run for Supabase posts.
+import {
+  addComment as addSupabaseComment,
+  deleteComment as deleteSupabaseComment,
+  fetchCommentsForPost,
+  fetchCommentReactionCounts,
+  adaptCommentTreeToAppwriteShape,
+  adaptSupabaseCommentToAppwriteShape,
+} from "../lib/comments-supabase";
+import {
+  getMyReactionsForTargets as getMySupabaseReactionsForTargets,
+  setReaction as setSupabaseReaction,
+  removeMyReaction as removeMySupabaseReaction,
+} from "../lib/reactions-supabase";
 import TimeAgo from "../lib/utils/time-ago";
 import {
   buildMentionSearchTerms,
@@ -110,6 +128,13 @@ const PostCommentItem = memo(
     const { theme } = useAppTheme();
     const replies = getCommentReplies(item);
     const likes = useMemo(() => getCommentLikes(item), [item?.postCommentLikes, item?.postsCommentLikes]);
+    // Phase C.7 — Supabase comments come pre-decorated with `_supabase`
+    // (raw row) and `myReaction` (the user's emoji on this comment, or
+    // null) by the adapter. We use those to skip the Appwrite-only "scan
+    // likeOwner ids" probe and drive the like UI on Supabase posts.
+    const isSupabaseComment = Boolean(item?._supabase);
+    const supabaseMyReaction = isSupabaseComment ? item?.myReaction || null : null;
+
     const likesSignature = useMemo(
       () =>
         likes
@@ -121,22 +146,33 @@ const PostCommentItem = memo(
     const visibleReplies = showReplies ? replies.slice(0, visibleCount) : [];
     const normalizedCurrentUserId = String(currentUserId || "");
     const isOwnComment = Boolean(currentUserId && item?.commentOwner?.$id && String(item.commentOwner.$id) === String(currentUserId));
-    const [liked, setLiked] = useState(() => likes.some((like) => String(resolveOwnerId(like?.likeOwner) || "") === normalizedCurrentUserId));
+    const initialLiked = isSupabaseComment
+      ? Boolean(supabaseMyReaction)
+      : likes.some((like) => String(resolveOwnerId(like?.likeOwner) || "") === normalizedCurrentUserId);
+    const [liked, setLiked] = useState(() => initialLiked);
     const [likeCount, setLikeCount] = useState(likes.length);
-    const committedLikedRef = useRef(likes.some((like) => String(resolveOwnerId(like?.likeOwner) || "") === normalizedCurrentUserId));
+    const committedLikedRef = useRef(initialLiked);
     const committedCountRef = useRef(likes.length);
     const desiredLikedRef = useRef(committedLikedRef.current);
     const syncInFlightRef = useRef(false);
     const isMountedRef = useRef(true);
     const appliedLikesSignatureRef = useRef(likesSignature);
 
-    // Reaction overlay state (visual only — backend stays binary like/unlike).
-    // userReactionKey is hydrated from server like-state into the default heart;
-    // picking a different reaction updates locally. Real per-emoji storage will
-    // land with Phase 5 of the Supabase migration.
+    // Reaction overlay state. On Supabase comments the picked emoji IS
+    // the reaction key in the reactions table (heart/laugh/sad/cry/angry).
+    // On Appwrite comments it's local-only UI state — the legacy backend
+    // only stores binary like/unlike.
     const [userReactionKey, setUserReactionKey] = useState(() =>
-      likes.some((like) => String(resolveOwnerId(like?.likeOwner) || "") === normalizedCurrentUserId) ? DEFAULT_REACTION_KEY : null,
+      isSupabaseComment
+        ? supabaseMyReaction
+        : likes.some((like) => String(resolveOwnerId(like?.likeOwner) || "") === normalizedCurrentUserId)
+          ? DEFAULT_REACTION_KEY
+          : null,
     );
+    // Keep the latest reaction key reachable in async sync without
+    // capturing stale closures. Only used by the Supabase write path.
+    const userReactionKeyRef = useRef(userReactionKey);
+    userReactionKeyRef.current = userReactionKey;
     // Per-reply reactions are local-only — replies don't have backend like wiring yet.
     const [replyReactions, setReplyReactions] = useState({}); // { [replyId]: reactionKey }
     const [pickerVisible, setPickerVisible] = useState(false);
@@ -173,8 +209,22 @@ const PostCommentItem = memo(
       if (likesSignature === appliedLikesSignatureRef.current) return;
 
       appliedLikesSignatureRef.current = likesSignature;
-      const nextLiked = likes.some((like) => String(resolveOwnerId(like?.likeOwner) || "") === normalizedCurrentUserId);
       const nextCount = likes.length;
+      // Phase C.7 — On Supabase comments the `likes` array is a list of
+      // length-only placeholders (the adapter feeds in counts via
+      // reactionCounts); placeholders carry no `likeOwner` so the
+      // "is mine?" probe below would always evaluate false and
+      // silently un-like the comment whenever ANYONE else's reaction
+      // shifts the count. Trust the source-of-truth `myReaction` field
+      // we hydrated at mount and only sync the count here.
+      if (isSupabaseComment) {
+        committedCountRef.current = nextCount;
+        if (desiredLikedRef.current === committedLikedRef.current) {
+          setLikeCount(nextCount);
+        }
+        return;
+      }
+      const nextLiked = likes.some((like) => String(resolveOwnerId(like?.likeOwner) || "") === normalizedCurrentUserId);
       const hasPendingLocalPreference = desiredLikedRef.current !== committedLikedRef.current;
 
       committedLikedRef.current = nextLiked;
@@ -188,7 +238,7 @@ const PostCommentItem = memo(
       desiredLikedRef.current = nextLiked;
       setLiked(nextLiked);
       setLikeCount(nextCount);
-    }, [applyOptimisticLikeState, likes, likesSignature, normalizedCurrentUserId]);
+    }, [applyOptimisticLikeState, isSupabaseComment, likes, likesSignature, normalizedCurrentUserId]);
 
     useEffect(() => {
       return () => {
@@ -208,7 +258,17 @@ const PostCommentItem = memo(
               const nextTargetLiked = desiredLikedRef.current;
               const previousCommittedLiked = committedLikedRef.current;
 
-              if (nextTargetLiked) {
+              // Phase C.7 — Supabase write path. The reactions table
+              // is the source of truth; we just mirror the desired
+              // emoji or remove the row entirely.
+              if (isSupabaseComment) {
+                if (nextTargetLiked) {
+                  const emoji = userReactionKeyRef.current || DEFAULT_REACTION_KEY;
+                  await setSupabaseReaction({ targetType: "comment", targetId: item.$id, emoji });
+                } else {
+                  await removeMySupabaseReaction({ targetType: "comment", targetId: item.$id });
+                }
+              } else if (nextTargetLiked) {
                 const existingLike = likes.find((like) => String(resolveOwnerId(like?.likeOwner) || "") === normalizedCurrentUserId);
                 if (!existingLike) {
                   const newLike = await createPostCommentLike({
@@ -245,7 +305,7 @@ const PostCommentItem = memo(
 
         void runSync();
       });
-    }, [applyOptimisticLikeState, item?.$id, likes, normalizedCurrentUserId]);
+    }, [applyOptimisticLikeState, isSupabaseComment, item?.$id, likes, normalizedCurrentUserId]);
 
     const handleLikeComment = useCallback(() => {
       if (!item?.$id || !normalizedCurrentUserId) return;
@@ -312,35 +372,41 @@ const PostCommentItem = memo(
       (key) => {
         if (pickerTargetId === null) {
           // Top-level comment
+          const previousKey = userReactionKeyRef.current;
           setUserReactionKey(key);
+          userReactionKeyRef.current = key;
           if (!desiredLikedRef.current) {
             desiredLikedRef.current = true;
             applyOptimisticLikeState(true);
             syncLikeMutation();
+          } else if (isSupabaseComment && previousKey !== key && item?.$id) {
+            // Already liked but switching emoji — write directly via
+            // setReaction. We bypass syncLikeMutation here because that
+            // loop would treat this as a like-toggle and inflate the
+            // count. setReaction is idempotent so a no-op'd same-emoji
+            // pick is safe.
+            void setSupabaseReaction({ targetType: "comment", targetId: item.$id, emoji: key }).catch((error) => {
+              console.log("handlePickReaction: setReaction (supabase) error", error);
+            });
           }
         } else {
           // Reply
           setReplyReactions((prev) => ({ ...prev, [pickerTargetId]: key }));
         }
       },
-      [applyOptimisticLikeState, pickerTargetId, syncLikeMutation],
+      [applyOptimisticLikeState, isSupabaseComment, item?.$id, pickerTargetId, syncLikeMutation],
     );
 
     const closePicker = useCallback(() => setPickerVisible(false), []);
 
     const activeReaction = userReactionKey ? getReactionByKey(userReactionKey) : null;
-    const pickerActiveKey = pickerTargetId === null ? userReactionKey : replyReactions[pickerTargetId] ?? null;
+    const pickerActiveKey = pickerTargetId === null ? userReactionKey : (replyReactions[pickerTargetId] ?? null);
 
     return (
       <View className="mb-4">
         <View className="flex-row items-start space-x-2">
           <TouchableOpacity onPress={() => handleUserPress(item)}>
-            <UserAvatar
-              name={item?.commentOwner?.username}
-              avatarUri={item?.commentOwner?.avatar}
-              size={40}
-              borderRadius={20}
-            />
+            <UserAvatar name={item?.commentOwner?.username} avatarUri={item?.commentOwner?.avatar} size={40} borderRadius={20} />
           </TouchableOpacity>
 
           <View className="flex-1 flex-row items-start">
@@ -423,12 +489,7 @@ const PostCommentItem = memo(
                           onLayout={(event) => onReplyLayout?.(item?.$id, reply?.$id, event)}
                         >
                           <TouchableOpacity onPress={() => handleUserPress(reply)}>
-                            <UserAvatar
-                              name={reply?.commentOwner?.username}
-                              avatarUri={reply?.commentOwner?.avatar}
-                              size={28}
-                              borderRadius={14}
-                            />
+                            <UserAvatar name={reply?.commentOwner?.username} avatarUri={reply?.commentOwner?.avatar} size={28} borderRadius={14} />
                           </TouchableOpacity>
 
                           <View className="flex-1">
@@ -477,9 +538,7 @@ const PostCommentItem = memo(
                                 style={{ flexDirection: "row", alignItems: "center" }}
                               >
                                 {replyReactions[reply.$id] ? (
-                                  <Text style={{ fontSize: 13, lineHeight: 16 }}>
-                                    {getReactionByKey(replyReactions[reply.$id])?.emoji}
-                                  </Text>
+                                  <Text style={{ fontSize: 13, lineHeight: 16 }}>{getReactionByKey(replyReactions[reply.$id])?.emoji}</Text>
                                 ) : (
                                   <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.textSoft }}>
                                     React
@@ -520,7 +579,6 @@ const PostCommentItem = memo(
                 </View>
               )}
             </View>
-
           </View>
         </View>
 
@@ -548,6 +606,10 @@ const PostCommentModal = ({
   coverScreen = true,
 }) => {
   const postID = item?.$id;
+  // Phase C.7 — detect Supabase-shape posts. The home feed adapter sets
+  // `_supabase` to the raw Supabase row; that's our signal to read/write
+  // through Supabase's `comments` + `reactions` tables instead of Appwrite.
+  const isSupabasePost = Boolean(item?._supabase);
   const insets = useSafeAreaInsets();
   const { user } = useGlobalContext();
   const { theme } = useAppTheme();
@@ -1054,6 +1116,32 @@ const PostCommentModal = ({
       try {
         if (!loadMore) setLoading(true);
 
+        // Phase C.7 — Supabase posts read all comments + replies in one
+        // round trip (web's loadComments pattern). No pagination yet:
+        // posts on the home feed have small comment counts, and the
+        // single-query path keeps the modal snappy. Pagination can land
+        // in a follow-up if a post genuinely has hundreds of comments.
+        if (isSupabasePost) {
+          const tree = await fetchCommentsForPost(postID);
+          const parentIds = (tree.parents || []).map((p) => p.id);
+          const replyIds = Object.values(tree.repliesByParent || {})
+            .flat()
+            .map((r) => r.id);
+          const allCommentIds = [...parentIds, ...replyIds];
+          const [reactionCounts, myReactions] = await Promise.all([
+            allCommentIds.length ? fetchCommentReactionCounts(allCommentIds) : Promise.resolve({}),
+            allCommentIds.length ? getMySupabaseReactionsForTargets({ targetType: "comment", targetIds: allCommentIds }) : Promise.resolve({}),
+          ]);
+          const adapted = adaptCommentTreeToAppwriteShape(tree, { reactionCounts, myReactions });
+          // The "raw" cache mirrors the parents (Supabase rows), so that
+          // optimistic appends on submit can rebuild the adapted view.
+          setRawCommentsState(tree.parents || []);
+          setComments(adapted);
+          setLastIdState(null);
+          setHasMoreState(false);
+          return;
+        }
+
         const commentsData = await fetchPostComments({
           postId: postID,
           lastId: loadMore ? currentLastId : undefined,
@@ -1077,7 +1165,7 @@ const PostCommentModal = ({
         if (!loadMore) setLoading(false);
       }
     },
-    [hydrateThreadedComments, postID, setHasMoreState, setLastIdState, setRawCommentsState],
+    [hydrateThreadedComments, isSupabasePost, postID, setHasMoreState, setLastIdState, setRawCommentsState],
   );
 
   useEffect(() => {
@@ -1254,10 +1342,18 @@ const PostCommentModal = ({
       if (!normalizedCommentId || !replyId || !isOwnedByCurrentUser(reply?.commentOwner)) return;
 
       try {
-        await deleteDocumentFromCollections(replyId, [
-          secrets.appwriteConfig.postsCommentRepliesCollectionId,
-          secrets.appwriteConfig.postsCommentCollectionId,
-        ]);
+        // Phase C.7 — Supabase replies live in the same `comments` table
+        // as parents (just with parent_id set), so a single DELETE by id
+        // covers them. The Appwrite path needs to try both collections
+        // (replies live separately there).
+        if (isSupabasePost) {
+          await deleteSupabaseComment(replyId);
+        } else {
+          await deleteDocumentFromCollections(replyId, [
+            secrets.appwriteConfig.postsCommentRepliesCollectionId,
+            secrets.appwriteConfig.postsCommentCollectionId,
+          ]);
+        }
 
         setComments((prev) =>
           prev.map((commentItem) =>
@@ -1273,7 +1369,7 @@ const PostCommentModal = ({
         console.log("handleDeleteReply: error", error);
       }
     },
-    [deleteDocumentFromCollections, isOwnedByCurrentUser],
+    [deleteDocumentFromCollections, isOwnedByCurrentUser, isSupabasePost],
   );
 
   const handleDeleteComment = useCallback(
@@ -1282,52 +1378,71 @@ const PostCommentModal = ({
       if (!commentId || !isOwnedByCurrentUser(comment?.commentOwner)) return;
 
       try {
-        const localReplies = getCommentReplies(comment).filter((reply) => reply?.$id);
-        await Promise.all(
-          localReplies.map((reply) =>
-            deleteDocumentFromCollections(String(reply.$id), [
-              secrets.appwriteConfig.postsCommentRepliesCollectionId,
-              secrets.appwriteConfig.postsCommentCollectionId,
-            ]).catch((error) => {
-              console.log("handleDeleteComment: local reply delete error", error);
-            }),
-          ),
-        );
+        // Phase C.7 — Supabase delete path. Replies share a table with
+        // their parent (parent_id FK), so deleting all replies first then
+        // the parent is a couple of cheap DELETEs. The Appwrite path has
+        // to walk multiple collections + handle relation-key drift.
+        if (isSupabasePost) {
+          const localReplies = getCommentReplies(comment).filter((reply) => reply?.$id);
+          await Promise.all(
+            localReplies.map((reply) =>
+              deleteSupabaseComment(String(reply.$id)).catch((error) => {
+                console.log("handleDeleteComment (supabase): reply delete error", error);
+              }),
+            ),
+          );
+          await deleteSupabaseComment(commentId);
+        } else {
+          const localReplies = getCommentReplies(comment).filter((reply) => reply?.$id);
+          await Promise.all(
+            localReplies.map((reply) =>
+              deleteDocumentFromCollections(String(reply.$id), [
+                secrets.appwriteConfig.postsCommentRepliesCollectionId,
+                secrets.appwriteConfig.postsCommentCollectionId,
+              ]).catch((error) => {
+                console.log("handleDeleteComment: local reply delete error", error);
+              }),
+            ),
+          );
 
-        const repliesCollectionId = secrets.appwriteConfig.postsCommentRepliesCollectionId;
-        if (repliesCollectionId) {
-          for (const relationKey of POST_REPLY_RELATION_KEYS) {
-            try {
-              const relationReplies = await databases.listDocuments(secrets.appwriteConfig.databaseId, repliesCollectionId, [
-                Query.equal(relationKey, commentId),
-                Query.limit(200),
-              ]);
+          const repliesCollectionId = secrets.appwriteConfig.postsCommentRepliesCollectionId;
+          if (repliesCollectionId) {
+            for (const relationKey of POST_REPLY_RELATION_KEYS) {
+              try {
+                const relationReplies = await databases.listDocuments(secrets.appwriteConfig.databaseId, repliesCollectionId, [
+                  Query.equal(relationKey, commentId),
+                  Query.limit(200),
+                ]);
 
-              await Promise.all(
-                (relationReplies?.documents || [])
-                  .filter((reply) => reply?.$id)
-                  .map((reply) =>
-                    deleteDocumentFromCollections(String(reply.$id), [repliesCollectionId, secrets.appwriteConfig.postsCommentCollectionId]).catch(
-                      (error) => {
-                        console.log("handleDeleteComment: relation reply delete error", error);
-                      },
+                await Promise.all(
+                  (relationReplies?.documents || [])
+                    .filter((reply) => reply?.$id)
+                    .map((reply) =>
+                      deleteDocumentFromCollections(String(reply.$id), [repliesCollectionId, secrets.appwriteConfig.postsCommentCollectionId]).catch(
+                        (error) => {
+                          console.log("handleDeleteComment: relation reply delete error", error);
+                        },
+                      ),
                     ),
-                  ),
-              );
-              break;
-            } catch (error) {
-              // Keep trying possible relation keys until one succeeds.
+                );
+                break;
+              } catch (error) {
+                // Keep trying possible relation keys until one succeeds.
+              }
             }
           }
-        }
 
-        await databases.deleteDocument(secrets.appwriteConfig.databaseId, secrets.appwriteConfig.postsCommentCollectionId, commentId);
+          await databases.deleteDocument(secrets.appwriteConfig.databaseId, secrets.appwriteConfig.postsCommentCollectionId, commentId);
+        }
 
         setRawCommentsState((prev) => {
           const next = prev.filter((existingComment) => String(existingComment?.$id || "") !== commentId);
           const nextCount = Math.max(0, next.length);
           onCommentPosted?.(nextCount);
-          if (postID) void updatePost({ ID: postID, postComments: nextCount });
+          // Counts on Supabase posts are derived from the comments table —
+          // skip the legacy `updatePost` denormalization step. Appwrite
+          // posts continue to need it.
+          if (postID && !isSupabasePost) void updatePost({ ID: postID, postComments: nextCount });
           return next;
         });
 
@@ -1341,7 +1456,7 @@ const PostCommentModal = ({
         console.log("handleDeleteComment: error", error);
       }
     },
-    [deleteDocumentFromCollections, isOwnedByCurrentUser, onCommentPosted, postID, replyTarget?.id, setRawCommentsState],
+    [deleteDocumentFromCollections, isOwnedByCurrentUser, isSupabasePost, onCommentPosted, postID, replyTarget?.id, setRawCommentsState],
   );
 
   const openCommentActions = useCallback(
@@ -1584,12 +1699,26 @@ const PostCommentModal = ({
 
     try {
       if (replyContext?.id) {
-        const newReply = await createPostReplyComment({
-          postId: postID,
-          comment: persistedCommentText,
-          commentOwner: user.$id,
-          parentCommentId: replyContext.id,
-        });
+        // Phase C.7 — Supabase reply path. addComment with parent_id makes
+        // it a reply on the same post. The returned row carries the joined
+        // profile so we can adapt it directly into the modal's local list
+        // without a follow-up read.
+        let newReply;
+        if (isSupabasePost) {
+          const supabaseReply = await addSupabaseComment({
+            postId: postID,
+            parentId: replyContext.id,
+            body: persistedCommentText,
+          });
+          newReply = adaptSupabaseCommentToAppwriteShape(supabaseReply);
+        } else {
+          newReply = await createPostReplyComment({
+            postId: postID,
+            comment: persistedCommentText,
+            commentOwner: user.$id,
+            parentCommentId: replyContext.id,
+          });
+        }
 
         setComments((prevComments) =>
           prevComments.map((existingComment) =>
@@ -1614,34 +1743,60 @@ const PostCommentModal = ({
           };
         });
         highlightSubmittedReply(replyContext.id, newReply?.$id);
-        void notifyCommentRecipients({
-          text: persistedCommentText,
-          isReply: true,
-          commentId: replyContext.id,
-          replyId: newReply?.$id,
-          replyRecipient: replyContext.recipient,
-          selectedMentionedUsers: selectedMentionedUsersSnapshot,
-        });
+        // Notifications stay on the Appwrite path for now — Supabase posts
+        // hand off to web's notification stack (next phase).
+        if (!isSupabasePost) {
+          void notifyCommentRecipients({
+            text: persistedCommentText,
+            isReply: true,
+            commentId: replyContext.id,
+            replyId: newReply?.$id,
+            replyRecipient: replyContext.recipient,
+            selectedMentionedUsers: selectedMentionedUsersSnapshot,
+          });
+        }
       } else {
-        const newComment = await createPostComment({
-          postId: postID,
-          comment: persistedCommentText,
-          commentOwner: user.$id,
-        });
+        // Phase C.7 — Supabase top-level comment path. Insert returns the
+        // adapted row; we append to both the raw cache (Supabase row) and
+        // the rendered list (Appwrite-shaped). Counts are derived from the
+        // reactions/comments tables so we skip the legacy `updatePost`
+        // denormalization step.
+        if (isSupabasePost) {
+          const supabaseRow = await addSupabaseComment({
+            postId: postID,
+            body: persistedCommentText,
+          });
+          const adaptedRow = adaptSupabaseCommentToAppwriteShape(supabaseRow);
+          const nextRawComments = [...rawCommentsRef.current, supabaseRow];
+          const nextThreadedComments = [...comments, adaptedRow];
+          setRawCommentsState(nextRawComments);
+          setComments(nextThreadedComments);
+          const nextCount = Math.max(0, nextThreadedComments.length);
+          onCommentPosted?.(nextCount);
+          // Notification path is Appwrite-only today; skip for Supabase
+          // posts. The web project ships its own notification stack on
+          // Supabase, and mobile will pick that up in a later phase.
+        } else {
+          const newComment = await createPostComment({
+            postId: postID,
+            comment: persistedCommentText,
+            commentOwner: user.$id,
+          });
 
-        const nextRawComments = [...rawCommentsRef.current, newComment];
-        const nextThreadedComments = await hydrateThreadedComments(nextRawComments);
-        setRawCommentsState(nextRawComments);
-        setComments(nextThreadedComments);
-        const nextCount = Math.max(0, nextThreadedComments.length);
-        onCommentPosted?.(nextCount);
-        await updatePost({ ID: postID, postComments: nextCount });
-        void notifyCommentRecipients({
-          text: persistedCommentText,
-          isReply: false,
-          commentId: newComment?.$id,
-          selectedMentionedUsers: selectedMentionedUsersSnapshot,
-        });
+          const nextRawComments = [...rawCommentsRef.current, newComment];
+          const nextThreadedComments = await hydrateThreadedComments(nextRawComments);
+          setRawCommentsState(nextRawComments);
+          setComments(nextThreadedComments);
+          const nextCount = Math.max(0, nextThreadedComments.length);
+          onCommentPosted?.(nextCount);
+          await updatePost({ ID: postID, postComments: nextCount });
+          void notifyCommentRecipients({
+            text: persistedCommentText,
+            isReply: false,
+            commentId: newComment?.$id,
+            selectedMentionedUsers: selectedMentionedUsersSnapshot,
+          });
+        }
       }
     } catch (error) {
       if (replyContext) setReplyTarget(replyContext);

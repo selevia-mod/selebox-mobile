@@ -119,9 +119,7 @@ const INLINE_IMAGE_PENDING_STYLE = `${INLINE_IMAGE_BASE_STYLE} filter: blur(8px)
 // persistence guarantees a save never carries a multi-MB inline payload.
 const stripPendingInlineImages = (html = "") => {
   if (!html) return html;
-  return html
-    .replace(/<img\b[^>]*data-upload-id=[^>]*>/gi, "")
-    .replace(/<img\b[^>]*\ssrc=(["'])data:[^>]*?\1[^>]*>/gi, "");
+  return html.replace(/<img\b[^>]*data-upload-id=[^>]*>/gi, "").replace(/<img\b[^>]*\ssrc=(["'])data:[^>]*?\1[^>]*>/gi, "");
 };
 
 const resolveLocalChapterId = ({ chapterForm, chapter }) => {

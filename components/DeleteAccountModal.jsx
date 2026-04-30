@@ -8,7 +8,8 @@ import Modal from "react-native-modal";
 import useAppTheme from "../hooks/useAppTheme";
 import { signOut } from "../lib/appwrite";
 import { clearDownloadedBooks } from "../lib/book-downloads";
-import { streamClient } from "../lib/stream";
+// Phase D — Stream Chat import removed. Account deletion no longer needs
+// to disconnect the Stream client because we don't have one.
 
 const DELETION_STEPS = [
   { label: "Signing out", icon: "logout" },
@@ -73,15 +74,9 @@ const DeleteAccountModal = ({ isVisible, onClose, user, dispatch, setUser, setIs
       setCurrentStep(0);
       await signOut();
 
-      // Disconnect Stream client (non-blocking)
-      try {
-        await streamClient.disconnectUser();
-      } catch (streamError) {
-        console.warn("Stream disconnect error:", streamError);
-      }
-
-      await AsyncStorage.removeItem("streamUserId");
-      await AsyncStorage.removeItem("streamToken");
+      // Phase D — Stream client disconnect step removed. signOut() above
+      // already prunes any leftover Stream tokens from AsyncStorage as a
+      // one-time cleanup of legacy keys.
 
       // Step 2: Delete from backend
       setCurrentStep(1);
@@ -277,7 +272,10 @@ const DeleteAccountModal = ({ isVisible, onClose, user, dispatch, setUser, setIs
                     accessibilityHint="Permanently deletes your account and all associated data"
                     accessibilityState={{ disabled: !isDeleteButtonEnabled }}
                   >
-                    <Text className="text-center font-sans text-base font-semibold" style={{ color: isDeleteButtonEnabled ? theme.primaryContrast : theme.textSoft }}>
+                    <Text
+                      className="text-center font-sans text-base font-semibold"
+                      style={{ color: isDeleteButtonEnabled ? theme.primaryContrast : theme.textSoft }}
+                    >
                       Delete
                     </Text>
                   </TouchableOpacity>
@@ -359,7 +357,13 @@ const DeleteAccountModal = ({ isVisible, onClose, user, dispatch, setUser, setIs
                         <MaterialIcons name={step.icon} size={24} color={theme.textSoft} accessibilityLabel="Step pending" />
                       )}
                     </View>
-                    <Text className="font-sans text-base" style={{ color: index < currentStep ? theme.accentGreen : index === currentStep ? theme.text : theme.textSoft, fontWeight: index === currentStep ? "600" : "400" }}>
+                    <Text
+                      className="font-sans text-base"
+                      style={{
+                        color: index < currentStep ? theme.accentGreen : index === currentStep ? theme.text : theme.textSoft,
+                        fontWeight: index === currentStep ? "600" : "400",
+                      }}
+                    >
                       {step.label}
                     </Text>
                   </View>

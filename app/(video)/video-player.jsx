@@ -360,42 +360,43 @@ const Description = ({ item, onOpenComments, onDownloadPress, downloadStatus, do
           </ScrollView>
         </View>
 
-        {(joinedTags || item?.description) && (() => {
-          const description = item?.description || "No description provided.";
-          const descLineCount = description.split(/\r\n|\r|\n/).length;
-          const showToggle = description.length > 130 || descLineCount > 3;
+        {(joinedTags || item?.description) &&
+          (() => {
+            const description = item?.description || "No description provided.";
+            const descLineCount = description.split(/\r\n|\r|\n/).length;
+            const showToggle = description.length > 130 || descLineCount > 3;
 
-          return (
-            <View className="mt-3 rounded-xl p-1" style={{ backgroundColor: theme.surfaceMuted }}>
-              <Text className="mb-2 font-sans text-xs font-semibold" style={{ color: theme.textMuted }}>
-                Description
-              </Text>
-              {joinedTags ? (
-                <Text className="mb-2 font-sans text-xs" style={{ color: theme.textSoft }}>
-                  {joinedTags}
+            return (
+              <View className="mt-3 rounded-xl p-1" style={{ backgroundColor: theme.surfaceMuted }}>
+                <Text className="mb-2 font-sans text-xs font-semibold" style={{ color: theme.textMuted }}>
+                  Description
                 </Text>
-              ) : null}
-              <Text
-                className="font-sans text-sm leading-5"
-                style={{ color: theme.textMuted }}
-                numberOfLines={descExpanded ? undefined : 3}
-                ellipsizeMode="tail"
-                // Tap anywhere on the description to toggle — matches web.
-                onPress={showToggle ? () => setDescExpanded((prev) => !prev) : undefined}
-                suppressHighlighting
-              >
-                {description}
-              </Text>
-              {showToggle ? (
-                <TouchableOpacity onPress={() => setDescExpanded((prev) => !prev)}>
-                  <Text className="mt-1 font-sans text-sm" style={{ color: theme.primary }}>
-                    {descExpanded ? "See less" : "See more"}
+                {joinedTags ? (
+                  <Text className="mb-2 font-sans text-xs" style={{ color: theme.textSoft }}>
+                    {joinedTags}
                   </Text>
-                </TouchableOpacity>
-              ) : null}
-            </View>
-          );
-        })()}
+                ) : null}
+                <Text
+                  className="font-sans text-sm leading-5"
+                  style={{ color: theme.textMuted }}
+                  numberOfLines={descExpanded ? undefined : 3}
+                  ellipsizeMode="tail"
+                  // Tap anywhere on the description to toggle — matches web.
+                  onPress={showToggle ? () => setDescExpanded((prev) => !prev) : undefined}
+                  suppressHighlighting
+                >
+                  {description}
+                </Text>
+                {showToggle ? (
+                  <TouchableOpacity onPress={() => setDescExpanded((prev) => !prev)}>
+                    <Text className="mt-1 font-sans text-sm" style={{ color: theme.primary }}>
+                      {descExpanded ? "See less" : "See more"}
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            );
+          })()}
       </View>
     </View>
   );
@@ -461,10 +462,7 @@ const RecommendedVideos = React.memo(({ videos, isHidden }) => {
           >
             <Ionicons name="sparkles" size={13} color={theme.primary} />
           </View>
-          <Text
-            className="font-psemibold"
-            style={{ color: theme.text, fontSize: 13, letterSpacing: 1.6, textTransform: "uppercase" }}
-          >
+          <Text className="font-psemibold" style={{ color: theme.text, fontSize: 13, letterSpacing: 1.6, textTransform: "uppercase" }}>
             Recommended
           </Text>
         </View>
@@ -517,9 +515,7 @@ const RecommendedVideos = React.memo(({ videos, isHidden }) => {
           {filteredVideos.map((item) => {
             if (!item?.uri) return null;
 
-            const tagText = Array.isArray(item?.tags)
-              ? item.tags.filter(Boolean).slice(0, 3).join(" · ")
-              : "";
+            const tagText = Array.isArray(item?.tags) ? item.tags.filter(Boolean).slice(0, 3).join(" · ") : "";
 
             return (
               <TouchableOpacity
@@ -624,9 +620,7 @@ const RecommendedVideos = React.memo(({ videos, isHidden }) => {
                           style={{ color: theme.textSoft, fontSize: 10, fontWeight: "600", letterSpacing: 0.1 }}
                           numberOfLines={1}
                         >
-                          {FormatNumber(
-                            (item?.videoStats?.totalViews || 0) * (Number(globalSettings?.["VIEWS_MULTIPLIER"]) || 1),
-                          )}
+                          {FormatNumber((item?.videoStats?.totalViews || 0) * (Number(globalSettings?.["VIEWS_MULTIPLIER"]) || 1))}
                           {" views"}
                         </Text>
                         <Text className="font-sans" style={{ color: theme.textSoft, fontSize: 10 }}>
@@ -2251,9 +2245,7 @@ const CommentSection = React.memo(
                                   style={{ flexDirection: "row", alignItems: "center" }}
                                 >
                                   {reactions.getReplyReaction(reply.$id) ? (
-                                    <Text style={{ fontSize: 13, lineHeight: 16 }}>
-                                      {reactions.getReplyReaction(reply.$id).emoji}
-                                    </Text>
+                                    <Text style={{ fontSize: 13, lineHeight: 16 }}>{reactions.getReplyReaction(reply.$id).emoji}</Text>
                                   ) : (
                                     <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.textSoft }}>
                                       React
@@ -2294,7 +2286,6 @@ const CommentSection = React.memo(
                   </View>
                 )}
               </View>
-
             </View>
           </View>
 
@@ -2392,17 +2383,10 @@ const CommentSection = React.memo(
                 <Ionicons name="chatbubble-ellipses" size={14} color={theme.primary} />
               </View>
               <View className="flex-1">
-                <Text
-                  className="font-psemibold"
-                  style={{ color: theme.text, fontSize: 12, letterSpacing: 1.6, textTransform: "uppercase" }}
-                >
+                <Text className="font-psemibold" style={{ color: theme.text, fontSize: 12, letterSpacing: 1.6, textTransform: "uppercase" }}>
                   Comments
                 </Text>
-                <Text
-                  className="font-sans"
-                  style={{ color: theme.textSoft, fontSize: 11, letterSpacing: 0.2, marginTop: 1 }}
-                  numberOfLines={1}
-                >
+                <Text className="font-sans" style={{ color: theme.textSoft, fontSize: 11, letterSpacing: 0.2, marginTop: 1 }} numberOfLines={1}>
                   {commentsLoading
                     ? "Loading conversation…"
                     : totalDiscussionCount === 1
@@ -2498,10 +2482,7 @@ const CommentSection = React.memo(
               <Text className="font-bold" style={{ color: theme.text, fontSize: 15, letterSpacing: 0.2 }}>
                 Start the conversation
               </Text>
-              <Text
-                className="mt-1.5 max-w-[260px] text-center"
-                style={{ color: theme.textSoft, fontSize: 13, lineHeight: 18, letterSpacing: 0.1 }}
-              >
+              <Text className="mt-1.5 max-w-[260px] text-center" style={{ color: theme.textSoft, fontSize: 13, lineHeight: 18, letterSpacing: 0.1 }}>
                 No comments yet — be the first to share your thoughts on this video.
               </Text>
             </View>
@@ -2558,24 +2539,12 @@ const CommentSection = React.memo(
             >
               <View className="flex-row items-center" style={{ flex: 1 }}>
                 <Ionicons name="return-down-forward" size={13} color={theme.primary} style={{ marginRight: 6 }} />
-                <Text
-                  className="font-medium"
-                  style={{ color: theme.text, fontSize: 12, letterSpacing: 0.1 }}
-                  numberOfLines={1}
-                >
-                  Replying to{" "}
-                  <Text style={{ color: theme.primary, fontWeight: "700" }}>{replyTarget.username}</Text>
+                <Text className="font-medium" style={{ color: theme.text, fontSize: 12, letterSpacing: 0.1 }} numberOfLines={1}>
+                  Replying to <Text style={{ color: theme.primary, fontWeight: "700" }}>{replyTarget.username}</Text>
                 </Text>
               </View>
-              <TouchableOpacity
-                onPress={handleCancelReply}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                accessibilityLabel="Cancel reply"
-              >
-                <Text
-                  className="font-bold"
-                  style={{ color: theme.primary, fontSize: 11, letterSpacing: 0.4, textTransform: "uppercase" }}
-                >
+              <TouchableOpacity onPress={handleCancelReply} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} accessibilityLabel="Cancel reply">
+                <Text className="font-bold" style={{ color: theme.primary, fontSize: 11, letterSpacing: 0.4, textTransform: "uppercase" }}>
                   Cancel
                 </Text>
               </TouchableOpacity>
@@ -2652,11 +2621,7 @@ const CommentSection = React.memo(
                 borderRadius: 999,
                 alignItems: "center",
                 justifyContent: "center",
-                backgroundColor: isSubmitting
-                  ? theme.surfaceStrong
-                  : commentText.trim()
-                    ? theme.primary
-                    : theme.surfaceMuted,
+                backgroundColor: isSubmitting ? theme.surfaceStrong : commentText.trim() ? theme.primary : theme.surfaceMuted,
                 borderWidth: commentText.trim() ? 0 : 1,
                 borderColor: theme.border,
                 shadowColor: theme.primary,
@@ -2671,12 +2636,7 @@ const CommentSection = React.memo(
               {isSubmitting ? (
                 <LoaderKit style={{ width: 14, height: 14, opacity: 0.9 }} name={"BallSpinFadeLoader"} color={theme.primaryContrast} />
               ) : (
-                <Ionicons
-                  name="send"
-                  size={17}
-                  color={commentText.trim() ? theme.primaryContrast : theme.iconMuted}
-                  style={{ marginLeft: -1 }}
-                />
+                <Ionicons name="send" size={17} color={commentText.trim() ? theme.primaryContrast : theme.iconMuted} style={{ marginLeft: -1 }} />
               )}
             </TouchableOpacity>
           </View>
@@ -2774,7 +2734,10 @@ const VideoPlayer = () => {
   const playlistIndexParam = Array.isArray(playlistIndex) ? playlistIndex[0] : playlistIndex;
   const playlistQueue = useMemo(() => {
     if (!playlistUrisParam || typeof playlistUrisParam !== "string") return null;
-    const uris = playlistUrisParam.split(",").map((u) => u.trim()).filter(Boolean);
+    const uris = playlistUrisParam
+      .split(",")
+      .map((u) => u.trim())
+      .filter(Boolean);
     if (uris.length === 0) return null;
     const idx = Number(playlistIndexParam);
     return { uris, index: Number.isFinite(idx) ? idx : 0 };
@@ -5003,10 +4966,7 @@ const VideoPlayer = () => {
               )}
             </View>
             <View className="flex-1">
-              <Text
-                className="font-psemibold"
-                style={{ color: theme.text, fontSize: 13, letterSpacing: 1.4, textTransform: "uppercase" }}
-              >
+              <Text className="font-psemibold" style={{ color: theme.text, fontSize: 13, letterSpacing: 1.4, textTransform: "uppercase" }}>
                 {downloadConfirmationLocked ? "Locked video" : "Save offline"}
               </Text>
               <Text className="mt-0.5" style={{ color: theme.textSoft, fontSize: 12, lineHeight: 16 }}>
@@ -5090,10 +5050,7 @@ const VideoPlayer = () => {
                 color="#FFFFFF"
                 style={{ marginRight: 6 }}
               />
-              <Text
-                className="font-psemibold"
-                style={{ color: "#FFFFFF", fontSize: 13, letterSpacing: 0.4, textTransform: "uppercase" }}
-              >
+              <Text className="font-psemibold" style={{ color: "#FFFFFF", fontSize: 13, letterSpacing: 0.4, textTransform: "uppercase" }}>
                 {downloadConfirmationLocked ? "Unlock & Download" : "Download"}
               </Text>
             </TouchableOpacity>

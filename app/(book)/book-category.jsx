@@ -153,13 +153,13 @@ const BookCategory = () => {
         } else if (sectionLabel === FIXED_SECTIONS.RECENTLY) {
           const res = await bookService.fetchPublishedBooks({ limit: 60 });
           fetched = res?.documents || [];
-          nextLastId = fetched.length > 0 ? fetched[fetched.length - 1]?.$id ?? null : null;
+          nextLastId = fetched.length > 0 ? (fetched[fetched.length - 1]?.$id ?? null) : null;
           nextHasMore = fetched.length >= 60;
         } else {
           // Tag-based category.
           const res = await bookService.fetchPublishedBooks({ category: sectionLabel, limit: 60 });
           fetched = res?.documents || [];
-          nextLastId = fetched.length > 0 ? fetched[fetched.length - 1]?.$id ?? null : null;
+          nextLastId = fetched.length > 0 ? (fetched[fetched.length - 1]?.$id ?? null) : null;
           nextHasMore = fetched.length >= 60;
         }
 

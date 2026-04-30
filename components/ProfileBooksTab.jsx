@@ -156,17 +156,17 @@ const ProfileBooksTab = ({
         }
         ListEmptyComponent={
           suppressEmptyState ? null : (
-          <View className="flex-1 items-center justify-center px-4 py-12">
-            <MaterialCommunityIcons name="book-open-page-variant" size={48} color={theme.textSoft} />
-            <Text className="mt-4 font-sans text-lg font-semibold" style={{ fontFamily: "Poppins-SemiBold", color: theme.text }}>
-              No Books Yet
-            </Text>
-            <Text className="mt-2 text-center font-sans text-sm" style={{ fontFamily: "Poppins-Regular", color: theme.textSoft }}>
-              {isLoggedInUser
-                ? "You haven't published any books yet.\nStart writing and share your first story!"
-                : "This user hasn't published any books yet."}
-            </Text>
-          </View>
+            <View className="flex-1 items-center justify-center px-4 py-12">
+              <MaterialCommunityIcons name="book-open-page-variant" size={48} color={theme.textSoft} />
+              <Text className="mt-4 font-sans text-lg font-semibold" style={{ fontFamily: "Poppins-SemiBold", color: theme.text }}>
+                No Books Yet
+              </Text>
+              <Text className="mt-2 text-center font-sans text-sm" style={{ fontFamily: "Poppins-Regular", color: theme.textSoft }}>
+                {isLoggedInUser
+                  ? "You haven't published any books yet.\nStart writing and share your first story!"
+                  : "This user hasn't published any books yet."}
+              </Text>
+            </View>
           )
         }
         refreshControl={

@@ -53,7 +53,10 @@ export const BookStatsProvider = ({ children }) => {
       updateBookStats(bookId, { liked: optimisticLiked, likeCount: optimisticLikeCount });
 
       if (debounceTimersRef.current.has(bookId)) clearTimeout(debounceTimersRef.current.get(bookId));
-      debounceTimersRef.current.set(bookId, setTimeout(() => syncBookLike(bookId, userId), 500));
+      debounceTimersRef.current.set(
+        bookId,
+        setTimeout(() => syncBookLike(bookId, userId), 500),
+      );
     },
     [stats, updateBookStats],
   );

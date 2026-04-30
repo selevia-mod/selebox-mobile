@@ -100,7 +100,13 @@ const WithdrawModal = ({ visible, onClose, onConfirm, amount, setAmount, remaini
               style={{ backgroundColor: isDisabled ? theme.primarySoft : theme.primary }}
               disabled={isDisabled}
             >
-              {loading ? <ActivityIndicator size="small" color={theme.primaryContrast} /> : <Text className="font-bold" style={{ color: theme.primaryContrast }}>Confirm</Text>}
+              {loading ? (
+                <ActivityIndicator size="small" color={theme.primaryContrast} />
+              ) : (
+                <Text className="font-bold" style={{ color: theme.primaryContrast }}>
+                  Confirm
+                </Text>
+              )}
             </TouchableOpacity>
           </View>
         </View>

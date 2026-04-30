@@ -217,22 +217,12 @@ const VideoUnlockChoiceModal = ({
               elevation: 2,
             }}
           >
-            {isCoin ? (
-              <MaterialCommunityIcons name="poker-chip" size={17} color={accent} />
-            ) : (
-              <Ionicons name="star" size={17} color={accent} />
-            )}
+            {isCoin ? <MaterialCommunityIcons name="poker-chip" size={17} color={accent} /> : <Ionicons name="star" size={17} color={accent} />}
           </View>
-          <Text
-            className="font-bold"
-            style={{ color: TEXT_PRIMARY, fontSize: 18, lineHeight: 20, letterSpacing: 0.3 }}
-          >
+          <Text className="font-bold" style={{ color: TEXT_PRIMARY, fontSize: 18, lineHeight: 20, letterSpacing: 0.3 }}>
             {cost}
           </Text>
-          <Text
-            className="mt-0.5 text-[9px]"
-            style={{ color: accent, fontWeight: "800", letterSpacing: 1.2, textTransform: "uppercase" }}
-          >
+          <Text className="mt-0.5 text-[9px]" style={{ color: accent, fontWeight: "800", letterSpacing: 1.2, textTransform: "uppercase" }}>
             {cost === 1 ? (isCoin ? "Coin" : "Star") : isCoin ? "Coins" : "Stars"}
           </Text>
           <View
@@ -246,10 +236,7 @@ const VideoUnlockChoiceModal = ({
               borderColor: `${accent}55`,
             }}
           >
-            <Text
-              className="text-[9px] font-bold"
-              style={{ color: accent, letterSpacing: 0.5, textTransform: "uppercase" }}
-            >
+            <Text className="text-[9px] font-bold" style={{ color: accent, letterSpacing: 0.5, textTransform: "uppercase" }}>
               {isCoin ? "Forever" : `${recurringMin}-min`}
             </Text>
           </View>
@@ -258,11 +245,7 @@ const VideoUnlockChoiceModal = ({
             style={{ color: enabled ? TEXT_MUTED : TEXT_FAINT, textAlign: "center", letterSpacing: 0.1 }}
             numberOfLines={1}
           >
-            {enabled
-              ? isCoin
-                ? "Unlocks permanently"
-                : `Recharges every ${recurringMin}m`
-              : `You have ${balance}`}
+            {enabled ? (isCoin ? "Unlocks permanently" : `Recharges every ${recurringMin}m`) : `You have ${balance}`}
           </Text>
         </View>
 
@@ -314,11 +297,7 @@ const VideoUnlockChoiceModal = ({
           bottom: 0,
         }}
       >
-        <BlurView
-          intensity={Platform.OS === "ios" ? 35 : 60}
-          tint="dark"
-          style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
-        />
+        <BlurView intensity={Platform.OS === "ios" ? 35 : 60} tint="dark" style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} />
         <View
           style={{
             position: "absolute",
@@ -397,7 +376,7 @@ const VideoUnlockChoiceModal = ({
             right: 0,
             height: 110,
             backgroundColor: STAR_VIOLET,
-            opacity: 0.10,
+            opacity: 0.1,
           }}
         />
         {/* Subtle radial-ish glow in the top-left corner — second wash to
@@ -460,11 +439,7 @@ const VideoUnlockChoiceModal = ({
               <Ionicons name="play" size={16} color={STAR_VIOLET} />
             </View>
             <View className="flex-1">
-              <Text
-                className="font-bold"
-                style={{ color: TEXT_PRIMARY, fontSize: 16, letterSpacing: 0.3, lineHeight: 20 }}
-                numberOfLines={1}
-              >
+              <Text className="font-bold" style={{ color: TEXT_PRIMARY, fontSize: 16, letterSpacing: 0.3, lineHeight: 20 }} numberOfLines={1}>
                 Keep watching
               </Text>
               <Text
@@ -491,23 +466,11 @@ const VideoUnlockChoiceModal = ({
           {canAutoDeduct ? (
             <View className="mt-3">
               <View className="flex-row items-center justify-between" style={{ paddingHorizontal: 2 }}>
-                <Text
-                  className="text-[10px] font-bold"
-                  style={{ color: STAR_VIOLET, letterSpacing: 0.8, textTransform: "uppercase" }}
-                >
+                <Text className="text-[10px] font-bold" style={{ color: STAR_VIOLET, letterSpacing: 0.8, textTransform: "uppercase" }}>
                   Auto in {secondsLeft}s
                 </Text>
-                <Text
-                  className="text-[10px] font-semibold"
-                  style={{ color: TEXT_MUTED, letterSpacing: 0.4, textTransform: "uppercase" }}
-                >
-                  {loadingCurrency
-                    ? "Processing…"
-                    : canCoin && canStar
-                      ? "Coin → Star"
-                      : canCoin
-                        ? "Coin"
-                        : "Star"}
+                <Text className="text-[10px] font-semibold" style={{ color: TEXT_MUTED, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                  {loadingCurrency ? "Processing…" : canCoin && canStar ? "Coin → Star" : canCoin ? "Coin" : "Star"}
                 </Text>
               </View>
               <View
@@ -575,10 +538,7 @@ const VideoUnlockChoiceModal = ({
                 borderColor: "rgba(168, 85, 247, 0.40)",
               }}
             >
-              <Text
-                className="text-center text-[10px] font-semibold"
-                style={{ color: TEXT_SECONDARY, letterSpacing: 0.3 }}
-              >
+              <Text className="text-center text-[10px] font-semibold" style={{ color: TEXT_SECONDARY, letterSpacing: 0.3 }}>
                 Out of coins and stars · Top up in the Store to keep watching
               </Text>
             </View>

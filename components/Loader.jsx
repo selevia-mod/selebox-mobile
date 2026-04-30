@@ -9,7 +9,10 @@ const Loader = ({ isLoading, isFullHeightWidth }) => {
   const { height, width } = Dimensions.get("window");
   const style = isFullHeightWidth ? { height, width } : undefined;
   return (
-    <SafeAreaView className="absolute z-10 h-full w-full items-center justify-center space-y-4" style={[style, { backgroundColor: theme.background }]}>
+    <SafeAreaView
+      className="absolute z-10 h-full w-full items-center justify-center space-y-4"
+      style={[style, { backgroundColor: theme.background }]}
+    >
       <View className="space-y-[-10px]">
         <Text className="font-pbold text-3xl tracking-[3px]" style={{ color: theme.text }}>
           SELEBOX

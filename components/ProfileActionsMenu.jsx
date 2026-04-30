@@ -194,10 +194,7 @@ const ProfileActionsMenu = ({
     // content from algorithmic feeds for 30 days; their profile is still
     // visitable directly". Match the pattern used by the Videos 'Not interested'
     // signal once that backend lands.
-    Alert.alert(
-      "Snoozed for 30 days",
-      `You'll see less of ${targetName} for the next 30 days. You can still visit their profile directly.`,
-    );
+    Alert.alert("Snoozed for 30 days", `You'll see less of ${targetName} for the next 30 days. You can still visit their profile directly.`);
   };
 
   const runBlockPrompt = () => {
@@ -324,7 +321,11 @@ const ProfileActionsMenu = ({
           </Text>
 
           {/* Share — always visible */}
-          <TouchableOpacity className="mt-4 rounded-xl px-4 py-3" style={{ backgroundColor: theme.surfaceMuted }} onPress={() => queueAction("share")}>
+          <TouchableOpacity
+            className="mt-4 rounded-xl px-4 py-3"
+            style={{ backgroundColor: theme.surfaceMuted }}
+            onPress={() => queueAction("share")}
+          >
             <View className="flex flex-row items-center">
               <MaterialIcons name="ios-share" size={22} color={theme.icon} style={{ marginRight: 12 }} />
               <View>
@@ -341,7 +342,11 @@ const ProfileActionsMenu = ({
           {/* Report / Snooze / Block — only on other users' profiles */}
           {!isOwnProfile && (
             <>
-              <TouchableOpacity className="mt-2 rounded-xl px-4 py-3" style={{ backgroundColor: theme.surfaceMuted }} onPress={() => queueAction("report")}>
+              <TouchableOpacity
+                className="mt-2 rounded-xl px-4 py-3"
+                style={{ backgroundColor: theme.surfaceMuted }}
+                onPress={() => queueAction("report")}
+              >
                 <View className="flex flex-row items-center">
                   <MaterialIcons name="flag" size={22} color={theme.icon} style={{ marginRight: 12 }} />
                   <View>
@@ -355,7 +360,11 @@ const ProfileActionsMenu = ({
                 </View>
               </TouchableOpacity>
 
-              <TouchableOpacity className="mt-2 rounded-xl px-4 py-3" style={{ backgroundColor: theme.surfaceMuted }} onPress={() => queueAction("snooze")}>
+              <TouchableOpacity
+                className="mt-2 rounded-xl px-4 py-3"
+                style={{ backgroundColor: theme.surfaceMuted }}
+                onPress={() => queueAction("snooze")}
+              >
                 <View className="flex flex-row items-center">
                   <MaterialIcons name="schedule" size={22} color={theme.icon} style={{ marginRight: 12 }} />
                   <View>

@@ -224,12 +224,7 @@ const NotificationCard = ({ item, onViewed }) => {
       }}
     >
       <View style={{ position: "relative" }}>
-        <UserAvatar
-          name={senderName}
-          avatarUri={avatarUri}
-          size={44}
-          borderRadius={22}
-        />
+        <UserAvatar name={senderName} avatarUri={avatarUri} size={44} borderRadius={22} />
         {isUnread && (
           <View
             style={{
@@ -248,19 +243,12 @@ const NotificationCard = ({ item, onViewed }) => {
       </View>
 
       <View style={{ flex: 1, marginLeft: 12, marginRight: hasThumbnail ? 8 : 0 }}>
-        <Text
-          style={{ fontSize: 14, lineHeight: 19, color: isUnread ? theme.text : theme.textMuted }}
-          numberOfLines={3}
-        >
+        <Text style={{ fontSize: 14, lineHeight: 19, color: isUnread ? theme.text : theme.textMuted }} numberOfLines={3}>
           <Text style={{ fontWeight: "700", color: theme.text }}>{senderName}</Text>
           <Text> </Text>
           <Text style={{ fontWeight: isUnread ? "500" : "400" }}>{messageText}</Text>
         </Text>
-        {createdAtLabel ? (
-          <Text style={{ marginTop: 2, fontSize: 11, color: theme.textSubtle }}>
-            {createdAtLabel}
-          </Text>
-        ) : null}
+        {createdAtLabel ? <Text style={{ marginTop: 2, fontSize: 11, color: theme.textSubtle }}>{createdAtLabel}</Text> : null}
       </View>
 
       {hasThumbnail && (

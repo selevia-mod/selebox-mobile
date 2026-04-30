@@ -403,9 +403,7 @@ const BookInlineCommentItem = memo(
                                     style={{ flexDirection: "row", alignItems: "center" }}
                                   >
                                     {reactions.getReplyReaction(reply.$id) ? (
-                                      <Text style={{ fontSize: 13, lineHeight: 16 }}>
-                                        {reactions.getReplyReaction(reply.$id).emoji}
-                                      </Text>
+                                      <Text style={{ fontSize: 13, lineHeight: 16 }}>{reactions.getReplyReaction(reply.$id).emoji}</Text>
                                     ) : (
                                       <Text className="font-sans text-[11px] font-semibold" style={{ color: palette.timestamp }}>
                                         React
@@ -448,7 +446,6 @@ const BookInlineCommentItem = memo(
                 </View>
               ) : null}
             </View>
-
           </View>
         </View>
 

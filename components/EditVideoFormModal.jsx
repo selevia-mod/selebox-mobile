@@ -253,7 +253,9 @@ export default function EditVideoFormModal({ visible, onClose, initialData = {},
                       return (
                         <TouchableOpacity
                           key={tag}
-                          onPress={() => setVideoForm((p) => ({ ...p, tags: p.tags.includes(tag) ? p.tags.filter((t) => t !== tag) : [...p.tags, tag] }))}
+                          onPress={() =>
+                            setVideoForm((p) => ({ ...p, tags: p.tags.includes(tag) ? p.tags.filter((t) => t !== tag) : [...p.tags, tag] }))
+                          }
                           className="rounded-full px-4 py-2"
                           disabled={isDisabled}
                           style={{ backgroundColor: isSelected ? theme.primary : theme.surfaceStrong, opacity: isDisabled ? 0.35 : 1 }}

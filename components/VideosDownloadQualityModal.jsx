@@ -68,10 +68,7 @@ const VideosDownloadQualityModal = ({ showCoinOverlay, downloadQualityPickerVisi
             <MaterialCommunityIcons name="cloud-download-outline" size={20} color={theme.primary} />
           </View>
           <View className="flex-1">
-            <Text
-              className="font-psemibold"
-              style={{ color: theme.text, fontSize: 13, letterSpacing: 1.4, textTransform: "uppercase" }}
-            >
+            <Text className="font-psemibold" style={{ color: theme.text, fontSize: 13, letterSpacing: 1.4, textTransform: "uppercase" }}>
               Download quality
             </Text>
             <Text className="mt-0.5" style={{ color: theme.textSoft, fontSize: 12, lineHeight: 16 }}>
@@ -131,11 +128,7 @@ const VideosDownloadQualityModal = ({ showCoinOverlay, downloadQualityPickerVisi
                           borderColor: theme.primary,
                         }}
                       >
-                        <Text
-                          style={{ color: theme.primary, fontSize: 9, fontWeight: "700", letterSpacing: 0.4 }}
-                        >
-                          {meta.tag}
-                        </Text>
+                        <Text style={{ color: theme.primary, fontSize: 9, fontWeight: "700", letterSpacing: 0.4 }}>{meta.tag}</Text>
                       </View>
                     </View>
                     <Text className="mt-0.5" style={{ color: theme.textSoft, fontSize: 11, letterSpacing: 0.1 }}>

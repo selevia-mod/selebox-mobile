@@ -206,10 +206,7 @@ const BooksLibrary = ({ isActive = false }) => {
         >
           <Ionicons name="bookmark" size={13} color={theme.primary} />
         </View>
-        <Text
-          className="font-psemibold"
-          style={{ color: theme.text, fontSize: 13, letterSpacing: 1.6, textTransform: "uppercase" }}
-        >
+        <Text className="font-psemibold" style={{ color: theme.text, fontSize: 13, letterSpacing: 1.6, textTransform: "uppercase" }}>
           Your Library
         </Text>
       </View>

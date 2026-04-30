@@ -108,7 +108,6 @@ const notificationsSlice = createSlice({
   },
 });
 
-export const { setNotificationsCache, mergeNotificationsCache, markNotificationViewed, clearNotificationsCache } =
-  notificationsSlice.actions;
+export const { setNotificationsCache, mergeNotificationsCache, markNotificationViewed, clearNotificationsCache } = notificationsSlice.actions;
 
 export const notificationsReducer = notificationsSlice.reducer;

@@ -74,7 +74,10 @@ export const ClipsStatsProvider = ({ children }) => {
       }
 
       if (debounceTimersRef.current.has(clipId)) clearTimeout(debounceTimersRef.current.get(clipId));
-      debounceTimersRef.current.set(clipId, setTimeout(() => syncClipLike(clipId, user.$id), 500));
+      debounceTimersRef.current.set(
+        clipId,
+        setTimeout(() => syncClipLike(clipId, user.$id), 500),
+      );
     },
     [clipsStats, updateClipStats],
   );

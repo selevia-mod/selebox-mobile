@@ -20,7 +20,7 @@ import FormatNumber from "../lib/utils/format-number";
 import { formatDurationCompact, getVideoDurationSeconds } from "../lib/utils/video-duration";
 
 const ROW_THUMB_WIDTH = 150; // was 100 — 1.5× bump per design brief
-const ROW_THUMB_HEIGHT = Math.round(ROW_THUMB_WIDTH * 9 / 16); // 84
+const ROW_THUMB_HEIGHT = Math.round((ROW_THUMB_WIDTH * 9) / 16); // 84
 
 const formatTagList = (tags = []) => {
   if (!Array.isArray(tags) || tags.length === 0) return null;
@@ -69,9 +69,7 @@ const VideoCardSmall = ({ item, isFlexColumn, customHeight, customWidth, ...prop
 
     return (
       <TouchableOpacity activeOpacity={0.7} className="m-2 flex-row" onPress={handlePress} {...props}>
-        <View
-          style={{ width: ROW_THUMB_WIDTH, height: ROW_THUMB_HEIGHT, borderRadius: 8, overflow: "hidden", backgroundColor: theme.surfaceMuted }}
-        >
+        <View style={{ width: ROW_THUMB_WIDTH, height: ROW_THUMB_HEIGHT, borderRadius: 8, overflow: "hidden", backgroundColor: theme.surfaceMuted }}>
           <FastImage
             source={{ uri: item.thumbnail, priority: FastImage.priority.normal }}
             style={{ width: "100%", height: "100%" }}

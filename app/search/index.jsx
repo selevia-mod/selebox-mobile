@@ -90,8 +90,7 @@ const SearchScreen = () => {
 
   const trimmed = query.trim();
   const hasQuery = trimmed.length > 0;
-  const hasResults =
-    results.users.length > 0 || results.posts.length > 0 || results.books.length > 0 || results.videos.length > 0;
+  const hasResults = results.users.length > 0 || results.posts.length > 0 || results.books.length > 0 || results.videos.length > 0;
   const showEmptyResults = hasQuery && !searching && !hasResults;
 
   return (
@@ -140,22 +139,14 @@ const SearchScreen = () => {
             style={{ flex: 1, fontSize: 14, color: theme.searchText ?? theme.text, paddingVertical: 8 }}
           />
           {hasQuery ? (
-            <TouchableOpacity
-              onPress={() => setQuery("")}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              style={{ padding: 4 }}
-            >
+            <TouchableOpacity onPress={() => setQuery("")} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ padding: 4 }}>
               <Feather name="x" size={16} color={theme.iconMuted ?? theme.icon} />
             </TouchableOpacity>
           ) : null}
         </View>
       </View>
 
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{ paddingBottom: 32 }}
-        showsVerticalScrollIndicator={false}
-      >
+      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 32 }} showsVerticalScrollIndicator={false}>
         {/* Empty state — recent searches */}
         {!hasQuery && recents.length > 0 && (
           <View>
@@ -169,9 +160,7 @@ const SearchScreen = () => {
                 paddingBottom: 8,
               }}
             >
-              <Text style={{ fontSize: 13, fontWeight: "600", color: theme.textMuted ?? theme.text }}>
-                Recent searches
-              </Text>
+              <Text style={{ fontSize: 13, fontWeight: "600", color: theme.textMuted ?? theme.text }}>Recent searches</Text>
               <TouchableOpacity onPress={handleClearAll} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Text style={{ fontSize: 12, fontWeight: "600", color: theme.primary }}>Clear all</Text>
               </TouchableOpacity>
@@ -194,11 +183,7 @@ const SearchScreen = () => {
                 <Text style={{ flex: 1, fontSize: 14, color: theme.text }} numberOfLines={1}>
                   {q}
                 </Text>
-                <TouchableOpacity
-                  onPress={() => handleRecentRemove(q)}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  style={{ padding: 4 }}
-                >
+                <TouchableOpacity onPress={() => handleRecentRemove(q)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ padding: 4 }}>
                   <Feather name="x" size={16} color={theme.iconMuted ?? theme.icon} />
                 </TouchableOpacity>
               </TouchableOpacity>
@@ -210,14 +195,8 @@ const SearchScreen = () => {
         {!hasQuery && recents.length === 0 && (
           <View style={{ alignItems: "center", paddingTop: 80, paddingHorizontal: 24 }}>
             <Feather name="search" size={48} color={theme.iconMuted ?? theme.icon} />
-            <Text style={{ marginTop: 16, fontSize: 15, fontWeight: "600", color: theme.text }}>
-              Search Selebox
-            </Text>
-            <Text
-              style={{ marginTop: 6, fontSize: 13, color: theme.textSoft, textAlign: "center" }}
-            >
-              Find people, books, videos, and posts.
-            </Text>
+            <Text style={{ marginTop: 16, fontSize: 15, fontWeight: "600", color: theme.text }}>Search Selebox</Text>
+            <Text style={{ marginTop: 6, fontSize: 13, color: theme.textSoft, textAlign: "center" }}>Find people, books, videos, and posts.</Text>
           </View>
         )}
 
@@ -233,12 +212,7 @@ const SearchScreen = () => {
           <View style={{ marginTop: 12 }}>
             <SectionHeader label="People" theme={theme} />
             {results.users.map((user) => (
-              <TouchableOpacity
-                key={user.$id}
-                onPress={() => goToContent("user", user)}
-                activeOpacity={0.7}
-                style={resultRowStyle}
-              >
+              <TouchableOpacity key={user.$id} onPress={() => goToContent("user", user)} activeOpacity={0.7} style={resultRowStyle}>
                 <UserAvatar name={user?.username} avatarUri={user?.avatar} size={40} borderRadius={20} />
                 <View style={{ flex: 1, marginLeft: 12 }}>
                   <Text style={{ fontSize: 14, fontWeight: "600", color: theme.text }} numberOfLines={1}>
@@ -260,12 +234,7 @@ const SearchScreen = () => {
           <View style={{ marginTop: 8 }}>
             <SectionHeader label="Books" theme={theme} />
             {results.books.map((book) => (
-              <TouchableOpacity
-                key={book.$id}
-                onPress={() => goToContent("book", book)}
-                activeOpacity={0.7}
-                style={resultRowStyle}
-              >
+              <TouchableOpacity key={book.$id} onPress={() => goToContent("book", book)} activeOpacity={0.7} style={resultRowStyle}>
                 <View
                   style={{
                     width: 40,
@@ -303,12 +272,7 @@ const SearchScreen = () => {
           <View style={{ marginTop: 8 }}>
             <SectionHeader label="Videos" theme={theme} />
             {results.videos.map((video) => (
-              <TouchableOpacity
-                key={video.$id}
-                onPress={() => goToContent("video", video)}
-                activeOpacity={0.7}
-                style={resultRowStyle}
-              >
+              <TouchableOpacity key={video.$id} onPress={() => goToContent("video", video)} activeOpacity={0.7} style={resultRowStyle}>
                 <View
                   style={{
                     width: 64,
@@ -349,12 +313,7 @@ const SearchScreen = () => {
               const owner = post?.postOwner;
               const snippet = (post?.post || "").trim().slice(0, 80);
               return (
-                <TouchableOpacity
-                  key={post.$id}
-                  onPress={() => goToContent("post", post)}
-                  activeOpacity={0.7}
-                  style={resultRowStyle}
-                >
+                <TouchableOpacity key={post.$id} onPress={() => goToContent("post", post)} activeOpacity={0.7} style={resultRowStyle}>
                   <UserAvatar name={owner?.username} avatarUri={owner?.avatar} size={40} borderRadius={20} />
                   <View style={{ flex: 1, marginLeft: 12 }}>
                     <Text style={{ fontSize: 14, fontWeight: "600", color: theme.text }} numberOfLines={1}>
@@ -377,12 +336,8 @@ const SearchScreen = () => {
         {showEmptyResults && (
           <View style={{ alignItems: "center", paddingTop: 60, paddingHorizontal: 24 }}>
             <Feather name="search" size={40} color={theme.iconMuted ?? theme.icon} />
-            <Text style={{ marginTop: 12, fontSize: 14, fontWeight: "600", color: theme.text }}>
-              No results for "{trimmed}"
-            </Text>
-            <Text style={{ marginTop: 4, fontSize: 12, color: theme.textSoft, textAlign: "center" }}>
-              Try a different keyword or check spelling.
-            </Text>
+            <Text style={{ marginTop: 12, fontSize: 14, fontWeight: "600", color: theme.text }}>No results for "{trimmed}"</Text>
+            <Text style={{ marginTop: 4, fontSize: 12, color: theme.textSoft, textAlign: "center" }}>Try a different keyword or check spelling.</Text>
           </View>
         )}
       </ScrollView>

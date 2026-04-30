@@ -147,27 +147,17 @@ const VideoDownloadCard = ({ entry, onCancel, onRemove }) => {
               }}
             >
               <Ionicons name="play" size={9} color="#FFFFFF" />
-              <Text style={{ color: "#FFFFFF", fontSize: 9, fontWeight: "700", letterSpacing: 0.3, marginLeft: 3 }}>
-                OFFLINE
-              </Text>
+              <Text style={{ color: "#FFFFFF", fontSize: 9, fontWeight: "700", letterSpacing: 0.3, marginLeft: 3 }}>OFFLINE</Text>
             </View>
           )}
         </View>
 
         <View className="flex-1 justify-between" style={{ paddingRight: !isActive ? 30 : 0 }}>
           <View>
-            <Text
-              className="font-bold"
-              style={{ color: theme.text, fontSize: 14, lineHeight: 18, letterSpacing: 0.1 }}
-              numberOfLines={1}
-            >
+            <Text className="font-bold" style={{ color: theme.text, fontSize: 14, lineHeight: 18, letterSpacing: 0.1 }} numberOfLines={1}>
               {video.title || "Untitled Video"}
             </Text>
-            <Text
-              className="mt-0.5 font-medium"
-              style={{ color: theme.textSoft, fontSize: 11, letterSpacing: 0.1 }}
-              numberOfLines={1}
-            >
+            <Text className="mt-0.5 font-medium" style={{ color: theme.textSoft, fontSize: 11, letterSpacing: 0.1 }} numberOfLines={1}>
               {video?.uploader?.username || "Unknown"}
             </Text>
           </View>
@@ -203,10 +193,7 @@ const VideoDownloadCard = ({ entry, onCancel, onRemove }) => {
                 borderColor: badgeStyle.color,
               }}
             >
-              <Text
-                className="font-bold"
-                style={{ color: badgeStyle.color, fontSize: 9, letterSpacing: 0.4, textTransform: "uppercase" }}
-              >
+              <Text className="font-bold" style={{ color: badgeStyle.color, fontSize: 9, letterSpacing: 0.4, textTransform: "uppercase" }}>
                 {statusCopy[status] || "Pending"}
               </Text>
             </View>
@@ -298,11 +285,7 @@ const VideoDownloadCard = ({ entry, onCancel, onRemove }) => {
         >
           <View className="flex-row items-start">
             <MaterialIcons name="error-outline" size={13} color={theme.danger} style={{ marginRight: 6, marginTop: 1 }} />
-            <Text
-              className="flex-1 font-medium"
-              style={{ color: theme.danger, fontSize: 11, lineHeight: 15, letterSpacing: 0.1 }}
-              numberOfLines={3}
-            >
+            <Text className="flex-1 font-medium" style={{ color: theme.danger, fontSize: 11, lineHeight: 15, letterSpacing: 0.1 }} numberOfLines={3}>
               {entry.error}
             </Text>
           </View>

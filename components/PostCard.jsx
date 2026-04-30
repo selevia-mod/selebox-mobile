@@ -6,6 +6,10 @@ import FastImage from "react-native-fast-image";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { deletePost } from "../lib/posts";
+// Phase E.4 — tier-aware image source. Bunny Optimizer query params
+// for smaller bitmaps on low-tier; lower priority for off-viewport
+// loads so they don't compete with the in-viewport card's decode.
+import { optimizedImageSource } from "../lib/utils/image-source";
 import TimeAgo from "../lib/utils/time-ago";
 import { handleAppLink } from "../utils/appLinks";
 import LinkPreviewCard from "./LinkPreviewCard";
@@ -65,9 +69,7 @@ const PostCard = ({
   // the first render uses real dimensions instead of DEFAULT_IMAGE_ASPECT_RATIO.
   // Without this, switching feed tabs flashed every post through a square
   // placeholder before onLoad re-measured.
-  const [imageAspectRatios, setImageAspectRatios] = useState(() =>
-    buildInitialAspectMap(Array.isArray(item?.postUrls) ? item.postUrls : []),
-  );
+  const [imageAspectRatios, setImageAspectRatios] = useState(() => buildInitialAspectMap(Array.isArray(item?.postUrls) ? item.postUrls : []));
   const [imageErrors, setImageErrors] = useState({});
 
   const flatListImageRef = useRef(null);
@@ -266,12 +268,7 @@ const PostCard = ({
 
     if (hasError) {
       return (
-        <TouchableOpacity
-          activeOpacity={0.85}
-          onPress={handleRetry}
-          accessibilityLabel="Image failed to load. Tap to retry."
-          style={errorSlotStyle}
-        >
+        <TouchableOpacity activeOpacity={0.85} onPress={handleRetry} accessibilityLabel="Image failed to load. Tap to retry." style={errorSlotStyle}>
           <View
             style={{
               width: "100%",
@@ -328,14 +325,9 @@ const PostCard = ({
     }
 
     return (
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onPress={handleImagePress}
-        onLongPress={handleImageLongPress}
-        style={slotStyle}
-      >
+      <TouchableOpacity activeOpacity={0.85} onPress={handleImagePress} onLongPress={handleImageLongPress} style={slotStyle}>
         <FastImage
-          source={{ uri: imageUrl, priority: FastImage.priority.high }}
+          source={optimizedImageSource(imageUrl, { width: screenWidth, isViewport: true })}
           style={{ width: "100%", height: "100%", backgroundColor: theme.mediaBackground }}
           resizeMode={FastImage.resizeMode[resizeMode] || FastImage.resizeMode.cover}
           onLoad={onImageLoad}
@@ -362,11 +354,7 @@ const PostCard = ({
 
     if (count === 1) {
       const aspect = imageAspectRatios[urls[0]] || DEFAULT_IMAGE_ASPECT_RATIO;
-      return (
-        <View style={{ width: containerWidth }}>
-          {renderImageGridSlot(urls[0], 0, { width: "100%", aspectRatio: aspect }, "contain")}
-        </View>
-      );
+      return <View style={{ width: containerWidth }}>{renderImageGridSlot(urls[0], 0, { width: "100%", aspectRatio: aspect }, "contain")}</View>;
     }
 
     const halfWidth = (containerWidth - gap) / 2;
@@ -459,12 +447,26 @@ const PostCard = ({
         pointerEvents={isPending ? "none" : "auto"}
         style={{ opacity: isPending ? 0.55 : 1, backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}
       >
+        {/* Phase C.4 — "Reposted" banner. Renders above the post header
+            when the current post is a repost (Supabase shape sets
+            `reposted_from` + the relational join hydrates `original`).
+            Mirrors web's reposted-banner pattern. Inert when the post is
+            not a repost — pure additive change to the existing layout. */}
+        {item.reposted_from && item.original ? (
+          <View className="flex-row items-center px-4 pt-2" style={{ gap: 6 }}>
+            <Entypo name="cycle" size={12} color={theme.primary} />
+            <Text className="text-xs" style={{ color: theme.primary, fontWeight: "600", letterSpacing: 0.4, textTransform: "uppercase" }}>
+              Reposted
+            </Text>
+          </View>
+        ) : null}
+
         {/* Post Header */}
         <View className="flex flex-row items-center justify-center px-4 py-2">
           <View className="mr-2">
             <TouchableOpacity onPress={handleProfilePress} activeOpacity={0.7}>
               <FastImage
-                source={{ uri: item.postOwner.avatar, priority: FastImage.priority.normal }}
+                source={optimizedImageSource(item.postOwner.avatar, { width: 35, isViewport: true })}
                 style={{ height: 35, width: 35, borderRadius: 5, backgroundColor: theme.surfaceStrong }}
                 resizeMode={FastImage.resizeMode.cover}
                 className="mt-1"
@@ -500,36 +502,33 @@ const PostCard = ({
         </View>
 
         <View className="px-4 py-1">
-          {item.post && (() => {
-            const isExpandable = item.post?.length > 130 || lineCount > 3;
-            return (
-              <Text
-                style={{ fontSize: 15, color: theme.text }}
-                className="text-sm"
-                numberOfLines={expanded ? undefined : 3}
-                ellipsizeMode="tail"
-                // Tap anywhere on the body to toggle expand/collapse — matches web.
-                // Nested link Text elements have their own onPress and will short-circuit.
-                onPress={isExpandable ? toggleExpanded : undefined}
-                suppressHighlighting
-              >
-                {item.post.split(/(https?:\/\/[^\s]+)/g).map((part, idx) => {
-                  if (part.match(/https?:\/\/[^\s]+/)) {
-                    return (
-                      <Text
-                        key={idx}
-                        style={{ color: theme.primary, textDecorationLine: "underline" }}
-                        onPress={() => handleAppLink(part)}
-                      >
-                        {part}
-                      </Text>
-                    );
-                  }
-                  return part;
-                })}
-              </Text>
-            );
-          })()}
+          {item.post &&
+            (() => {
+              const isExpandable = item.post?.length > 130 || lineCount > 3;
+              return (
+                <Text
+                  style={{ fontSize: 15, color: theme.text }}
+                  className="text-sm"
+                  numberOfLines={expanded ? undefined : 3}
+                  ellipsizeMode="tail"
+                  // Tap anywhere on the body to toggle expand/collapse — matches web.
+                  // Nested link Text elements have their own onPress and will short-circuit.
+                  onPress={isExpandable ? toggleExpanded : undefined}
+                  suppressHighlighting
+                >
+                  {item.post.split(/(https?:\/\/[^\s]+)/g).map((part, idx) => {
+                    if (part.match(/https?:\/\/[^\s]+/)) {
+                      return (
+                        <Text key={idx} style={{ color: theme.primary, textDecorationLine: "underline" }} onPress={() => handleAppLink(part)}>
+                          {part}
+                        </Text>
+                      );
+                    }
+                    return part;
+                  })}
+                </Text>
+              );
+            })()}
 
           {(item.post?.length > 130 || lineCount > 3) && (
             <TouchableOpacity onPress={toggleExpanded}>
@@ -553,6 +552,73 @@ const PostCard = ({
             {renderImageGrid()}
           </View>
         )}
+
+        {/* Phase C.4 — Nested original card for reposts. Mirrors web's
+            `.reposted-card`. Renders after the reposter's caption + any
+            of their own images (web doesn't allow images on reposts but
+            we tolerate the shape if it ever shows up).
+            The original is a Supabase post row, so its fields use the
+            Supabase naming (id, body, image_url, profiles, created_at). */}
+        {item.reposted_from && item.original ? (
+          <View
+            className="mx-4 mb-3 rounded-2xl"
+            style={{
+              borderWidth: 1,
+              borderColor: theme.border,
+              backgroundColor: theme.surfaceMuted,
+              overflow: "hidden",
+            }}
+          >
+            <View className="flex-row items-center px-3 pt-3">
+              {item.original.profiles?.avatar_url ? (
+                <FastImage
+                  source={optimizedImageSource(item.original.profiles.avatar_url, { width: 32, isViewport: true })}
+                  style={{ width: 32, height: 32, borderRadius: 6, backgroundColor: theme.surfaceStrong }}
+                  resizeMode={FastImage.resizeMode.cover}
+                />
+              ) : (
+                <View
+                  className="items-center justify-center"
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 6,
+                    backgroundColor: theme.primarySoft,
+                    borderWidth: 1,
+                    borderColor: theme.primary,
+                  }}
+                >
+                  <Text className="font-pbold" style={{ color: theme.primary, fontSize: 12 }}>
+                    {(item.original.profiles?.username || "?").slice(0, 1).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+              <View className="ml-2.5 flex-1">
+                <Text className="text-sm font-bold" style={{ color: theme.text }} numberOfLines={1}>
+                  {item.original.profiles?.username || "Unknown"}
+                </Text>
+                {item.original.created_at ? (
+                  <Text className="text-[10px]" style={{ color: theme.textSoft }}>
+                    {TimeAgo(item.original.created_at)}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+            {item.original.body ? (
+              <Text className="px-3 pt-2 text-sm" style={{ color: theme.text, lineHeight: 20 }} numberOfLines={6}>
+                {item.original.body}
+              </Text>
+            ) : null}
+            {item.original.image_url ? (
+              <FastImage
+                source={optimizedImageSource(item.original.image_url, { width: screenWidth, isViewport: true })}
+                style={{ width: "100%", height: 220, marginTop: 8, backgroundColor: theme.surfaceStrong }}
+                resizeMode={FastImage.resizeMode.cover}
+              />
+            ) : null}
+            <View style={{ height: 12 }} />
+          </View>
+        ) : null}
 
         <PostInformation
           item={item}

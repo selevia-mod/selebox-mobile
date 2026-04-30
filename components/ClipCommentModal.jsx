@@ -131,12 +131,7 @@ const ClipCommentModal = ({ isVisible, onClose, item, onCommentPosted }) => {
       <TouchableWithoutFeedback>
         <View className="mb-5 flex flex-row space-x-2">
           <TouchableOpacity onPress={handleUserPress}>
-            <UserAvatar
-              name={item?.commentOwner?.username}
-              avatarUri={item?.commentOwner?.avatar}
-              size={40}
-              borderRadius={20}
-            />
+            <UserAvatar name={item?.commentOwner?.username} avatarUri={item?.commentOwner?.avatar} size={40} borderRadius={20} />
           </TouchableOpacity>
 
           <View className="flex flex-1 flex-col justify-center rounded-[8px] px-3 py-2" style={commentBubbleStyle}>

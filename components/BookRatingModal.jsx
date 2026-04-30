@@ -24,7 +24,9 @@ const BookRatingModal = ({ isVisible, onClose, onSubmit }) => {
     <Modal visible={isVisible} transparent animationType="fade">
       <View className="flex-1 items-center justify-center" style={{ backgroundColor: theme.backdrop }}>
         <View className="w-72 rounded-xl p-5" style={{ backgroundColor: theme.surfaceElevated, borderWidth: 1, borderColor: theme.border }}>
-          <Text className="mb-3 text-center text-lg font-semibold" style={{ color: theme.text }}>Rate this Book</Text>
+          <Text className="mb-3 text-center text-lg font-semibold" style={{ color: theme.text }}>
+            Rate this Book
+          </Text>
 
           {/* ⭐ Star Row */}
           <View className="mb-5 flex-row justify-center">
@@ -52,7 +54,9 @@ const BookRatingModal = ({ isVisible, onClose, onSubmit }) => {
           </TouchableOpacity>
 
           <TouchableOpacity onPress={onClose} className="mt-3">
-            <Text className="text-center" style={{ color: theme.textSoft }}>Cancel</Text>
+            <Text className="text-center" style={{ color: theme.textSoft }}>
+              Cancel
+            </Text>
           </TouchableOpacity>
         </View>
       </View>

@@ -1,5 +1,5 @@
 import { AntDesign, Feather, FontAwesome, MaterialIcons } from "@expo/vector-icons";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Alert, Text, TouchableOpacity, View } from "react-native";
 import Share from "react-native-share";
 import { useGlobalContext } from "../context/global-provider";
@@ -10,6 +10,7 @@ import FormatNumber from "../lib/utils/format-number";
 import { resolveVideoCommentCount } from "../lib/video";
 import secrets from "../private/secrets";
 import ReactionPicker from "./ReactionPicker";
+import RepostModal from "./RepostModal";
 import StyledDivider from "./StyledDivider";
 
 export default function StyledLikeCommentShare({
@@ -83,11 +84,17 @@ export default function StyledLikeCommentShare({
     [item, liked, reactions, toggleLike, user],
   );
 
-  const handleRepost = () =>
-    Alert.alert(
-      "Repost — coming soon",
-      "Reposts ship with Phase 5 of the Supabase migration. The button is here so you can preview the new layout.",
-    );
+  // Phase C — Repost. Tapping the button opens the RepostModal which
+  // writes a new post to Supabase with `reposted_from` set to the current
+  // post's id. Mirrors PostInformation.jsx's wiring.
+  const [repostModalVisible, setRepostModalVisible] = useState(false);
+  const handleRepost = () => setRepostModalVisible(true);
+  const handleRepostClose = (repost) => {
+    setRepostModalVisible(false);
+    if (repost) {
+      Alert.alert("Reposted!", "Your repost is live and visible to everyone on Selebox.");
+    }
+  };
 
   const handleShare = async () => {
     try {
@@ -131,9 +138,7 @@ export default function StyledLikeCommentShare({
             {safeLikeCount > 0 ? (
               <View style={{ flexDirection: "row", alignItems: "center" }}>
                 <Text style={{ fontSize: 14, marginRight: 6 }}>{summaryEmoji}</Text>
-                <Text style={{ fontSize: 12, fontWeight: "500", color: theme.textSoft ?? labelColor }}>
-                  {FormatNumber(safeLikeCount)}
-                </Text>
+                <Text style={{ fontSize: 12, fontWeight: "500", color: theme.textSoft ?? labelColor }}>{FormatNumber(safeLikeCount)}</Text>
               </View>
             ) : (
               <View />
@@ -208,8 +213,7 @@ export default function StyledLikeCommentShare({
 
           <TouchableOpacity onPress={handleShare} activeOpacity={0.85} style={secondaryFeedActionStyle}>
             <Feather name="share-2" size={17} color={theme.icon} style={{ marginRight: 6 }} />
-            <Text style={{ fontSize: 12, fontWeight: "500", color: labelColor }}>Share
-            </Text>
+            <Text style={{ fontSize: 12, fontWeight: "500", color: labelColor }}>Share</Text>
           </TouchableOpacity>
         </View>
 
@@ -220,6 +224,8 @@ export default function StyledLikeCommentShare({
           onSelect={handlePickReactionWithSync}
           onClose={reactions.closePicker}
         />
+
+        <RepostModal visible={repostModalVisible} onClose={handleRepostClose} originalPost={item} currentUser={user} />
       </View>
     );
   }
@@ -328,6 +334,8 @@ export default function StyledLikeCommentShare({
         onSelect={handlePickReactionWithSync}
         onClose={reactions.closePicker}
       />
+
+      <RepostModal visible={repostModalVisible} onClose={handleRepostClose} originalPost={item} currentUser={user} />
     </View>
   );
 }

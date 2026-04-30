@@ -22,6 +22,8 @@ import useAppTheme from "../../hooks/useAppTheme";
 import useResetOnBlur from "../../hooks/useResetOnBlur";
 import { BookService, fetchRandomBook } from "../../lib/books";
 import { BooksRankingService } from "../../lib/books-rankings";
+// Phase E.10 — tier-tuned FlashList window for the Books tab.
+import { getFlashListConfig } from "../../lib/device-tier";
 import tabNavigationEvents from "../../lib/tab-navigation-events";
 import {
   setCategoryBooks,
@@ -107,7 +109,9 @@ const Books = () => {
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   useResetOnBlur(setRefreshing, setIsFetchingMore);
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  // Phase E.10 — tier-tuned FlashList window for sections-of-sections list.
+  const flashListConfig = useMemo(() => getFlashListConfig({ screenHeight: windowHeight }), [windowHeight]);
   const flatListRef = useRef(null);
   const lastScrollY = useRef(0);
   const navHiddenRef = useRef(false);
@@ -461,7 +465,7 @@ const Books = () => {
                       fontSize: 12,
                       fontWeight: isActive ? "700" : "500",
                       letterSpacing: 0.1,
-                      color: isActive ? theme.primaryContrast ?? "#ffffff" : theme.textMuted ?? theme.text,
+                      color: isActive ? (theme.primaryContrast ?? "#ffffff") : (theme.textMuted ?? theme.text),
                     }}
                   >
                     {title}
@@ -485,6 +489,9 @@ const Books = () => {
                   keyExtractor={sectionKeyExtractor}
                   getItemType={getItemType}
                   estimatedItemSize={BOOKS_SECTION_ESTIMATED_HEIGHT}
+                  drawDistance={flashListConfig.drawDistance}
+                  removeClippedSubviews={flashListConfig.removeClippedSubviews}
+                  onEndReachedThreshold={flashListConfig.onEndReachedThreshold}
                   ItemSeparatorComponent={BooksSectionSeparator}
                   contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 50 }}
                   showsVerticalScrollIndicator={false}

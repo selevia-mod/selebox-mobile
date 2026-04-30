@@ -186,7 +186,10 @@ const UploadClips = ({ showMessage }) => {
           minutes long.
         </Text>
         <TouchableOpacity className="py-2" onPress={() => openPicker("videos")}>
-          <View className="aspect-video w-full items-center justify-center rounded-md" style={{ backgroundColor: clipForm?.clipUrl ? theme.accentGreen : theme.surfaceStrong }}>
+          <View
+            className="aspect-video w-full items-center justify-center rounded-md"
+            style={{ backgroundColor: clipForm?.clipUrl ? theme.accentGreen : theme.surfaceStrong }}
+          >
             {clipLoading ? (
               <LoaderKit style={{ width: 50, height: 50 }} name="LineScalePulseOutRapid" color={theme.primaryContrast} />
             ) : clipForm?.clipUrl ? (
@@ -226,7 +229,10 @@ const UploadClips = ({ showMessage }) => {
           <Text className="items-center text-lg font-bold font-semibold" style={{ color: theme.text }}>
             Title
           </Text>
-          <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`${clipForm?.title?.length || 0}/${sizeLimitTitleChars}`}</Text>
+          <Text
+            className="text-[10px] font-medium"
+            style={{ color: theme.textSoft }}
+          >{`${clipForm?.title?.length || 0}/${sizeLimitTitleChars}`}</Text>
         </View>
         <TextInput
           value={clipForm?.title}

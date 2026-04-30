@@ -1,17 +1,7 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  Animated,
-  ScrollView,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  useWindowDimensions,
-  View,
-} from "react-native";
+import { ActivityIndicator, Alert, Animated, ScrollView, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { MaintenanceModules, Modules } from "../constants/app";
 import { PROFILE_BANNER_ASPECT_RATIO } from "../constants/profile";
@@ -20,8 +10,8 @@ import useAppTheme from "../hooks/useAppTheme";
 import { getCurrentUserWithoutStream, updateBio } from "../lib/appwrite";
 import { FollowService } from "../lib/follows";
 import FormatNumber from "../lib/utils/format-number";
+import { getOrCreate1to1Conversation } from "../lib/messages-supabase";
 import { NotificationService } from "../lib/notifications";
-import { StreamService } from "../lib/stream";
 import { useModalMessage } from "../hooks/useModalMessage";
 import AnimatedSkeleton from "./AnimatedSkeleton";
 import CustomAlertModal from "./CustomAlertModal";
@@ -78,7 +68,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
 
   const { message, messageOpen, showMessage, closeMessage } = useModalMessage();
   const isLoggedInUser = loggedInUser?.$id === user?.$id;
-  const streamService = new StreamService();
+  // streamService removed in Phase D — chat is Supabase-native now.
   const notificationService = new NotificationService();
   const showProfileSkeleton = isLoadingProfile || !user;
   const bannerHeight = Math.round((screenWidth - 32) / PROFILE_BANNER_ASPECT_RATIO);
@@ -260,18 +250,22 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
       return;
     }
     try {
-      const channel = await streamService.createNewChannel({
-        currentUser: loggedInUser,
-        selectedUsers: [user],
-      });
+      // Phase D — chat is Supabase-native. Resolves an existing 1:1
+      // conversation between the logged-in user and the profile owner, or
+      // creates a fresh one. Then routes to the thread screen using the
+      // `conversationId` param the Supabase chat thread expects.
+      const conversation = await getOrCreate1to1Conversation(user?.$id || user?.id);
       router.push({
         pathname: "channel",
-        params: { channelId: channel.id },
+        params: { conversationId: conversation.id },
       });
     } catch (error) {
       console.log("handleMessage: error", error);
-      if (error?.message?.includes("deleted user") || error?.message?.includes("don't exist")) {
-        Alert.alert("Unavailable", "This user's account is no longer active.");
+      if (error?.message?.toLowerCase().includes("not signed in")) {
+        Alert.alert("Sign in to chat", "Chat is on the new system. Sign out and sign back in to start a conversation.");
+      } else if (error?.message?.includes("yourself")) {
+        // getOrCreate1to1Conversation rejects self-message attempts. Don't
+        // surface a scary error — this is a user-facing edge case.
       } else {
         Alert.alert("Error", "Could not start the conversation. Please try again.");
       }
@@ -315,11 +309,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
             profile only Share is shown inside the menu; on other users'
             profiles the menu shows Share / Report / Snooze / Block. */}
         <View className="absolute right-3 top-3">
-          <ProfileActionsMenu
-            targetUser={user}
-            isOwnProfile={isLoggedInUser}
-            onBlocked={() => router.back()}
-          />
+          <ProfileActionsMenu targetUser={user} isOwnProfile={isLoggedInUser} onBlocked={() => router.back()} />
         </View>
 
         <View
@@ -428,10 +418,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
                   color={isFollowing ? theme.icon : theme.primaryContrast}
                   style={{ marginRight: 6 }}
                 />
-                <Text
-                  className="text-sm font-bold"
-                  style={{ color: isFollowing ? theme.text : theme.primaryContrast, letterSpacing: 0.2 }}
-                >
+                <Text className="text-sm font-bold" style={{ color: isFollowing ? theme.text : theme.primaryContrast, letterSpacing: 0.2 }}>
                   {isLoadingFollow ? "Loading..." : isFollowing ? "Unfollow" : "Follow"}
                 </Text>
               </TouchableOpacity>
@@ -515,10 +502,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
           </>
         ) : (
           <View className="flex-row items-start justify-between" style={{ gap: 12 }}>
-            <Text
-              className="flex-1 text-sm leading-5"
-              style={{ color: savedBio ? theme.textMuted : theme.textSubtle }}
-            >
+            <Text className="flex-1 text-sm leading-5" style={{ color: savedBio ? theme.textMuted : theme.textSubtle }}>
               {bioText}
             </Text>
             {isLoggedInUser ? (
@@ -544,11 +528,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
   // shadow lift; inactive pills are transparent with muted text.
   const renderTabBar = () => (
     <View className="pb-2 pt-3">
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ alignItems: "center", paddingTop: 4, paddingBottom: 8 }}
-      >
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: "center", paddingTop: 4, paddingBottom: 8 }}>
         {PROFILE_TABS.map(({ title, icon }, index) => {
           const isActive = activeTab === index;
           return (
@@ -573,12 +553,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
                 elevation: isActive ? 3 : 0,
               }}
             >
-              <MaterialIcons
-                name={icon}
-                size={14}
-                color={isActive ? theme.primaryContrast : theme.iconMuted}
-                style={{ marginRight: 6 }}
-              />
+              <MaterialIcons name={icon} size={14} color={isActive ? theme.primaryContrast : theme.iconMuted} style={{ marginRight: 6 }} />
               <Text
                 style={{
                   fontSize: 13,

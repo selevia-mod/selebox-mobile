@@ -9,6 +9,14 @@ import AnimatedSkeleton from "../components/AnimatedSkeleton";
 import useAppTheme from "../hooks/useAppTheme";
 import storyEvents from "../lib/story-events";
 import { StoryService } from "../lib/story-service";
+// Phase E.9 — tier-aware image transforms for the horizontal story
+// strip. Story tiles are 112dp wide × 176dp tall and we render up to
+// ~10 of them at the top of the home feed, so any per-tile decode
+// savings multiply.
+import { optimizedImageUri } from "../lib/utils/image-source";
+
+const STORY_TILE_WIDTH = 112;
+const STORY_AVATAR_WIDTH = 32;
 
 const ProgressRing = ({ progress = 0, size = 56, strokeWidth = 6 }) => {
   const { theme } = useAppTheme();
@@ -334,13 +342,17 @@ const StoryBar = ({ user, forceUpdate }) => {
     return (
       <TouchableOpacity activeOpacity={0.8} onPress={() => handlePressStory(item)} className="mr-2">
         <View className="relative h-44 w-28 overflow-hidden rounded-xl" style={{ backgroundColor: theme.surfaceMuted }}>
-          <FastImage source={{ uri: placeholderImage }} className="h-full w-full" resizeMode="cover" />
+          <FastImage
+            source={{ uri: optimizedImageUri(placeholderImage, { width: STORY_TILE_WIDTH }) }}
+            className="h-full w-full"
+            resizeMode="cover"
+          />
           <View className="absolute inset-0" style={{ backgroundColor: theme.mediaOverlay }} />
 
           {item.user?.avatar && (
             <View className="absolute bottom-3 left-0 right-0 items-center">
               <FastImage
-                source={{ uri: item.user.avatar }}
+                source={{ uri: optimizedImageUri(item.user.avatar, { width: STORY_AVATAR_WIDTH }) }}
                 className="h-8 w-8 rounded-full border-2"
                 style={{ borderColor: theme.accentPurple }}
                 resizeMode="cover"
@@ -359,7 +371,11 @@ const StoryBar = ({ user, forceUpdate }) => {
     <TouchableOpacity activeOpacity={0.8} onPress={handleAddStory} className="mr-2">
       <View className="relative h-44 w-28 items-center justify-center overflow-hidden rounded-xl" style={{ backgroundColor: theme.surfaceMuted }}>
         {/* Background image */}
-        <FastImage source={{ uri: user?.avatar }} className="absolute h-full w-full opacity-40" resizeMode="cover" />
+        <FastImage
+          source={{ uri: optimizedImageUri(user?.avatar, { width: STORY_TILE_WIDTH }) }}
+          className="absolute h-full w-full opacity-40"
+          resizeMode="cover"
+        />
         <View className="absolute inset-0" style={{ backgroundColor: theme.mediaOverlayStrong }} />
 
         {/* Bottom purple section */}
@@ -390,7 +406,11 @@ const StoryBar = ({ user, forceUpdate }) => {
     return (
       <TouchableOpacity activeOpacity={0.8} onPress={() => handlePressStory(story)} className="mr-2">
         <View className="relative h-44 w-28 overflow-hidden rounded-xl" style={{ backgroundColor: theme.surfaceMuted }}>
-          <FastImage source={{ uri: placeholderImage }} className="h-full w-full" resizeMode="cover" />
+          <FastImage
+            source={{ uri: optimizedImageUri(placeholderImage, { width: STORY_TILE_WIDTH }) }}
+            className="h-full w-full"
+            resizeMode="cover"
+          />
           <View className="absolute inset-0" style={{ backgroundColor: theme.mediaOverlay }} />
 
           {(isUploading || isFailed || isProcessing) && <View className="absolute inset-0" style={{ backgroundColor: theme.mediaOverlayStrong }} />}

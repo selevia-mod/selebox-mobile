@@ -7,18 +7,18 @@ export const DEFAULT_THEME_MODE = THEME_MODES.light;
 
 const sharedColors = {
   // Primary — Selebox violet (matches selebox.com)
-  primary: "#8b5cf6",                       // violet-500
-  primaryStrong: "#7c3aed",                 // violet-600 — pressed/active
-  primaryDark: "#5b21b6",                   // violet-800
-  primaryDeepest: "#4c1d95",                // violet-900 — gradient end
-  primaryLight: "#a78bfa",                  // violet-400
-  primaryLightest: "#c4b5fd",               // violet-300
+  primary: "#8b5cf6", // violet-500
+  primaryStrong: "#7c3aed", // violet-600 — pressed/active
+  primaryDark: "#5b21b6", // violet-800
+  primaryDeepest: "#4c1d95", // violet-900 — gradient end
+  primaryLight: "#a78bfa", // violet-400
+  primaryLightest: "#c4b5fd", // violet-300
   primarySoft: "rgba(139,92,246,0.16)",
   primaryContrast: "#ffffff",
 
   // Accents
-  accentPink: "#ec4899",                    // matches web --pink
-  accentPurple: "#8b5cf6",                  // alias of primary — used by section pills, selected-state borders, story bar accents
+  accentPink: "#ec4899", // matches web --pink
+  accentPurple: "#8b5cf6", // alias of primary — used by section pills, selected-state borders, story bar accents
   accentPurpleSoft: "rgba(139,92,246,0.16)",
   accentBlue: "#3ec5ff",
   accentBlueSoft: "rgba(62,197,255,0.16)",
@@ -26,11 +26,11 @@ const sharedColors = {
   accentGreenSoft: "rgba(34,197,94,0.16)",
   accentTeal: "#14b8a6",
   accentTealSoft: "rgba(20,184,166,0.16)",
-  accentAmber: "#fbbf24",                   // matches web --accent (coins)
+  accentAmber: "#fbbf24", // matches web --accent (coins)
   accentAmberSoft: "rgba(251,191,36,0.16)",
 
   // Semantic
-  danger: "#ef4444",                        // matches web --red
+  danger: "#ef4444", // matches web --red
   dangerSoft: "rgba(239,68,68,0.16)",
   like: "#ff4d6d",
   likeSoft: "rgba(255,77,109,0.18)",
@@ -48,12 +48,12 @@ export const themeColors = {
     mode: THEME_MODES.dark,
     isDark: true,
     ...sharedColors,
-    background: "#0f0f0f",                  // YouTube page bg
+    background: "#0f0f0f", // YouTube page bg
     backgroundMuted: "#181818",
-    surface: "#1f1f1f",                     // cards
-    surfaceElevated: "#272727",             // popovers / modals
+    surface: "#1f1f1f", // cards
+    surfaceElevated: "#272727", // popovers / modals
     surfaceMuted: "rgba(255,255,255,0.04)",
-    surfaceStrong: "#3a3a3a",               // pressed
+    surfaceStrong: "#3a3a3a", // pressed
     card: "#1f1f1f",
     cardStrong: "#272727",
     border: "rgba(255,255,255,0.08)",
@@ -91,7 +91,7 @@ export const themeColors = {
     mode: THEME_MODES.light,
     isDark: false,
     ...sharedColors,
-    background: "#faf8ff",                  // subtle violet tint
+    background: "#faf8ff", // subtle violet tint
     backgroundMuted: "#f1f1f7",
     surface: "#ffffff",
     surfaceElevated: "#ffffff",

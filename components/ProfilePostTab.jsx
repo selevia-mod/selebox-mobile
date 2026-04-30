@@ -1,13 +1,23 @@
 import { AntDesign, MaterialCommunityIcons } from "@expo/vector-icons";
 import { FlashList } from "@shopify/flash-list";
 import { router, useFocusEffect } from "expo-router";
-import { useCallback, useRef, useState } from "react";
-import { ActivityIndicator, RefreshControl, Text, TouchableOpacity, View } from "react-native";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Dimensions, RefreshControl, Text, TouchableOpacity, View } from "react-native";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { consumePostCommentModalResume } from "../lib/post-comment-modal-resume";
 import { attachIsLikedByCurrentUser, fetchPosts, hydrateResourcePosts } from "../lib/posts";
+// Phase C.9 — Supabase profile posts. When USE_SUPABASE_POSTS is on we
+// read the user's posts through the polymorphic posts table and run
+// them through the same adapter the home feed uses, so PostCard renders
+// reposts correctly on profile pages too.
+import { USE_SUPABASE_POSTS } from "../lib/feature-flags";
+import { adaptSupabasePostToAppwriteShape, fetchPostsByUser, fetchPostStats } from "../lib/posts-supabase";
+// Phase E.5 — same tier-tuned FlashList config as the home feed.
+import { getFlashListConfig } from "../lib/device-tier";
 import logger from "../lib/utils/logger";
+
+const { height: PROFILE_SCREEN_HEIGHT } = Dimensions.get("window");
 import { useModalMessage } from "../hooks/useModalMessage";
 import CustomAlertModal from "./CustomAlertModal";
 import ImageViewer from "./ImageViewer";
@@ -51,6 +61,9 @@ const ProfilePostTab = ({
   const flatListRef = listRef || internalListRef;
   const hasLoadedRef = useRef(false);
   const isLoggedInUser = user?.$id === userId;
+  // Phase E.5 — tier-aware list window. One per render via useMemo so
+  // the FlashList prop identity is stable across re-renders.
+  const flashListConfig = useMemo(() => getFlashListConfig({ screenHeight: PROFILE_SCREEN_HEIGHT }), []);
 
   useFocusEffect(
     useCallback(() => {
@@ -78,6 +91,29 @@ const ProfilePostTab = ({
     if (!hasLoadedRef.current) onLoadingChange?.(true);
     try {
       if (userId) {
+        // Phase C.9 — Supabase read path. `userId` here is whatever the
+        // navigator passed (Supabase UUID for users that signed in
+        // post-Phase-B; Appwrite $id otherwise). When the user is on
+        // Supabase auth, the IDs line up; mismatched-shape callers fall
+        // through to the legacy Appwrite path.
+        if (USE_SUPABASE_POSTS) {
+          const supabasePosts = await fetchPostsByUser({ userId, limit: 10 });
+          if (supabasePosts.length > 0) {
+            const postIds = supabasePosts.map((p) => p.id).filter(Boolean);
+            const stats = await fetchPostStats(postIds);
+            const adapted = supabasePosts.map((p) => adaptSupabasePostToAppwriteShape(p, stats)).filter(Boolean);
+            setPosts(adapted);
+            setLastId(supabasePosts[supabasePosts.length - 1].created_at || null);
+            // No `total` count on Supabase reads; use page-size heuristic.
+            setHasMore(supabasePosts.length === 10);
+          } else {
+            setPosts([]);
+            setLastId(null);
+            setHasMore(false);
+          }
+          return;
+        }
+
         const postsData = await fetchPosts({ limit: 10, userId: userId });
         if (postsData.documents.length > 0) {
           // 1) Batched isLiked attach so PostInformation skips its per-card lookup.
@@ -106,6 +142,32 @@ const ProfilePostTab = ({
     try {
       if (!lastId || !hasMore) return;
       setIsFetchingMore(true);
+
+      // Phase C.9 — Supabase pagination uses `before` (created_at cursor),
+      // which is what we stashed into lastId during getPosts.
+      if (USE_SUPABASE_POSTS) {
+        const supabasePosts = await fetchPostsByUser({ userId, limit: 10, before: lastId });
+        if (supabasePosts.length === 0) {
+          setHasMore(false);
+          setIsFetchingMore(false);
+          return;
+        }
+        const postIds = supabasePosts.map((p) => p.id).filter(Boolean);
+        const stats = await fetchPostStats(postIds);
+        const adapted = supabasePosts.map((p) => adaptSupabasePostToAppwriteShape(p, stats)).filter(Boolean);
+        const uniquePosts = adapted.filter((post) => !posts.some((existing) => existing.$id === post.$id));
+        if (uniquePosts.length === 0) {
+          setHasMore(false);
+          setIsFetchingMore(false);
+          return;
+        }
+        setPosts([...posts, ...uniquePosts]);
+        setLastId(supabasePosts[supabasePosts.length - 1].created_at || null);
+        setHasMore(supabasePosts.length === 10);
+        setIsFetchingMore(false);
+        return;
+      }
+
       const postsData = await fetchPosts({ limit: 10, lastId: lastId, userId: userId });
       const enrichedDocs = await attachIsLikedByCurrentUser(postsData.documents, user?.$id);
       const hydratedDocs = await hydrateResourcePosts(enrichedDocs);
@@ -227,14 +289,16 @@ const ProfilePostTab = ({
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
         estimatedItemSize={485}
+        drawDistance={flashListConfig.drawDistance}
+        removeClippedSubviews={flashListConfig.removeClippedSubviews}
+        onEndReachedThreshold={flashListConfig.onEndReachedThreshold}
         renderItem={({ item, index }) => {
           // Posts that share a video, clip, or book carry a `postResourceId` but no
           // inline text/images. PostCard only knows how to render inline text + image
           // grids, so without this routing the card renders an empty body — exactly the
           // bug visible on the Profile Posts tab. Mirrors the home feed's renderItem.
           if (item?.postResourceId) {
-            const resourceType =
-              item.postResourceType || (item.clip ? "clip" : item.video ? "video" : item.book ? "book" : null);
+            const resourceType = item.postResourceType || (item.clip ? "clip" : item.video ? "video" : item.book ? "book" : null);
 
             if (resourceType === "clip") {
               return <PostClip item={item.clip || item} />;

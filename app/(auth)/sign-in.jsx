@@ -12,6 +12,12 @@ import { StyledButton, StyledFormField, StyledKeyboardAvoidingView, StyledSafeAr
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import { account, getCurrentUserWithoutStream, signIn } from "../../lib/appwrite";
+import { USE_SUPABASE_AUTH } from "../../lib/feature-flags";
+import {
+  signInWithApple as supabaseSignInWithApple,
+  signInWithEmail as supabaseSignInWithEmail,
+  signInWithGoogle as supabaseSignInWithGoogle,
+} from "../../lib/supabase-auth";
 import { version } from "../../package.json";
 import secrets from "../../private/secrets";
 import { setIsLoggedReducer, setUserReducer } from "../../store/reducers/auth";
@@ -90,7 +96,21 @@ const SignIn = () => {
   };
 
   const handleSignInUser = async (email, password) => {
-    const result = await signIn(email, password);
+    // Phase B.2 — gated by USE_SUPABASE_AUTH. When the flag is off (today's
+    // production default), behavior is unchanged. When flipped on, the
+    // exact same downstream contract is honored — sign-in returns a hydrated
+    // user object that fans out into redux + context the same way.
+    const result = USE_SUPABASE_AUTH ? await supabaseSignInWithEmail(email, password) : await signIn(email, password);
+
+    // Supabase-only edge case: a null result means credentials were valid
+    // but the Supabase project requires email verification before issuing a
+    // session. Surface a friendly prompt and bail before dispatching auth
+    // state — otherwise we'd push a half-authenticated user into Redux.
+    if (!result) {
+      Alert.alert("Verify your email", "We sent a confirmation link to your email. Tap the link, then sign in again.");
+      return;
+    }
+
     dispatch(setUserReducer(result));
     dispatch(setIsLoggedReducer(true));
     setUser(result);
@@ -105,6 +125,21 @@ const SignIn = () => {
 
     setGoogleSubmitting(true);
     try {
+      // Phase B.2 — when the Supabase auth flag is on, use the native
+      // Google flow (GoogleSignin.signIn → Supabase signInWithIdToken).
+      // No browser switch, much snappier UX. The default-off branch keeps
+      // the original Appwrite-hosted browser flow byte-for-byte.
+      if (USE_SUPABASE_AUTH) {
+        const result = await supabaseSignInWithGoogle();
+        if (result) {
+          dispatch(setUserReducer(result));
+          dispatch(setIsLoggedReducer(true));
+          setUser(result);
+          setIsLogged(true);
+        }
+        return;
+      }
+
       // Create deep link that works across Expo environments
       // Ensure localhost is used for the hostname to validation error for success/failure URLs
       const deepLink = new URL(makeRedirectUri({ preferLocalhost: true }));
@@ -187,6 +222,21 @@ const SignIn = () => {
 
     setAppleSubmitting(true);
     try {
+      // Phase B.2 — when the Supabase auth flag is on, use the native
+      // Apple flow (expo-apple-authentication → Supabase signInWithIdToken).
+      // The Apple Sign In capability is already in app.json, so no native
+      // change is required. Ships via OTA.
+      if (USE_SUPABASE_AUTH) {
+        const result = await supabaseSignInWithApple();
+        if (result) {
+          dispatch(setUserReducer(result));
+          dispatch(setIsLoggedReducer(true));
+          setUser(result);
+          setIsLogged(true);
+        }
+        return;
+      }
+
       const deepLink = new URL(makeRedirectUri({ preferLocalhost: true }));
       const scheme = `${deepLink.protocol}//`;
 
