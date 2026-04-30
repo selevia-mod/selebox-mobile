@@ -51,8 +51,13 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           IS_TEST_UPDATE: "true"
-        # Publish to the `test` EAS Update channel so testers (devices flagged
-        # via Appwrite `isTester`) pull from a separate branch than production
-        # devices, which read from `--branch main`. Previously this also said
-        # `main`, which meant test pushes overwrote production. Fixed.
-        run: eas update --branch test --message "Test OTA update ($(git rev-parse --short HEAD))"
+        # Publishes to `--branch main` on purpose — every production build
+        # (eas.json production-apk / production-aab / production-ios) sets
+        # `"channel": "main"`, so that's the only channel any installed app
+        # actually reads from. The `IS_TEST_UPDATE: "true"` env var makes
+        # `app.config.js` embed `isTestUpdate: true` into the manifest;
+        # `app/_layout.jsx` then filters at runtime so only users with
+        # `isTester: true` on their Appwrite profile actually pull and
+        # apply the update. Non-testers see the update appear in EAS but
+        # never receive it.
+        run: eas update --branch main --message "Test OTA update ($(git rev-parse --short HEAD))"
