@@ -67,7 +67,19 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
   const nestedScrollEnabled = false;
 
   const { message, messageOpen, showMessage, closeMessage } = useModalMessage();
-  const isLoggedInUser = loggedInUser?.$id === user?.$id;
+  // Detect "this is my own profile" robustly. Naive `loggedInUser.$id ===
+  // user.$id` fails when the two IDs are in different formats — e.g. the
+  // logged-in user is on Appwrite auth (`$id` = hex) while a profile
+  // looked up via Supabase UUID hands back `$id` = the UUID for the same
+  // person. Compare across all the candidate identifiers so the Message
+  // button is hidden on your own profile regardless of which way you
+  // navigated to it.
+  const isLoggedInUser = (() => {
+    if (!loggedInUser || !user) return false;
+    const meIds = [loggedInUser?.$id, loggedInUser?.id, loggedInUser?.legacy_appwrite_id, loggedInUser?.supabaseUserId].filter(Boolean);
+    const themIds = [user?.$id, user?.id, user?.legacy_appwrite_id, user?.supabaseUserId].filter(Boolean);
+    return meIds.some((m) => themIds.includes(m));
+  })();
   // streamService removed in Phase D — chat is Supabase-native now.
   const notificationService = new NotificationService();
   const showProfileSkeleton = isLoadingProfile || !user;
@@ -255,8 +267,11 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
       // creates a fresh one. Then routes to the thread screen using the
       // `conversationId` param the Supabase chat thread expects.
       const conversation = await getOrCreate1to1Conversation(user?.$id || user?.id);
+      // Absolute path so we cross route groups cleanly. The relative
+      // "channel" pathname resolves to the current group on iOS (which
+      // here is /(profile)/channel — a 404), so the push silently failed.
       router.push({
-        pathname: "channel",
+        pathname: "/(message)/channel",
         params: { conversationId: conversation.id },
       });
     } catch (error) {
@@ -267,7 +282,9 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
         // getOrCreate1to1Conversation rejects self-message attempts. Don't
         // surface a scary error — this is a user-facing edge case.
       } else {
-        Alert.alert("Error", "Could not start the conversation. Please try again.");
+        // Surface the real error string so we can debug. Once chat is stable
+        // we can revert this to the generic "Could not start" message.
+        Alert.alert("Could not start the conversation", String(error?.message || error?.code || error || "unknown error"));
       }
     }
   };

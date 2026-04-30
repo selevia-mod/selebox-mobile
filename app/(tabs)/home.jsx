@@ -978,12 +978,10 @@ const Home = () => {
           setFollowingCount(typeof res.followingCount === "number" ? res.followingCount : null);
         }
       } else if (activeTab === "discover") {
-        // Discover — Postgres-RPC algorithmic feed: trending velocity over
-        // last 48h, hard-excludes followed creators, boosts new creators
-        // (< 100 followers), enforces same-author diversity. The RPC
-        // returns posts in score order; loadSupabaseFeedPage hydrates the
-        // joined POST_SELECT shape and adapts to the legacy Appwrite shape
-        // PostCard expects. Refresh always starts at offset 0.
+        // Discover — Postgres-RPC feed: last 7 days of posts from creators
+        // the viewer doesn't follow yet, with < 100 followers (the
+        // "discover new accounts" filter). Ordered chronologically newest
+        // first. Refresh always starts at offset 0.
         if (USE_SUPABASE_POSTS) {
           const result = await loadSupabaseFeedPage(
             () => fetchDiscoverFeedPage({ userId: user?.$id, limit: PAGE_SIZE, offset: 0 }),

@@ -10,7 +10,7 @@
 import { Feather, MaterialIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, Text, TextInput, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 import useAppTheme from "../hooks/useAppTheme";
@@ -118,12 +118,19 @@ const SupabaseNewChat = ({ currentUserId }) => {
     setCreatingFor(profile.id);
     try {
       const conversation = await getOrCreate1to1Conversation(profile.id);
+      // Absolute path. iOS is stricter than Android about resolving the
+      // relative "channel" pathname inside a group, and was silently
+      // failing to navigate after a successful conversation create.
       router.replace({
-        pathname: "channel",
+        pathname: "/(message)/channel",
         params: { conversationId: conversation.id },
       });
     } catch (error) {
       console.log("[supabase-chat] getOrCreate1to1 failed:", error?.message);
+      // Surface the real error string so it's not silent — was previously
+      // swallowed and the user just saw nothing happen on tap. Will revert
+      // once chat is stable.
+      Alert.alert("Could not start the conversation", String(error?.message || error?.code || error || "unknown error"));
     } finally {
       setCreatingFor(null);
     }

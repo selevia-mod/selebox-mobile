@@ -186,15 +186,16 @@ const SupabaseConversationsList = ({ currentUserId }) => {
     }
     if (!silent) setLoading(true);
     try {
-      // Check Supabase session first. The chat tab only works for users
-      // with a Supabase auth session — users still on Appwrite see a
-      // friendly "sign in" prompt instead of an error toast. This handles
-      // the migration window cleanly: as users gradually move onto
-      // Supabase auth, chat starts working for them automatically.
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) {
+      // Phase D originally bailed out here unless `supabase.auth.getSession()`
+      // returned a row, which gave every Appwrite-auth user the "Chat is on
+      // the new system, sign out and back in" empty state — even though the
+      // chat lib's requireUser() now falls back to the Appwrite-resolved
+      // Supabase UUID via setMessagesAppwriteUser(). The right gate is
+      // simply "do we know which Supabase profile corresponds to me?" —
+      // i.e. is `currentUserId` populated? If yes, proceed. If no, the
+      // resolution hasn't completed yet (rare race on first app open) and
+      // we show the in-progress empty state.
+      if (!currentUserId) {
         setHasSession(false);
         setConversations([]);
         return;
@@ -210,7 +211,7 @@ const SupabaseConversationsList = ({ currentUserId }) => {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [currentUserId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -282,30 +283,14 @@ const SupabaseConversationsList = ({ currentUserId }) => {
     );
   }
 
-  // No Supabase session — user is signed in via Appwrite (still on the
-  // legacy auth path). Show a friendly upgrade prompt instead of letting
-  // the chat fail with "Not signed in" errors.
+  // currentUserId hasn't been resolved yet (global-provider is still
+  // running setMessagesAppwriteUser → profiles.legacy_appwrite_id lookup).
+  // Show a generic "loading" message while the resolution finishes.
   if (hasSession === false) {
     return (
       <View className="flex-1 items-center justify-center px-6">
-        <View
-          className="mb-4 items-center justify-center"
-          style={{
-            width: 64,
-            height: 64,
-            borderRadius: 999,
-            backgroundColor: theme.primarySoft,
-            borderWidth: 1,
-            borderColor: theme.primary,
-          }}
-        >
-          <Feather name="message-circle" size={28} color={theme.primary} />
-        </View>
-        <Text className="font-pbold text-base" style={{ color: theme.text }}>
-          Chat is on the new system
-        </Text>
-        <Text className="mt-2 max-w-[280px] text-center text-sm" style={{ color: theme.textSoft, lineHeight: 20 }}>
-          Sign out and sign back in to enable messages on the upgraded chat. Your account stays the same — just one extra step.
+        <Text className="text-sm" style={{ color: theme.textSoft }}>
+          Setting up your messages…
         </Text>
       </View>
     );

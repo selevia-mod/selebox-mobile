@@ -482,26 +482,45 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
 
       <KeyboardAvoidingView
         className="flex-1"
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+        // iOS: pad the content above the keyboard. Android: shrink the
+        // wrapper so the input + visible message tail stay above the
+        // keyboard. Without an explicit Android behavior the keyboard
+        // drew on top of the input box and you couldn't see what you
+        // were typing.
+        //
+        // keyboardVerticalOffset must equal the height of any chrome
+        // ABOVE the KeyboardAvoidingView (the thread header here, ~56px
+        // = back button + avatar row + bottom border). SafeAreaView
+        // already handles the status-bar top inset, so we don't add it
+        // again. Without this offset the keyboard would still overlap
+        // the input by exactly the header height.
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 56 : 0}
       >
-        <FlatList
-          data={inverted}
-          renderItem={renderItem}
-          keyExtractor={(item) => item.id}
-          inverted
-          contentContainerStyle={{ paddingHorizontal: 8, paddingVertical: 12 }}
-          showsVerticalScrollIndicator={false}
-          ListEmptyComponent={
-            !loading ? (
-              <View className="flex-1 items-center justify-center" style={{ paddingTop: 80, transform: [{ scaleY: -1 }] }}>
-                <Text className="text-sm" style={{ color: theme.textSoft }}>
-                  Say hi 👋
-                </Text>
-              </View>
-            ) : null
-          }
-        />
+        {/* Empty state rendered as a sibling — NOT as ListEmptyComponent —
+            because the FlatList is `inverted` (transform scaleY(-1)) and
+            ListEmptyComponent inherits that flip. The previous workaround
+            applied a counter-transform but was fragile (the emoji + text
+            sometimes still rendered backwards depending on platform).
+            Rendering outside the inverted list sidesteps the issue
+            entirely. We swap-show the FlatList vs. the empty state based
+            on messages.length. */}
+        {!loading && messages.length === 0 ? (
+          <View className="flex-1 items-center justify-center px-6">
+            <Text className="text-sm" style={{ color: theme.textSoft }}>
+              Say hi 👋
+            </Text>
+          </View>
+        ) : (
+          <FlatList
+            data={inverted}
+            renderItem={renderItem}
+            keyExtractor={(item) => item.id}
+            inverted
+            contentContainerStyle={{ paddingHorizontal: 8, paddingVertical: 12 }}
+            showsVerticalScrollIndicator={false}
+          />
+        )}
         {/* Typing indicator — small chip above the composer when the other
             side is mid-typing. Mirrors web's UX. Only shows when at least
             one other user is currently typing in this conversation. */}
