@@ -24,6 +24,24 @@ jobs:
       - name: Install EAS CLI
         run: npm install -g eas-cli
 
+      # `private/secrets.js` is gitignored (it holds API keys / project IDs)
+      # so a fresh clone in CI doesn't have the file. We pass its contents
+      # via a base64-encoded GitHub secret and decode it back into place
+      # before bundling. The file's values still bake into the published
+      # JS bundle the same way as in a local build — this just keeps the
+      # raw file out of git history.
+      - name: Restore private/secrets.js
+        env:
+          PRIVATE_SECRETS_JS_B64: ${{ secrets.PRIVATE_SECRETS_JS_B64 }}
+        run: |
+          if [ -z "$PRIVATE_SECRETS_JS_B64" ]; then
+            echo "::error::PRIVATE_SECRETS_JS_B64 secret is not set"
+            exit 1
+          fi
+          mkdir -p private
+          echo "$PRIVATE_SECRETS_JS_B64" | base64 -d > private/secrets.js
+          echo "Wrote private/secrets.js ($(wc -c < private/secrets.js) bytes)"
+
       - name: Check EAS login
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
