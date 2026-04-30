@@ -26,20 +26,23 @@ import useAppTheme from "../hooks/useAppTheme";
 import {
   deleteMessage as supabaseDeleteMessage,
   editMessage as supabaseEditMessage,
+  leaveGroup as supabaseLeaveGroup,
   loadConversationById,
   loadMessages,
   markConversationRead,
   sendMessage as supabaseSendMessage,
   sendTypingBroadcast,
+  setArchived as supabaseSetArchived,
+  setMutedUntil as supabaseSetMutedUntil,
   subscribeToConversation,
   subscribeToPresenceAndTyping,
   toggleReaction as supabaseToggleReaction,
   uploadChatImage,
 } from "../lib/messages-supabase";
 import { sendChatPushNotification } from "../lib/chat-push";
-import { searchTenorGifs } from "../lib/tenor";
+import { searchGiphyGifs } from "../lib/giphy";
+import { markChatNotificationsRead } from "../lib/notifications-supabase";
 import supabase from "../lib/supabase";
-import TimeAgo from "../lib/utils/time-ago";
 
 // How long the "they're typing" indicator stays visible after the last
 // broadcast. Web uses 3.5s; matched here so the timing feels identical
@@ -64,6 +67,69 @@ const QUICK_EMOJIS = [
   "✌️", "👋", "🤝", "💯", "🔥", "✨", "⭐", "💖", "❤️", "💔",
   "💜", "💛", "🎉", "🎊", "🥹", "☺️", "😏", "😉",
 ];
+
+// Time gap that triggers a date-section divider between two messages.
+// Mirrors Facebook Messenger's pattern: when two messages are >1 hour
+// apart, we render a small "TODAY AT 9:00 AM" divider above the newer
+// cluster. Day boundary always triggers a divider regardless of gap so
+// the user can tell at a glance which day each cluster belongs to.
+const DIVIDER_GAP_MS = 60 * 60 * 1000;
+
+// Format the divider label above a cluster. Web's pattern:
+//   - Same day:           "Today at 9:00 AM"
+//   - Previous day:       "Yesterday at 6:32 PM"
+//   - Older:              "Mar 3 at 2:15 PM"  (current year)
+//   - Older + last year:  "Mar 3, 2024 at 2:15 PM"
+// Uses the device locale for time formatting so AM/PM vs 24-hour
+// follows OS preference.
+const formatDividerLabel = (isoString) => {
+  const d = new Date(isoString);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const yest = new Date(now);
+  yest.setDate(now.getDate() - 1);
+  const isYesterday = d.toDateString() === yest.toDateString();
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (sameDay) return `Today at ${time}`;
+  if (isYesterday) return `Yesterday at ${time}`;
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const dateOpts = sameYear
+    ? { month: "short", day: "numeric" }
+    : { month: "short", day: "numeric", year: "numeric" };
+  return `${d.toLocaleDateString(undefined, dateOpts)} at ${time}`;
+};
+
+// Walk the chronological messages array and interleave divider rows.
+// Output rows are tagged so the FlatList renderItem can switch on type:
+//   { type: "divider", id, label }   — a "Today at 9:00" header
+//   { type: "message", id, message } — a message bubble
+// Dividers are inserted before the first message AND any message whose
+// gap from its predecessor exceeds DIVIDER_GAP_MS or crosses a day
+// boundary. The id field is unique so FlatList's keyExtractor doesn't
+// see duplicates.
+const buildRowsWithDividers = (messages) => {
+  if (!messages || !messages.length) return [];
+  const rows = [];
+  let prevDate = null;
+  for (const m of messages) {
+    const at = m?.created_at ? new Date(m.created_at) : null;
+    if (!at || isNaN(at.getTime())) {
+      // Defensive: a malformed timestamp shouldn't hide the message.
+      rows.push({ type: "message", id: m.id, message: m });
+      continue;
+    }
+    const needDivider =
+      !prevDate ||
+      at.getTime() - prevDate.getTime() >= DIVIDER_GAP_MS ||
+      at.toDateString() !== prevDate.toDateString();
+    if (needDivider) {
+      rows.push({ type: "divider", id: `div-${m.id}`, label: formatDividerLabel(m.created_at) });
+    }
+    rows.push({ type: "message", id: m.id, message: m });
+    prevDate = at;
+  }
+  return rows;
+};
 
 // Memoized so a reaction or edit on one bubble doesn't re-render the whole
 // FlatList. The default React.memo shallow-compare would still re-render
@@ -130,6 +196,13 @@ const MessageBubbleImpl = ({ message, isMine, theme, onLongPress, reactionList, 
         ) : (
           <Text className="text-sm" style={{ color: isMine ? theme.primaryContrast : theme.text, lineHeight: 20 }}>
             {message.body}
+            {/* "(edited)" inline marker — matches web's bubble. The time
+                itself lives on the section divider, not the bubble. */}
+            {message.edited_at ? (
+              <Text style={{ fontSize: 11, fontStyle: "italic", color: isMine ? "rgba(255,255,255,0.7)" : theme.textSubtle }}>
+                {"  (edited)"}
+              </Text>
+            ) : null}
           </Text>
         )}
       </View>
@@ -154,13 +227,26 @@ const MessageBubbleImpl = ({ message, isMine, theme, onLongPress, reactionList, 
           ))}
         </View>
       ) : null}
-      <Text className={`mt-0.5 text-[10px] ${isMine ? "self-end" : "self-start"}`} style={{ color: theme.textSubtle }}>
-        {message.edited_at ? "Edited · " : ""}
-        {TimeAgo(message.created_at)}
-      </Text>
+      {/* No per-bubble timestamp — the time lives on the section divider
+          (FB Messenger pattern). The `(edited)` marker is rendered
+          inline inside the bubble body above. */}
     </TouchableOpacity>
   );
 };
+
+// Section divider — renders the "Today at 9:00 AM" / "Yesterday at 6:32 PM"
+// label above each new message cluster. Memoized so a label that hasn't
+// changed (and most don't, after the first render) doesn't re-render.
+const DateDivider = memo(
+  ({ label, theme }) => (
+    <View className="my-3 items-center">
+      <Text className="text-[11px] font-pbold" style={{ color: theme.textSubtle, letterSpacing: 0.4, textTransform: "uppercase" }}>
+        {label}
+      </Text>
+    </View>
+  ),
+  (prev, next) => prev.label === next.label && prev.theme === next.theme,
+);
 
 // Custom equality — only re-render when something the bubble actually
 // renders has changed. We compare specific message fields (body, edits,
@@ -236,6 +322,9 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
   // presence channel. Used by the consumer (e.g., header) to render an
   // online dot.
   const [onlineUserIds, setOnlineUserIds] = useState([]);
+  // Header kebab menu (View profile / Mute / Archive / Report / Delete
+  // for 1:1, View members / Mute / Archive / Leave for groups).
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
 
   // Refs for realtime callbacks so they don't re-subscribe on every render.
   const messagesRef = useRef([]);
@@ -280,6 +369,10 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
         setMessages(payload.messages);
         setReactions(payload.reactions);
         markConversationRead(conversationId).catch(() => {});
+        // Bell-panel side: opening the thread is the same gesture as "I've
+        // seen this," so flip every dm_message bell row for this
+        // conversation. Realtime UPDATE will reconcile the bell badge.
+        markChatNotificationsRead(conversationId).catch(() => {});
       } catch (error) {
         console.log("[supabase-chat] thread load failed:", error?.message);
       } finally {
@@ -575,6 +668,174 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
     editingMessage, replyingTo,
   ]);
 
+  // Quick thumbs-up send. Mirrors web (sendDmThumbsUp / FB Messenger):
+  // when the composer is empty and the user taps the send button, ship
+  // a "👍" message instantly without typing anything. Same optimistic
+  // path as handleSend, just bypasses the composer.
+  const handleSendThumbsUp = useCallback(async () => {
+    if (sending || !conversationId) return;
+    setSending(true);
+    const body = "👍";
+    const replyToId = replyingTo?.id || null;
+    setReplyingTo(null);
+    setEmojiBarOpen(false);
+
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const optimistic = {
+      id: tempId,
+      conversation_id: conversationId,
+      sender_id: currentUserId,
+      body,
+      image_url: null,
+      reply_to_id: replyToId,
+      created_at: new Date().toISOString(),
+      _pending: true,
+    };
+    setMessages([...messagesRef.current, optimistic]);
+
+    try {
+      const real = await supabaseSendMessage({ conversationId, body, replyToId });
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === tempId);
+        if (idx < 0) return prev.some((m) => m.id === real.id) ? prev : [...prev, real];
+        if (prev.some((m) => m.id === real.id)) return prev.filter((m) => m.id !== tempId);
+        const next = prev.slice();
+        next[idx] = real;
+        return next;
+      });
+      sendChatPushNotification({
+        conversation,
+        senderId: currentUserId,
+        senderUsername: null,
+        body,
+        imageUrl: null,
+      }).catch(() => {});
+    } catch (error) {
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      Alert.alert("Send failed", error?.message || "Could not send the message.");
+    } finally {
+      setSending(false);
+    }
+  }, [sending, conversationId, currentUserId, replyingTo, conversation]);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Header kebab menu actions — View profile / Mute / Archive / Report /
+  // Delete (1:1) or View members / Mute / Archive / Leave (groups). All
+  // actions close the menu first so the user gets immediate feedback,
+  // then dispatch their backend call. Errors surface as Alerts; success
+  // navigates back to the inbox where appropriate.
+  // ─────────────────────────────────────────────────────────────────────
+  const handleViewProfile = useCallback(() => {
+    setHeaderMenuOpen(false);
+    if (!conversation || conversation.is_group) return;
+    const otherId = conversation.otherUser?.id;
+    if (!otherId) return;
+    router.push({ pathname: "/creator-profile", params: { userId: otherId } });
+  }, [conversation]);
+
+  // Mute toggle — if currently muted (mutedUntil future), unmute by
+  // setting null. Otherwise mute for 8 hours. Matches the most-common
+  // FB Messenger default; users wanting longer can re-tap.
+  const handleToggleMute = useCallback(async () => {
+    setHeaderMenuOpen(false);
+    if (!conversation) return;
+    try {
+      const isMuted = Boolean(conversation.muted);
+      const until = isMuted ? null : new Date(Date.now() + 8 * 60 * 60 * 1000);
+      await supabaseSetMutedUntil(conversation, until);
+      // Optimistic local state — full refresh happens via realtime / focus.
+      setConversation((c) => (c ? { ...c, muted: !isMuted, mutedUntil: until ? until.toISOString() : null } : c));
+    } catch (e) {
+      Alert.alert("Couldn't update mute", e?.message || "Try again.");
+    }
+  }, [conversation]);
+
+  const handleArchive = useCallback(() => {
+    setHeaderMenuOpen(false);
+    if (!conversation) return;
+    Alert.alert("Archive this chat?", "It will be hidden from your list. You can find it again by re-opening the conversation.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Archive",
+        onPress: async () => {
+          try {
+            await supabaseSetArchived(conversation, true);
+            // Pop back to inbox — the archived conversation won't appear
+            // there because the list filters archived rows out.
+            if (router.canGoBack && router.canGoBack()) router.back();
+            else router.replace("/(message)/channel-list");
+          } catch (e) {
+            Alert.alert("Couldn't archive", e?.message || "Try again.");
+          }
+        },
+      },
+    ]);
+  }, [conversation]);
+
+  const handleReport = useCallback(() => {
+    setHeaderMenuOpen(false);
+    if (!conversation || conversation.is_group) return;
+    const otherId = conversation.otherUser?.id;
+    if (!otherId) return;
+    // Wires through to whatever report flow the rest of the app uses.
+    // If the screen doesn't exist yet, the route resolves to a 404 in
+    // dev — that's the signal to wire it in a follow-up.
+    router.push({ pathname: "/report-user", params: { userId: otherId } });
+  }, [conversation]);
+
+  // Delete: same backend effect as archive (per-side hide via
+  // archived_by_a/b), but framed in destructive copy. The UX promise
+  // is "gone for me", which is true — even if the conversation row
+  // technically still exists, the deleter never sees it again unless
+  // they get a new message in it (which would un-archive on web's
+  // current rule; we may want a separate deleted_by_* flag later).
+  // (Renamed from handleDelete → handleDeleteConversation to avoid
+  // collision with the per-message handleDelete defined further down.)
+  const handleDeleteConversation = useCallback(() => {
+    setHeaderMenuOpen(false);
+    if (!conversation) return;
+    Alert.alert("Delete conversation?", "This removes the conversation from your inbox. The other person can still see your messages.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await supabaseSetArchived(conversation, true);
+            if (router.canGoBack && router.canGoBack()) router.back();
+            else router.replace("/(message)/channel-list");
+          } catch (e) {
+            Alert.alert("Couldn't delete", e?.message || "Try again.");
+          }
+        },
+      },
+    ]);
+  }, [conversation]);
+
+  // Group-only — leaves the group by removing self from
+  // conversation_participants. Other members keep the conversation;
+  // the group continues without us.
+  const handleLeaveGroup = useCallback(() => {
+    setHeaderMenuOpen(false);
+    if (!conversation || !conversation.is_group) return;
+    Alert.alert("Leave this group?", "You won't receive new messages from this group. You can be re-added by another member.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Leave",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await supabaseLeaveGroup(conversation.id);
+            if (router.canGoBack && router.canGoBack()) router.back();
+            else router.replace("/(message)/channel-list");
+          } catch (e) {
+            Alert.alert("Couldn't leave", e?.message || "Try again.");
+          }
+        },
+      },
+    ]);
+  }, [conversation]);
+
   // Image picker — launches the system gallery, sets pendingImageUri so
   // the user sees a preview chip above the composer, then they tap send.
   const handlePickImage = useCallback(async () => {
@@ -710,22 +971,35 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
   }, [messages]);
 
   const renderItem = useCallback(
-    ({ item }) => (
-      <MessageBubble
-        message={item}
-        isMine={item.sender_id === currentUserId}
-        theme={theme}
-        onLongPress={handleLongPress}
-        reactionList={reactions[item.id]}
-        repliedTo={item.reply_to_id ? messagesById[item.reply_to_id] : null}
-      />
-    ),
+    ({ item }) => {
+      // Two row types — interleaved by buildRowsWithDividers below.
+      // The divider row carries only a label; the message row carries
+      // the full message object plus its resolved reply target.
+      if (item.type === "divider") {
+        return <DateDivider label={item.label} theme={theme} />;
+      }
+      const message = item.message;
+      return (
+        <MessageBubble
+          message={message}
+          isMine={message.sender_id === currentUserId}
+          theme={theme}
+          onLongPress={handleLongPress}
+          reactionList={reactions[message.id]}
+          repliedTo={message.reply_to_id ? messagesById[message.reply_to_id] : null}
+        />
+      );
+    },
     [currentUserId, theme, reactions, handleLongPress, messagesById],
   );
 
-  // Inverted FlatList — pass messages reversed so newest is at index 0,
-  // FlatList renders bottom-to-top. Scroll up loads older.
-  const inverted = useMemo(() => messages.slice().reverse(), [messages]);
+  // Build rows with section dividers, then reverse for the inverted
+  // FlatList. buildRowsWithDividers walks the chronological array
+  // (oldest first) and inserts a divider before each message whose gap
+  // from the previous one exceeds 1h or crosses a day boundary.
+  // After reverse, the divider sits visually ABOVE its cluster — same
+  // layout web uses.
+  const inverted = useMemo(() => buildRowsWithDividers(messages).reverse(), [messages]);
 
   // Header data — the other user (1:1) or a synthesized "group" descriptor.
   // Online state for 1:1 is "the other user is in onlineUserIds". For groups,
@@ -843,7 +1117,39 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
             ) : null}
           </View>
         </TouchableOpacity>
+
+        {/* Header kebab — opens the actions menu. Only renders once the
+            conversation has loaded; before that there's nothing useful
+            to act on. Same circular-button pattern as the back arrow on
+            the left so the header reads as a balanced trio. */}
+        {conversation ? (
+          <TouchableOpacity
+            onPress={() => setHeaderMenuOpen(true)}
+            activeOpacity={0.85}
+            className="ml-2 h-10 w-10 items-center justify-center rounded-full"
+            style={{ backgroundColor: theme.surfaceMuted, borderWidth: 1, borderColor: theme.border }}
+          >
+            <Feather name="more-vertical" size={18} color={theme.icon} />
+          </TouchableOpacity>
+        ) : null}
       </View>
+
+      {/* Header actions menu — sheet-style modal. Items differ for 1:1
+          (View profile / Mute / Archive / Report / Delete) vs groups
+          (View members / Mute / Archive / Leave group). Mute is a
+          toggle: when currently muted, the row shows "Unmute" instead. */}
+      <ThreadActionsMenu
+        visible={headerMenuOpen}
+        onClose={() => setHeaderMenuOpen(false)}
+        conversation={conversation}
+        theme={theme}
+        onViewProfile={handleViewProfile}
+        onToggleMute={handleToggleMute}
+        onArchive={handleArchive}
+        onReport={handleReport}
+        onDelete={handleDeleteConversation}
+        onLeaveGroup={handleLeaveGroup}
+      />
 
       <KeyboardAvoidingView
         className="flex-1"
@@ -1054,35 +1360,45 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
             <Feather name="smile" size={18} color={emojiBarOpen ? theme.primary : theme.icon} />
           </TouchableOpacity>
           {(() => {
-            // Single source of truth for "can the user press send right
-            // now?". The previous implementation had `disabled` and the
-            // visual styling each computing the same idea slightly
-            // differently — `disabled` ignored attachments, the styling
-            // included them. That mismatch let the user see an "active"
-            // (violet) button whose tap was rejected by `disabled`.
-            const sendActive =
-              !sending && (Boolean(composer.trim()) || Boolean(pendingImageUri) || Boolean(pendingGifUrl));
+            // Three-state send button — mirrors web's pattern (FB Messenger):
+            //   1. Edit mode → checkmark, taps save the edit (handleSend
+            //      handles the editing branch internally).
+            //   2. Composer has text or attachment → paper-plane icon,
+            //      taps send the typed message.
+            //   3. Composer empty and no attachment → thumbs-up icon,
+            //      taps fire a one-tap "👍" message instantly.
+            // The button is ALWAYS enabled (modulo `sending`) — even an
+            // empty composer can ship a thumbs-up. No more disabled/
+            // -looking states for the user to wonder about.
+            const hasContent = Boolean(composer.trim()) || Boolean(pendingImageUri) || Boolean(pendingGifUrl);
+            const isEditing = Boolean(editingMessage);
+            const iconName = isEditing ? "checkmark" : hasContent ? "send" : "thumbs-up";
+            const onPress = isEditing || hasContent ? handleSend : handleSendThumbsUp;
+            const isThumbs = !isEditing && !hasContent;
             return (
               <TouchableOpacity
-                onPress={handleSend}
-                disabled={!sendActive}
+                onPress={onPress}
+                disabled={sending}
                 activeOpacity={0.85}
                 className="ml-2 items-center justify-center rounded-full"
                 style={{
                   width: 40,
                   height: 40,
-                  backgroundColor: sendActive ? theme.primary : theme.surfaceMuted,
+                  backgroundColor: sending ? theme.surfaceMuted : theme.primary,
                   shadowColor: theme.primary,
                   shadowOffset: { width: 0, height: 4 },
-                  shadowOpacity: sendActive ? 0.3 : 0,
+                  shadowOpacity: sending ? 0 : 0.3,
                   shadowRadius: 8,
-                  elevation: sendActive ? 3 : 0,
+                  elevation: sending ? 0 : 3,
                 }}
               >
                 <Ionicons
-                  name={editingMessage ? "checkmark" : "send"}
-                  size={18}
-                  color={sendActive ? theme.primaryContrast : theme.iconMuted}
+                  // ionicons uses "thumbs-up" filled vs "thumbs-up-outline" —
+                  // we want the chunky filled glyph since the bg is already
+                  // the violet pill.
+                  name={iconName}
+                  size={isThumbs ? 20 : 18}
+                  color={sending ? theme.iconMuted : theme.primaryContrast}
                 />
               </TouchableOpacity>
             );
@@ -1231,6 +1547,86 @@ const MessageActionPill = ({ target, theme, onClose, onReact, onReply, onCopy, o
 
 // GIF picker modal — search bar at top, grid of trending/searched GIFs
 // below. Tap a GIF to set it as the pending attachment + close.
+// Bottom-sheet style menu for the thread header's 3-dot button. Items
+// differ for 1:1 vs group conversations:
+//   1:1   → View profile / (Un)mute / Archive / Report / Delete
+//   group → View members / (Un)mute / Archive / Leave group
+// Tap-outside-to-dismiss is handled by the backdrop TouchableOpacity.
+const ThreadActionsMenu = ({
+  visible,
+  onClose,
+  conversation,
+  theme,
+  onViewProfile,
+  onToggleMute,
+  onArchive,
+  onReport,
+  onDelete,
+  onLeaveGroup,
+}) => {
+  if (!conversation) return null;
+  const isGroup = Boolean(conversation.is_group);
+  const isMuted = Boolean(conversation.muted);
+
+  // Each row is one menu item. We render them as plain TouchableOpacities
+  // in a column so styling stays consistent and we don't pay for FlatList
+  // overhead on a 5-item list.
+  const Row = ({ icon, label, onPress, danger }) => (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.85}
+      className="flex-row items-center px-4 py-3.5"
+      style={{ borderBottomWidth: 0.5, borderBottomColor: theme.divider }}
+    >
+      <Feather name={icon} size={18} color={danger ? "#dc2626" : theme.icon} />
+      <Text className="ml-3 font-pbold text-base" style={{ color: danger ? "#dc2626" : theme.text }}>
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  return (
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
+      <TouchableOpacity
+        activeOpacity={1}
+        onPress={onClose}
+        style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "flex-end" }}
+      >
+        {/* Inner press-blocker so taps inside the menu don't close it. */}
+        <TouchableOpacity activeOpacity={1} onPress={() => {}}>
+          <View style={{ backgroundColor: theme.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 24, paddingTop: 8 }}>
+            {/* Drag handle — visual cue this is a sheet. */}
+            <View className="self-center my-2" style={{ width: 36, height: 4, borderRadius: 2, backgroundColor: theme.divider }} />
+
+            {!isGroup ? (
+              <Row icon="user" label="View profile" onPress={onViewProfile} />
+            ) : (
+              <Row icon="users" label="View members" onPress={onViewProfile} />
+            )}
+
+            <Row
+              icon={isMuted ? "bell" : "bell-off"}
+              label={isMuted ? "Unmute notifications" : "Mute notifications"}
+              onPress={onToggleMute}
+            />
+
+            <Row icon="archive" label="Archive chat" onPress={onArchive} />
+
+            {!isGroup ? (
+              <>
+                <Row icon="flag" label="Report user" onPress={onReport} danger />
+                <Row icon="trash-2" label="Delete conversation" onPress={onDelete} danger />
+              </>
+            ) : (
+              <Row icon="log-out" label="Leave group" onPress={onLeaveGroup} danger />
+            )}
+          </View>
+        </TouchableOpacity>
+      </TouchableOpacity>
+    </Modal>
+  );
+};
+
 const GifPickerModal = ({ visible, onClose, onPick, theme }) => {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
@@ -1243,7 +1639,7 @@ const GifPickerModal = ({ visible, onClose, onPick, theme }) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     setLoading(true);
     debounceRef.current = setTimeout(async () => {
-      const r = await searchTenorGifs(query, { limit: 24 });
+      const r = await searchGiphyGifs(query, { limit: 24 });
       setResults(r);
       setLoading(false);
     }, 250);
@@ -1274,7 +1670,7 @@ const GifPickerModal = ({ visible, onClose, onPick, theme }) => {
             <Feather name="search" size={16} color={theme.iconMuted} />
             <TextInput
               className="ml-2 flex-1 py-2 text-sm"
-              placeholder="Search Tenor"
+              placeholder="Search Giphy"
               placeholderTextColor={theme.placeholder}
               style={{ color: theme.inputText }}
               value={query}
@@ -1291,7 +1687,7 @@ const GifPickerModal = ({ visible, onClose, onPick, theme }) => {
           ) : results.length === 0 ? (
             <View className="items-center justify-center py-10">
               <Text className="text-sm text-center" style={{ color: theme.textSoft }}>
-                {query ? "No GIFs found." : "GIF picker is unavailable. Set TENOR_API_KEY in private/secrets.js."}
+                {query ? "No GIFs found." : "GIF picker is unavailable. Set GIPHY_API_KEY in private/secrets.js."}
               </Text>
             </View>
           ) : (
