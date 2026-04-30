@@ -4,7 +4,7 @@ import { Alert, FlatList, Text, TextInput, TouchableOpacity, View } from "react-
 import FastImage from "react-native-fast-image";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
-import { useModalMessage } from "../lib/useModalMessage";
+import { useModalMessage } from "../hooks/useModalMessage";
 import CustomAlertModal from "./CustomAlertModal";
 
 const MessageInputSection = ({ message, setMessage, messageAttachments, setMessageAttachments, sendMessage }) => {

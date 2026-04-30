@@ -21,9 +21,11 @@ import Modal from "react-native-modal";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
+import useCommentReactionState from "../hooks/useCommentReactionState";
+import ReactionPicker from "./ReactionPicker";
 import { BookInlineCommentsService, buildInlineCommentNotificationResourceId, INLINE_COMMENT_NOTIFICATION_TYPE } from "../lib/book-inline-comments";
 import { NotificationService } from "../lib/notifications";
-import TimeAgo from "../lib/time-ago";
+import TimeAgo from "../lib/utils/time-ago";
 import {
   buildMentionSearchTerms,
   extractMentionTargetsFromMarkup,
@@ -198,6 +200,34 @@ const BookInlineCommentItem = memo(
       syncLikeMutation();
     }, [applyOptimisticLikeState, canLike, syncLikeMutation]);
 
+    // Reaction overlay over the existing binary like wiring.
+    const reactions = useCommentReactionState({ initialLiked: liked });
+
+    const handleReactionTap = useCallback(() => {
+      if (!canLike) return;
+      const wasReacted = !!reactions.userReactionKey;
+      reactions.toggleTopLevelDefault();
+      const targetLiked = !wasReacted;
+      if (targetLiked !== desiredLikedRef.current) {
+        desiredLikedRef.current = targetLiked;
+        applyOptimisticLikeState(targetLiked);
+        syncLikeMutation();
+      }
+    }, [applyOptimisticLikeState, canLike, reactions, syncLikeMutation]);
+
+    const handlePickReactionWithSync = useCallback(
+      (key) => {
+        const wasTopLevel = reactions.isPickerForTopLevel;
+        reactions.handlePickReaction(key);
+        if (wasTopLevel && !desiredLikedRef.current) {
+          desiredLikedRef.current = true;
+          applyOptimisticLikeState(true);
+          syncLikeMutation();
+        }
+      },
+      [applyOptimisticLikeState, reactions, syncLikeMutation],
+    );
+
     const handleToggleReplies = () => {
       if (!showReplies) {
         setShowReplies(true);
@@ -261,10 +291,37 @@ const BookInlineCommentItem = memo(
                 />
               </View>
 
-              <View className="mt-1 flex-row items-center space-x-3 px-1">
+              <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>
                 <Text className="font-sans text-xs" style={{ color: palette.timestamp }}>
                   {isPending ? "Sending..." : TimeAgo(item?.$createdAt)}
                 </Text>
+                {!isPending ? (
+                  <TouchableOpacity
+                    ref={reactions.likeButtonRef}
+                    onPress={handleReactionTap}
+                    onLongPress={reactions.openTopLevelPicker}
+                    delayLongPress={220}
+                    disabled={!canLike}
+                    hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                    style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+                  >
+                    {reactions.activeReaction ? (
+                      <Text style={{ fontSize: 13, lineHeight: 16 }}>{reactions.activeReaction.emoji}</Text>
+                    ) : (
+                      <Text className="font-sans text-xs font-semibold" style={{ color: palette.timestamp }}>
+                        React
+                      </Text>
+                    )}
+                    {likeCount > 0 ? (
+                      <Text
+                        className="font-sans text-xs font-semibold"
+                        style={{ color: reactions.activeReaction ? palette.likeActive : palette.timestamp }}
+                      >
+                        {likeCount}
+                      </Text>
+                    ) : null}
+                  </TouchableOpacity>
+                ) : null}
                 <TouchableOpacity disabled={!canReply} onPress={() => onReplyPress?.(item)}>
                   <Text
                     className="font-sans text-xs font-semibold"
@@ -330,10 +387,43 @@ const BookInlineCommentItem = memo(
                                 onUrlPress={onUrlPress}
                               />
                             </View>
-                            <View className="mt-1 flex-row items-center px-1">
+                            <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>
                               <Text className="font-sans text-[11px]" style={{ color: palette.timestamp }}>
                                 {reply?.isPending ? "Sending..." : TimeAgo(reply?.$createdAt)}
                               </Text>
+                              {!reply?.isPending && reply?.$id ? (
+                                <>
+                                  <TouchableOpacity
+                                    ref={(el) => reactions.registerReplyButton(reply.$id, el)}
+                                    onPress={() => reactions.toggleReplyDefault(reply.$id)}
+                                    onLongPress={() => reactions.openReplyPicker(reply.$id)}
+                                    delayLongPress={220}
+                                    disabled={!canLike}
+                                    hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                                    style={{ flexDirection: "row", alignItems: "center" }}
+                                  >
+                                    {reactions.getReplyReaction(reply.$id) ? (
+                                      <Text style={{ fontSize: 13, lineHeight: 16 }}>
+                                        {reactions.getReplyReaction(reply.$id).emoji}
+                                      </Text>
+                                    ) : (
+                                      <Text className="font-sans text-[11px] font-semibold" style={{ color: palette.timestamp }}>
+                                        React
+                                      </Text>
+                                    )}
+                                  </TouchableOpacity>
+                                  {canReply ? (
+                                    <TouchableOpacity
+                                      onPress={() => onReplyPress?.(item, reply?.commentOwner)}
+                                      hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                                    >
+                                      <Text className="font-sans text-[11px] font-semibold" style={{ color: palette.replyAction }}>
+                                        Reply
+                                      </Text>
+                                    </TouchableOpacity>
+                                  ) : null}
+                                </>
+                              ) : null}
                             </View>
                           </View>
                         </View>
@@ -359,21 +449,16 @@ const BookInlineCommentItem = memo(
               ) : null}
             </View>
 
-            <TouchableOpacity onPress={handleLikeComment} disabled={!canLike} className="ml-3 items-center pt-2">
-              <MaterialCommunityIcons
-                name={liked ? "heart" : "heart-outline"}
-                size={16}
-                color={liked ? palette.likeActive : canLike ? palette.likeInactive : palette.countText}
-              />
-              <Text
-                className="mt-1 text-center font-sans text-[11px] font-semibold"
-                style={{ minWidth: 16, opacity: likeCount > 0 ? 1 : 0, color: palette.countText }}
-              >
-                {likeCount > 0 ? likeCount : 0}
-              </Text>
-            </TouchableOpacity>
           </View>
         </View>
+
+        <ReactionPicker
+          visible={reactions.pickerVisible}
+          anchor={reactions.pickerAnchor}
+          activeKey={reactions.pickerActiveKey}
+          onSelect={handlePickReactionWithSync}
+          onClose={reactions.closePicker}
+        />
       </View>
     );
   },
@@ -1150,7 +1235,7 @@ const BookInlineCommentModal = ({ anchor, chapter, isVisible, onClose, onThreadU
   }, []);
 
   const handleReplyPress = useCallback(
-    (comment) => {
+    (comment, mentionUser) => {
       if (!comment?.$id || !inlineFeatureFlags.repliesEnabled || !user?.$id) return;
 
       setReplyTarget({
@@ -1161,6 +1246,12 @@ const BookInlineCommentModal = ({ anchor, chapter, isVisible, onClose, onThreadU
       committedMentionRangeRef.current = null;
       clearMentionSuggestions();
       setSubmitError("");
+      // Reply-on-reply: prefill the composer with @username so the reply
+      // visually addresses the original reply author, while threading to the
+      // top-level parent (matches web's flat-thread model).
+      if (mentionUser?.username) {
+        setCommentText(`@${mentionUser.username} `);
+      }
       setTimeout(() => inputRef.current?.focus(), 100);
     },
     [clearMentionSuggestions, inlineFeatureFlags.repliesEnabled, user?.$id],
@@ -1635,6 +1726,11 @@ const BookInlineCommentModal = ({ anchor, chapter, isVisible, onClose, onThreadU
               ListHeaderComponent={listHeader}
               contentContainerStyle={commentListContentContainerStyle}
               showsVerticalScrollIndicator={false}
+              // Virtualization tuning — see PostCommentModal for rationale.
+              initialNumToRender={8}
+              maxToRenderPerBatch={6}
+              windowSize={10}
+              updateCellsBatchingPeriod={50}
               nestedScrollEnabled
               keyboardShouldPersistTaps="handled"
               scrollEventThrottle={enableSwipeToClose ? 16 : undefined}

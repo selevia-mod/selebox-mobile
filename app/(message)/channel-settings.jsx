@@ -8,7 +8,7 @@ import { CustomAlertModal, MessageAddUserModal } from "../../components";
 import AnimatedSkeleton, { getRandomSkeletonWidth } from "../../components/AnimatedSkeleton";
 import { StackedAvatars } from "../../components/StackedAvatars";
 import { streamClient } from "../../lib/stream";
-import { useModalMessage } from "../../lib/useModalMessage";
+import { useModalMessage } from "../../hooks/useModalMessage";
 
 const ChannelSettings = () => {
   const { channelId } = useLocalSearchParams();
@@ -220,7 +220,7 @@ const ChannelSettings = () => {
                   className="mb-2 flex-row items-center justify-between rounded-2xl bg-white/5 p-3"
                 >
                   <View className="flex-row items-center">
-                    <FastImage source={{ uri: item.image, priority: FastImage.priority.high }} className="h-12 w-12 rounded-xl bg-white/10" />
+                    <FastImage source={{ uri: item.image, priority: FastImage.priority.normal }} className="h-12 w-12 rounded-xl bg-white/10" />
                     <View className="ml-4">
                       <View className="flex-row items-center">
                         <Text className="font-sans text-base font-medium text-white">{item.name}</Text>

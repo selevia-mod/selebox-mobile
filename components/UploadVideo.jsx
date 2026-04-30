@@ -1,8 +1,8 @@
-import { FontAwesome } from "@expo/vector-icons";
+import { FontAwesome, Ionicons, MaterialIcons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import * as VideoThumbnails from "expo-video-thumbnails";
 import { useRef, useState } from "react";
-import { Alert, Platform, Switch, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Alert, Platform, ScrollView, Switch, Text, TextInput, TouchableOpacity, View } from "react-native";
 
 import DateTimePicker, { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 
@@ -15,6 +15,8 @@ import useAppTheme from "../hooks/useAppTheme";
 import { UploadVideoToBunnyStorage } from "../lib/fetch-bunny-storage";
 import { createNewVideo, initialVideoForm, VideosService } from "../lib/video";
 import secrets from "../private/secrets";
+import ScrollFadeOverlay from "./ScrollFadeOverlay";
+import SectionDot from "./SectionDot";
 
 const UploadVideo = ({ showMessage }) => {
   const { user, globalSettings } = useGlobalContext();
@@ -24,12 +26,22 @@ const UploadVideo = ({ showMessage }) => {
   const [uploadStage, setUploadStage] = useState("idle"); // idle | preparing | uploading | processing | completed | failed
   const [videoForm, setVideoForm] = useState(initialVideoForm);
   const [videoLoading, setVideoLoading] = useState(false);
-  const [thumbnailLoading, setThumbnailLoading] = useState(false);
 
   const [publishNow, setPublishNow] = useState(true);
   const [monetizationEnabled, setMonetizationEnabled] = useState(false);
   const [isMonetizationEligible, setIsMonetizationEligible] = useState(true);
   const [videoDurationSeconds, setVideoDurationSeconds] = useState(null);
+
+  // YouTube-style thumbnail picker. After the user picks a video we extract
+  // three frames (25%/50%/75% of duration) and present them alongside an
+  // "Upload your own" tile. `selectedThumbnailKey` tracks which tile is the
+  // currently chosen thumbnail; the actual data still flows through
+  // `videoForm.thumbnail` for the upload pipeline.
+  //   - selectedThumbnailKey: "upload" | "gen-0" | "gen-1" | "gen-2" | null
+  //   - generatedThumbnails: up to 3 entries of { uri, width, height }
+  const [generatedThumbnails, setGeneratedThumbnails] = useState([]);
+  const [selectedThumbnailKey, setSelectedThumbnailKey] = useState(null);
+  const [generatingThumbnails, setGeneratingThumbnails] = useState(false);
 
   const [scheduledDate, setScheduledDate] = useState(null);
   const [showPickerModal, setShowPickerModal] = useState(false);
@@ -123,6 +135,9 @@ const UploadVideo = ({ showMessage }) => {
     setTempDate(new Date());
     setUploadStage("idle");
     setProgress(0);
+    setGeneratedThumbnails([]);
+    setSelectedThumbnailKey(null);
+    setGeneratingThumbnails(false);
   };
 
   const handleCancelUpload = () => {
@@ -184,25 +199,56 @@ const UploadVideo = ({ showMessage }) => {
     }
   };
 
-  const handleGenerateThumbnail = async (videoUri) => {
+  // YouTube-style: extract 3 frames at 25%/50%/75% of the video. Default-selects
+  // the middle (50%) frame so the user lands on a usable thumbnail without
+  // tapping anything. Failures per-frame are swallowed so a single bad seek
+  // doesn't break the whole picker — we just render fewer tiles.
+  const handleGenerateThumbnails = async (videoUri, durationInSeconds) => {
     try {
-      setThumbnailLoading(true);
-      const result = await VideoThumbnails.getThumbnailAsync(videoUri, { time: 3000 });
-      setVideoForm((prev) => ({ ...prev, thumbnail: result }));
+      setGeneratingThumbnails(true);
+      setGeneratedThumbnails([]);
+      const safeDurationMs = Number.isFinite(durationInSeconds) && durationInSeconds > 0 ? durationInSeconds * 1000 : null;
+      const timestamps = safeDurationMs
+        ? [Math.floor(safeDurationMs * 0.25), Math.floor(safeDurationMs * 0.5), Math.floor(safeDurationMs * 0.75)]
+        : [1000, 3000, 5000]; // fallback when duration is unknown — sample early frames
+
+      const results = await Promise.all(
+        timestamps.map((t) => VideoThumbnails.getThumbnailAsync(videoUri, { time: t }).catch(() => null)),
+      );
+      const validResults = results.filter(Boolean);
+      setGeneratedThumbnails(validResults);
+
+      // Default-select the middle frame (or the first available fallback).
+      const defaultIndex = validResults[1] ? 1 : validResults[0] ? 0 : -1;
+      if (defaultIndex >= 0) {
+        setVideoForm((prev) => ({ ...prev, thumbnail: validResults[defaultIndex] }));
+        setSelectedThumbnailKey(`gen-${defaultIndex}`);
+      }
     } catch (e) {
       console.warn(e);
-      showMessage("Failed to generate thumbnail.", 500);
+      showMessage("Failed to generate thumbnails.", 500);
     } finally {
-      setThumbnailLoading(false);
+      setGeneratingThumbnails(false);
     }
   };
 
-  const handleThumbnail = (thumbnail) => {
+  // Called from the "Upload your own" tile via openPicker("images") and from
+  // the picker's onSelect path for generated tiles. Tracks which tile is now
+  // the source of truth so the UI can render the active ring + checkmark.
+  const handleThumbnail = (thumbnail, source = "upload") => {
     if (thumbnail && thumbnail.fileSize > sizeLimitThumbnailUpload) {
       showMessage(`Please ensure your thumbnail upload size is under ${sizeLimitThumbnailUpload / 1024 / 1024}MB.`, 500);
       return;
     }
     setVideoForm((prev) => ({ ...prev, thumbnail }));
+    setSelectedThumbnailKey(source);
+  };
+
+  const handleSelectGeneratedThumbnail = (index) => {
+    const choice = generatedThumbnails[index];
+    if (!choice) return;
+    setVideoForm((prev) => ({ ...prev, thumbnail: choice }));
+    setSelectedThumbnailKey(`gen-${index}`);
   };
 
   const convertDurationToSeconds = (duration) => {
@@ -236,7 +282,11 @@ const UploadVideo = ({ showMessage }) => {
     const durationInSeconds = convertDurationToSeconds(video?.duration);
     updateMonetizationEligibility(durationInSeconds);
     setVideoForm((prev) => ({ ...prev, videoUrl: video }));
-    handleGenerateThumbnail(video.uri);
+    // Reset any previously generated thumbnails when a new video is picked,
+    // then extract three fresh frames at 25/50/75% of the new video.
+    setGeneratedThumbnails([]);
+    setSelectedThumbnailKey(null);
+    handleGenerateThumbnails(video.uri, durationInSeconds);
   };
 
   const openPicker = async (mediaType) => {
@@ -255,7 +305,7 @@ const UploadVideo = ({ showMessage }) => {
 
       if (!result.canceled) {
         const asset = result.assets[0];
-        if (mediaType === "images") handleThumbnail(asset);
+        if (mediaType === "images") handleThumbnail(asset, "upload");
         if (mediaType === "videos") handleVideo(asset);
       }
     } finally {
@@ -319,20 +369,50 @@ const UploadVideo = ({ showMessage }) => {
 
   return (
     <View className="mx-auto h-full w-full px-4 pb-8">
-      {/* Video */}
+      {/* Hero — premium violet-tinted header with a soft accent chip in front
+          of the title. Sets the tone for the form: editorial typography, a
+          single violet accent, no decoration on the right side that would
+          steal focus from the section content below. */}
+      <View className="mb-5 mt-1 flex-row items-center">
+        <View
+          className="mr-3 h-10 w-10 items-center justify-center rounded-xl"
+          style={{
+            backgroundColor: theme.primarySoft,
+            borderWidth: 1,
+            borderColor: theme.primary,
+          }}
+        >
+          <Ionicons name="cloud-upload-outline" size={20} color={theme.primary} />
+        </View>
+        <View className="flex-1">
+          <Text className="text-lg font-bold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+            Upload a video
+          </Text>
+          <Text className="mt-0.5 text-xs" style={{ color: theme.textSoft }}>
+            Pick a file, give it some context, and you're live.
+          </Text>
+        </View>
+      </View>
+
+      {/* Video — selected state now uses the app's violet primary instead of
+          green so it lives in the same color family as every other "active"
+          surface across Books / Videos / Profile. */}
       <View className="mb-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
         <View className="flex-row items-center justify-between">
-          <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
-            Video
-          </Text>
+          <View className="flex-row items-center">
+            <SectionDot color={theme.primary} />
+            <Text className="text-sm font-semibold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+              Video
+            </Text>
+          </View>
           <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitVideoUpload / 1024 / 1024}MB`}</Text>
         </View>
         <TouchableOpacity className="mt-3" onPress={() => openPicker("videos")}>
           <View
             className={`aspect-video w-full items-center justify-center rounded-xl border ${videoForm?.videoUrl ? "" : "border-dashed"}`}
             style={{
-              borderColor: videoForm?.videoUrl ? theme.accentGreen : theme.borderStrong,
-              backgroundColor: videoForm?.videoUrl ? theme.accentGreenSoft : theme.surfaceMuted,
+              borderColor: videoForm?.videoUrl ? theme.primary : theme.borderStrong,
+              backgroundColor: videoForm?.videoUrl ? theme.primarySoft : theme.surfaceMuted,
             }}
           >
             {videoLoading ? (
@@ -340,8 +420,8 @@ const UploadVideo = ({ showMessage }) => {
             ) : (
               <FontAwesome
                 name={videoForm?.videoUrl ? "check-circle" : "video-camera"}
-                size={72}
-                color={videoForm?.videoUrl ? theme.accentGreen : theme.iconMuted}
+                size={64}
+                color={videoForm?.videoUrl ? theme.primary : theme.iconMuted}
               />
             )}
           </View>
@@ -351,45 +431,167 @@ const UploadVideo = ({ showMessage }) => {
         </Text>
       </View>
 
-      {/* Thumbnail */}
+      {/* Thumbnail — YouTube-style 4-tile picker. First tile is "Upload your
+          own" (manual image picker). The next 3 tiles are auto-generated frames
+          extracted at 25/50/75% of the video duration. The active tile is
+          highlighted with a violet ring + checkmark badge so the chosen
+          thumbnail is unambiguous. videoForm.thumbnail (consumed by the upload
+          pipeline) tracks the currently selected tile's data. */}
       <View className="mb-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
         <View className="flex-row items-center justify-between">
-          <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
-            Thumbnail
-          </Text>
+          <View className="flex-row items-center">
+            <SectionDot color={theme.primary} />
+            <Text className="text-sm font-semibold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+              Thumbnail
+            </Text>
+          </View>
           <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitThumbnailUpload / 1024 / 1024}MB`}</Text>
         </View>
-        <TouchableOpacity className="mt-3" onPress={() => openPicker("images")}>
-          <View
-            className="aspect-video w-full items-center justify-center rounded-xl border border-dashed"
-            style={{ borderColor: theme.borderStrong, backgroundColor: theme.surfaceMuted }}
-          >
-            {thumbnailLoading ? (
-              <LoaderKit style={{ width: 50, height: 50 }} name="LineScale" color={theme.primary} />
-            ) : videoForm?.thumbnail ? (
-              <View className="aspect-video w-full items-center justify-center rounded-xl" style={{ backgroundColor: theme.surface }}>
-                <FastImage
-                  className="h-full w-full rounded-xl"
-                  source={{ uri: videoForm?.thumbnail?.uri, priority: FastImage.priority.high }}
-                  resizeMode={FastImage.resizeMode.contain} // ⚠️ Important
-                />
-              </View>
-            ) : (
-              <FontAwesome name="image" size={72} color={theme.iconMuted} />
-            )}
-          </View>
-        </TouchableOpacity>
         <Text className="mt-2 text-xs" style={{ color: theme.textSoft }}>
-          We will auto-generate a thumbnail, or you can upload your own.
+          Pick a generated frame, or upload your own.
         </Text>
+
+        <View className="mt-3 flex-row" style={{ gap: 8 }}>
+          {/* Tile 1 — Upload your own */}
+          {(() => {
+            const isSelected = selectedThumbnailKey === "upload";
+            const customUri = isSelected ? videoForm?.thumbnail?.uri : null;
+            return (
+              <TouchableOpacity
+                onPress={() => openPicker("images")}
+                activeOpacity={0.85}
+                style={{
+                  flex: 1,
+                  aspectRatio: 16 / 9,
+                  borderRadius: 10,
+                  overflow: "hidden",
+                  borderWidth: isSelected ? 2 : 1,
+                  borderColor: isSelected ? theme.primary : theme.borderStrong,
+                  borderStyle: customUri ? "solid" : "dashed",
+                  backgroundColor: theme.surfaceMuted,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  shadowColor: theme.primary,
+                  shadowOffset: { width: 0, height: 4 },
+                  shadowOpacity: isSelected ? 0.25 : 0,
+                  shadowRadius: 8,
+                  elevation: isSelected ? 3 : 0,
+                }}
+              >
+                {customUri ? (
+                  <FastImage
+                    source={{ uri: customUri, priority: FastImage.priority.high }}
+                    style={{ height: "100%", width: "100%" }}
+                    resizeMode={FastImage.resizeMode.cover}
+                  />
+                ) : (
+                  <View className="items-center justify-center px-1">
+                    <Ionicons name="cloud-upload-outline" size={20} color={theme.iconMuted} />
+                    <Text
+                      className="mt-1 text-[9px] font-semibold uppercase"
+                      style={{ color: theme.textSoft, letterSpacing: 0.4 }}
+                      numberOfLines={1}
+                    >
+                      Upload
+                    </Text>
+                  </View>
+                )}
+                {isSelected && (
+                  <View
+                    style={{
+                      position: "absolute",
+                      top: 4,
+                      right: 4,
+                      width: 18,
+                      height: 18,
+                      borderRadius: 999,
+                      backgroundColor: theme.primary,
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <Ionicons name="checkmark" size={12} color={theme.primaryContrast} />
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })()}
+
+          {/* Tiles 2–4 — Auto-generated frames at 25/50/75% */}
+          {[0, 1, 2].map((index) => {
+            const tileKey = `gen-${index}`;
+            const isSelected = selectedThumbnailKey === tileKey;
+            const generated = generatedThumbnails[index];
+            const isLoading = generatingThumbnails && !generated;
+            const isPlaceholder = !videoForm?.videoUrl && !generated;
+
+            return (
+              <TouchableOpacity
+                key={tileKey}
+                onPress={() => handleSelectGeneratedThumbnail(index)}
+                disabled={!generated}
+                activeOpacity={0.85}
+                style={{
+                  flex: 1,
+                  aspectRatio: 16 / 9,
+                  borderRadius: 10,
+                  overflow: "hidden",
+                  borderWidth: isSelected ? 2 : 1,
+                  borderColor: isSelected ? theme.primary : theme.border,
+                  backgroundColor: theme.surfaceMuted,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  opacity: isPlaceholder ? 0.45 : 1,
+                  shadowColor: theme.primary,
+                  shadowOffset: { width: 0, height: 4 },
+                  shadowOpacity: isSelected ? 0.25 : 0,
+                  shadowRadius: 8,
+                  elevation: isSelected ? 3 : 0,
+                }}
+              >
+                {generated ? (
+                  <FastImage
+                    source={{ uri: generated.uri, priority: FastImage.priority.high }}
+                    style={{ height: "100%", width: "100%" }}
+                    resizeMode={FastImage.resizeMode.cover}
+                  />
+                ) : isLoading ? (
+                  <LoaderKit style={{ width: 22, height: 22 }} name="LineScale" color={theme.primary} />
+                ) : (
+                  <Ionicons name="image-outline" size={20} color={theme.iconMuted} />
+                )}
+                {isSelected && (
+                  <View
+                    style={{
+                      position: "absolute",
+                      top: 4,
+                      right: 4,
+                      width: 18,
+                      height: 18,
+                      borderRadius: 999,
+                      backgroundColor: theme.primary,
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <Ionicons name="checkmark" size={12} color={theme.primaryContrast} />
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
       </View>
 
       {/* Title */}
       <View className="mb-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
         <View className="flex-row items-center justify-between">
-          <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
-            Title
-          </Text>
+          <View className="flex-row items-center">
+            <SectionDot color={theme.primary} />
+            <Text className="text-sm font-semibold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+              Title
+            </Text>
+          </View>
           <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`${videoForm?.title?.length || 0}/${sizeLimitTitleChars}`}</Text>
         </View>
         <TextInput
@@ -409,9 +611,12 @@ const UploadVideo = ({ showMessage }) => {
       {/* Description */}
       <View className="mb-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
         <View className="flex-row items-center justify-between">
-          <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
-            Description
-          </Text>
+          <View className="flex-row items-center">
+            <SectionDot color={theme.primary} />
+            <Text className="text-sm font-semibold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+              Description
+            </Text>
+          </View>
           <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>
             Optional
           </Text>
@@ -431,88 +636,177 @@ const UploadVideo = ({ showMessage }) => {
       {/* Tags */}
       <View className="mb-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
         <View className="flex-row items-center justify-between">
-          <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
-            Tags
-          </Text>
+          <View className="flex-row items-center">
+            <SectionDot color={theme.primary} />
+            <Text className="text-sm font-semibold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+              Tags
+            </Text>
+          </View>
           <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitTags}`}</Text>
         </View>
         <Text className="mt-2 text-xs" style={{ color: theme.textSoft }}>
           Select at least 1 tag.
         </Text>
-        <View className="flex flex-row flex-wrap gap-2 pt-3">
-          {tags.map((tag, index) => {
-            const isSelected = videoForm?.tags?.includes(tag);
-            const isDisabled = !isSelected && videoForm?.tags?.length >= sizeLimitTags;
-            return (
-              <TouchableOpacity
-                onPress={() => handleChange("tags", tag)}
-                className="h-fit w-fit rounded-full px-4 py-2"
-                key={index.toString()}
-                disabled={isDisabled}
-                style={{
-                  opacity: isDisabled ? 0.35 : 1,
-                  backgroundColor: isSelected ? theme.primary : theme.surfaceMuted,
-                }}
-              >
-                <Text className="text-nowrap text-sm font-medium" style={{ color: isSelected ? theme.primaryContrast : theme.text }}>
-                  {tag}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
+        {/* Capped to ~3.5 rows of pills + vertical scroll + bottom fade overlay
+            so the user clearly reads "more below" without a scrollbar. Half-row
+            peek + fade together signal scrollability before the user touches.
+            Selected pills carry a subtle violet shadow lift, matching the
+            active-pill language used everywhere else (Books / Videos / Profile). */}
+        <View style={{ position: "relative" }}>
+          <ScrollView
+            style={{ maxHeight: 172 }}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingTop: 12, paddingBottom: 22 }}
+          >
+            <View className="flex flex-row flex-wrap gap-2">
+              {tags.map((tag, index) => {
+                const isSelected = videoForm?.tags?.includes(tag);
+                const isDisabled = !isSelected && videoForm?.tags?.length >= sizeLimitTags;
+                return (
+                  <TouchableOpacity
+                    onPress={() => handleChange("tags", tag)}
+                    className="h-fit w-fit rounded-full px-4 py-2"
+                    key={index.toString()}
+                    disabled={isDisabled}
+                    style={{
+                      opacity: isDisabled ? 0.35 : 1,
+                      backgroundColor: isSelected ? theme.primary : theme.surfaceMuted,
+                      borderWidth: 1,
+                      borderColor: isSelected ? theme.primary : theme.border,
+                      shadowColor: theme.primary,
+                      shadowOffset: { width: 0, height: 4 },
+                      shadowOpacity: isSelected ? 0.22 : 0,
+                      shadowRadius: 8,
+                      elevation: isSelected ? 2 : 0,
+                    }}
+                  >
+                    <Text
+                      className="text-nowrap text-sm font-medium"
+                      style={{
+                        color: isSelected ? theme.primaryContrast : theme.text,
+                        letterSpacing: 0.1,
+                      }}
+                    >
+                      {tag}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </ScrollView>
+          <ScrollFadeOverlay color={theme.card} />
         </View>
       </View>
 
       {/* Publish Settings */}
       <View className="mb-6 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
-        <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
-          Publish Settings
-        </Text>
+        <View className="flex-row items-center">
+          <SectionDot color={theme.primary} />
+          <Text className="text-sm font-semibold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+            Publish Settings
+          </Text>
+        </View>
         <Text className="mt-1 text-xs" style={{ color: theme.textSoft }}>
           Choose how your video goes live.
         </Text>
 
-        {/* Radio Options */}
-        <View className="mt-4 space-y-3">
-          {/* Publish Now */}
+        {/* Single segmented toggle — premium replacement for the two stacked
+            green pills. Half/half violet primary on the active side, transparent
+            on the inactive side, sitting inside a single rounded surfaceMuted
+            track. Same shape as the app's pill tab bars. */}
+        <View
+          className="mt-4 flex-row overflow-hidden rounded-full"
+          style={{ backgroundColor: theme.surfaceMuted, borderWidth: 1, borderColor: theme.border }}
+        >
           <TouchableOpacity
             onPress={() => {
               setPublishNow(true);
               setScheduledDate(null);
             }}
-            className="flex-row items-center justify-center rounded-full px-4 py-2.5"
-            style={{ backgroundColor: publishNow ? theme.accentGreen : theme.surfaceMuted }}
+            activeOpacity={0.85}
+            className="flex-1 flex-row items-center justify-center py-2.5"
+            style={{
+              backgroundColor: publishNow ? theme.primary : "transparent",
+              shadowColor: theme.primary,
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: publishNow ? 0.2 : 0,
+              shadowRadius: 8,
+              elevation: publishNow ? 2 : 0,
+            }}
           >
-            <Text className="font-medium" style={{ color: publishNow ? theme.primaryContrast : theme.textMuted }}>
-              Publish Now
+            <Ionicons
+              name="flash"
+              size={14}
+              color={publishNow ? theme.primaryContrast : theme.iconMuted}
+              style={{ marginRight: 6 }}
+            />
+            <Text
+              className="font-semibold"
+              style={{ fontSize: 13, color: publishNow ? theme.primaryContrast : theme.textMuted, letterSpacing: 0.1 }}
+            >
+              Publish now
             </Text>
           </TouchableOpacity>
 
-          {/* Schedule Publish */}
           <TouchableOpacity
             onPress={() => {
               setPublishNow(false);
               handleOpenDateTimePicker();
             }}
-            className="flex-row items-center justify-center rounded-full px-4 py-2.5"
-            style={{ backgroundColor: !publishNow ? theme.accentGreen : theme.surfaceMuted }}
+            activeOpacity={0.85}
+            className="flex-1 flex-row items-center justify-center py-2.5"
+            style={{
+              backgroundColor: !publishNow ? theme.primary : "transparent",
+              shadowColor: theme.primary,
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: !publishNow ? 0.2 : 0,
+              shadowRadius: 8,
+              elevation: !publishNow ? 2 : 0,
+            }}
           >
-            <Text className="font-medium" style={{ color: !publishNow ? theme.primaryContrast : theme.textMuted }}>
-              Schedule Publish
+            <Ionicons
+              name="calendar-outline"
+              size={14}
+              color={!publishNow ? theme.primaryContrast : theme.iconMuted}
+              style={{ marginRight: 6 }}
+            />
+            <Text
+              className="font-semibold"
+              style={{ fontSize: 13, color: !publishNow ? theme.primaryContrast : theme.textMuted, letterSpacing: 0.1 }}
+            >
+              Schedule
             </Text>
           </TouchableOpacity>
         </View>
 
         {/* Show Scheduled Date */}
         {!publishNow && (
-          <View className="mt-4 rounded-xl p-3" style={{ backgroundColor: theme.surfaceMuted }}>
-            <Text className="font-medium" style={{ color: theme.text }}>
-              {scheduledDate ? `Scheduled for: ${new Date(scheduledDate).toLocaleString()}` : "No schedule selected yet"}
-            </Text>
+          <View
+            className="mt-4 rounded-xl p-3"
+            style={{ backgroundColor: theme.primarySoft, borderWidth: 1, borderColor: theme.primary }}
+          >
+            <View className="flex-row items-center">
+              <Ionicons name="time-outline" size={16} color={theme.primary} style={{ marginRight: 8 }} />
+              <Text className="flex-1 font-medium" style={{ color: theme.text }}>
+                {scheduledDate ? `Scheduled for ${new Date(scheduledDate).toLocaleString()}` : "No schedule selected yet"}
+              </Text>
+            </View>
 
-            <TouchableOpacity className="mt-3 rounded-xl px-3 py-2.5" style={{ backgroundColor: theme.accentGreen }} onPress={handleOpenDateTimePicker}>
-              <Text className="text-center font-semibold" style={{ color: theme.primaryContrast }}>
-                {scheduledDate ? "Change Schedule" : "Select Date & Time"}
+            <TouchableOpacity
+              className="mt-3 rounded-full px-3 py-2.5"
+              style={{
+                backgroundColor: theme.primary,
+                shadowColor: theme.primary,
+                shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: 0.25,
+                shadowRadius: 8,
+                elevation: 3,
+              }}
+              onPress={handleOpenDateTimePicker}
+            >
+              <Text className="text-center font-semibold" style={{ color: theme.primaryContrast, letterSpacing: 0.2 }}>
+                {scheduledDate ? "Change schedule" : "Select date & time"}
               </Text>
             </TouchableOpacity>
           </View>
@@ -559,13 +853,20 @@ const UploadVideo = ({ showMessage }) => {
 
               <TouchableOpacity
                 className="flex-1 rounded-xl py-3"
-                style={{ backgroundColor: theme.accentGreen }}
+                style={{
+                  backgroundColor: theme.primary,
+                  shadowColor: theme.primary,
+                  shadowOffset: { width: 0, height: 4 },
+                  shadowOpacity: 0.25,
+                  shadowRadius: 8,
+                  elevation: 3,
+                }}
                 onPress={() => {
                   setScheduledDate(tempDate.toISOString());
                   setShowPickerModal(false);
                 }}
               >
-                <Text className="text-center font-medium" style={{ color: theme.primaryContrast }}>
+                <Text className="text-center font-medium" style={{ color: theme.primaryContrast, letterSpacing: 0.2 }}>
                   Confirm
                 </Text>
               </TouchableOpacity>
@@ -573,31 +874,58 @@ const UploadVideo = ({ showMessage }) => {
           </View>
         </Modal>
 
-        {/* Monetization */}
-        <View className="mt-4 flex-row items-start justify-between rounded-xl px-3 py-3">
+        {/* Monetization — clearer affordance with the violet primary on the
+            switch's track when enabled, and a tighter inset row matching the
+            other secondary controls. */}
+        <View
+          className="mt-4 flex-row items-start justify-between rounded-xl p-3"
+          style={{ backgroundColor: theme.surfaceMuted, borderWidth: 1, borderColor: theme.border }}
+        >
           <View className="flex-1 pr-3">
-            <Text className="font-medium" style={{ color: theme.text }}>
-              Enable Monetization
-            </Text>
-            <Text className="text-xs" style={{ color: theme.textSoft }}>
-              Monetization is available for videos longer than 3 minutes.
+            <View className="flex-row items-center">
+              <MaterialIcons
+                name="paid"
+                size={16}
+                color={isMonetizationEligible ? theme.primary : theme.iconMuted}
+                style={{ marginRight: 6 }}
+              />
+              <Text className="font-semibold" style={{ color: theme.text, letterSpacing: 0.1 }}>
+                Enable monetization
+              </Text>
+            </View>
+            <Text className="mt-1 text-xs" style={{ color: theme.textSoft }}>
+              Available for videos longer than 3 minutes.
             </Text>
           </View>
           <Switch
             value={monetizationEnabled}
             disabled={!isMonetizationEligible}
+            trackColor={{ false: theme.surfaceStrong, true: theme.primary }}
+            thumbColor={Platform.OS === "android" ? (monetizationEnabled ? theme.primaryContrast : theme.iconMuted) : undefined}
+            ios_backgroundColor={theme.surfaceStrong}
             onValueChange={(value) => setMonetizationEnabled(isMonetizationEligible ? value : false)}
           />
         </View>
       </View>
 
+      {/* Primary CTA — violet pill with the same shadow lift used on the Books /
+          Videos / home-feed active tab pills. Reads as the single most important
+          action on the page. */}
       <TouchableOpacity
         onPress={handlePublish}
-        className="mt-2 flex w-full flex-row items-center justify-center rounded-full px-4 py-3"
-        style={{ backgroundColor: theme.accentGreen }}
+        activeOpacity={0.9}
+        className="mt-2 flex w-full flex-row items-center justify-center rounded-full px-4 py-3.5"
+        style={{
+          backgroundColor: theme.primary,
+          shadowColor: theme.primary,
+          shadowOffset: { width: 0, height: 6 },
+          shadowOpacity: 0.32,
+          shadowRadius: 14,
+          elevation: 6,
+        }}
       >
-        <FontAwesome name="cloud-upload" size={24} color={theme.primaryContrast} />
-        <Text className="ml-2 text-[14px] font-semibold" style={{ color: theme.primaryContrast }}>
+        <Ionicons name="cloud-upload" size={20} color={theme.primaryContrast} />
+        <Text className="ml-2 text-[14px] font-bold" style={{ color: theme.primaryContrast, letterSpacing: 0.3 }}>
           Publish
         </Text>
       </TouchableOpacity>
@@ -624,8 +952,18 @@ const UploadVideo = ({ showMessage }) => {
               {Math.round(progress)}%
             </Text>
             {/* Progress Bar */}
-            <View className="h-2 w-full rounded-full" style={{ backgroundColor: theme.surfaceStrong }}>
-              <View className="h-full rounded-full" style={{ width: `${progress}%`, backgroundColor: theme.accentGreen }} />
+            <View className="h-2 w-full overflow-hidden rounded-full" style={{ backgroundColor: theme.surfaceStrong }}>
+              <View
+                className="h-full rounded-full"
+                style={{
+                  width: `${progress}%`,
+                  backgroundColor: theme.primary,
+                  shadowColor: theme.primary,
+                  shadowOffset: { width: 0, height: 0 },
+                  shadowOpacity: 0.4,
+                  shadowRadius: 4,
+                }}
+              />
             </View>
             {canCancelUpload && (
               <TouchableOpacity className="mt-4 w-full rounded-full py-2" style={{ backgroundColor: theme.danger }} onPress={handleCancelUpload} activeOpacity={0.8}>

@@ -10,6 +10,7 @@ import { useGlobalContext } from "../../context/global-provider";
 import { client } from "../../lib/appwrite";
 import { MessagesService } from "../../lib/messages";
 import secrets from "../../private/secrets";
+import logger from "../../lib/utils/logger";
 import { waitForAppwriteWebSocketReady } from "../../utils/waitUntilRealtimeIsReady";
 
 const Messages = () => {
@@ -68,11 +69,15 @@ const Messages = () => {
   }, [chat]);
 
   useEffect(() => {
+    // Race-safe realtime subscription. See comment in chats.jsx for the
+    // unmount-during-await race we're guarding against.
     let unsubscribe = null;
+    let isCancelled = false;
 
     const setupRealtimeListeners = async () => {
       try {
         await waitForAppwriteWebSocketReady(secrets.appwriteConfig.projectId, client?.config?.endpoint);
+        if (isCancelled) return;
         unsubscribe = client.subscribe(
           [
             `databases.${secrets.appwriteConfig.databaseId}.collections.${secrets.appwriteConfig.messagesCollectionsId}.documents`,
@@ -86,14 +91,19 @@ const Messages = () => {
             }
           },
         );
+        if (isCancelled && unsubscribe) {
+          unsubscribe();
+          unsubscribe = null;
+        }
       } catch (err) {
-        console.error("Realtime not ready or subscription failed:", err);
+        logger.error("Messages", "Realtime subscription failed", err);
       }
     };
 
     setupRealtimeListeners();
 
     return () => {
+      isCancelled = true;
       if (unsubscribe) unsubscribe();
       chatIdRef.current = null;
     };

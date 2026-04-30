@@ -1,11 +1,11 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { memo, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Dimensions, Text, TouchableOpacity, View } from "react-native";
+import { Dimensions, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import useAppTheme from "../hooks/useAppTheme";
 import { BookReadService } from "../lib/book-reads";
-import FormatNumber from "../lib/format-number";
+import FormatNumber from "../lib/utils/format-number";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -59,6 +59,12 @@ const BookCard = ({ item, progress, customWidth, customHeight, customFontSize, h
   const titleBlockHeight = titleLineHeight * 2;
   const inlineStats = useMemo(() => getInlineStats(item), [item]);
   const [stats, setStats] = useState(inlineStats);
+  // Tracks FastImage load failures so we can swap to the placeholder. Reset whenever
+  // the underlying thumbnail URL changes (e.g. the user replaces the cover).
+  const [loadFailed, setLoadFailed] = useState(false);
+  useEffect(() => {
+    setLoadFailed(false);
+  }, [item?.thumbnail]);
 
   useEffect(() => {
     setStats(inlineStats);
@@ -89,7 +95,12 @@ const BookCard = ({ item, progress, customWidth, customHeight, customFontSize, h
   const rateValue = toFiniteNumber(stats?.averageRating, 0);
   const readsValue = toFiniteNumber(stats?.totalReads, 0);
   const accessLabel = item?.isLocked ? "Paid" : "Free";
-  const sashBackgroundColor = item?.isLocked ? "rgba(139, 92, 246, 0.95)" : "rgba(16, 185, 129, 0.95)";
+  // Fully opaque so iOS can compute the shadow efficiently. The previous
+  // rgba(…, 0.95) made the view non-opaque, which forced the rasterizer to
+  // walk the subview tree on every layout pass — that's where the 150+
+  // "(ADVICE) View has a shadow set but cannot calculate shadow efficiently"
+  // log spam was coming from on the Books tab.
+  const sashBackgroundColor = item?.isLocked ? "#8b5cf6" : "#10b981";
   const sashTextColor = theme.primaryContrast;
   const rateLabel = rateValue.toFixed(1);
   const readsLabel = FormatNumber(readsValue);
@@ -104,14 +115,20 @@ const BookCard = ({ item, progress, customWidth, customHeight, customFontSize, h
   };
 
   const getProgressPercentage = () => {
-    const currentProgress = progress?.lastChapter?.order;
-    const totalProgress = progress?.bookChapters;
+    const currentProgress = Number(progress?.lastChapter?.order);
+    const totalProgress = Number(progress?.bookChapters);
 
-    return Math.min(100, Math.round((currentProgress / totalProgress) * 100));
+    if (!Number.isFinite(currentProgress) || !Number.isFinite(totalProgress) || totalProgress <= 0) {
+      return 0;
+    }
+
+    const pct = Math.round((currentProgress / totalProgress) * 100);
+    return Number.isFinite(pct) ? Math.min(100, Math.max(0, pct)) : 0;
   };
 
+  // Tight 2px hairline gap between covers — premium gallery-rail spacing.
   return (
-    <View style={{ width: cardWidth }} className="mb-4 mr-3 overflow-hidden rounded-xl" {...props}>
+    <View style={{ width: cardWidth, marginRight: 2 }} className="mb-4 overflow-hidden rounded-xl" {...props}>
       <TouchableOpacity
         activeOpacity={0.85}
         onPress={handlePress}
@@ -119,28 +136,47 @@ const BookCard = ({ item, progress, customWidth, customHeight, customFontSize, h
         className="rounded-xl"
         style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}
       >
-        {/* Thumbnail */}
+        {/* Thumbnail. Renders a book-outline placeholder if the source is missing OR
+            if FastImage hits onError (dead URL, deleted storage file, network failure).
+            Previously a perpetual ActivityIndicator was shown when thumbnail was empty,
+            which made missing covers look like infinite loading. */}
         <View className="relative">
-          <FastImage
-            style={{
-              height: cardHeight,
-              width: cardWidth,
-              borderTopLeftRadius: 12,
-              borderTopRightRadius: 12,
-              backgroundColor: theme.surfaceMuted,
-            }}
-            source={item?.thumbnail ? { uri: item.thumbnail, priority: FastImage.priority.high } : null}
-            resizeMode={FastImage.resizeMode.cover}
-          >
-            {!item?.thumbnail && (
-              <View className="flex-1 items-center justify-center">
-                <ActivityIndicator size="small" color={theme.primary} />
-              </View>
-            )}
-          </FastImage>
+          {item?.thumbnail && !loadFailed ? (
+            <FastImage
+              style={{
+                height: cardHeight,
+                width: cardWidth,
+                borderTopLeftRadius: 12,
+                borderTopRightRadius: 12,
+                backgroundColor: theme.surfaceMuted,
+              }}
+              source={{ uri: item.thumbnail, priority: FastImage.priority.normal }}
+              resizeMode={FastImage.resizeMode.cover}
+              onError={() => setLoadFailed(true)}
+            />
+          ) : (
+            <View
+              style={{
+                height: cardHeight,
+                width: cardWidth,
+                borderTopLeftRadius: 12,
+                borderTopRightRadius: 12,
+                backgroundColor: theme.surfaceMuted,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Ionicons name="book-outline" size={Math.max(28, Math.floor(cardWidth * 0.22))} color={theme.iconMuted} />
+            </View>
+          )}
 
           <View
             pointerEvents="none"
+            // shouldRasterizeIOS flattens the rotated sash to a bitmap so the
+            // shadow doesn't re-compute every frame as the parent card
+            // animates / scrolls. Combined with the opaque backgroundColor
+            // above, this kills the iOS "(ADVICE)" shadow warnings.
+            shouldRasterizeIOS
             style={{
               position: "absolute",
               top: 8,

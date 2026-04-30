@@ -1,4 +1,4 @@
-import { Entypo, FontAwesome, MaterialIcons } from "@expo/vector-icons";
+import { Entypo, FontAwesome, Ionicons, MaterialIcons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -6,7 +6,7 @@ import { ActivityIndicator, Alert, Animated, Easing, Pressable, ScrollView, Swit
 import FastImage from "react-native-fast-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useSelector } from "react-redux";
-import { BookChaptersModal, CustomAlertModal, StyledTitle } from "../../components";
+import { BookChaptersModal, CustomAlertModal, ScrollFadeOverlay, SectionDot, StyledTitle } from "../../components";
 import BookChapterReorderModal from "../../components/BookChapterReorderModal";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
@@ -20,9 +20,9 @@ import {
   isIntroductionChapter,
   sortBookChaptersByOrder,
 } from "../../lib/books";
-import { persistImagePickerAsset } from "../../lib/image-utils";
-import TimeAgo from "../../lib/time-ago";
-import { useModalMessage } from "../../lib/useModalMessage";
+import { persistImagePickerAsset } from "../../lib/utils/image-utils";
+import TimeAgo from "../../lib/utils/time-ago";
+import { useModalMessage } from "../../hooks/useModalMessage";
 
 const BookEditor = () => {
   const { user } = useGlobalContext();
@@ -87,12 +87,49 @@ const BookEditor = () => {
       const localIndex = merged.findIndex((chapter) => chapter?.localId && chapter.localId === localChapter.localId);
       if (localIndex >= 0) {
         merged[localIndex] = { ...merged[localIndex], ...localChapter };
-      } else {
-        merged.push(localChapter);
+        return;
       }
+      // Defensive shadow-match: when a chapter has just been published online,
+      // the server returns it with a $id but no localId. The original local
+      // draft entry still carries its localId but no $id — so neither check
+      // above matches, and we'd push a phantom duplicate of the same chapter.
+      // Fall back to a (title + order) match to merge the local draft into
+      // the freshly-saved server entry. Previously this manifested as the
+      // same chapter showing up 2–3× in the table of contents and "delete one
+      // delete all" behavior because all the duplicates pointed at the same
+      // server $id once tapped.
+      const localTitle = String(localChapter?.title || "").trim();
+      const localOrder = Number(getBookChapterOrder(localChapter));
+      if (localTitle || Number.isFinite(localOrder)) {
+        const shadowIndex = merged.findIndex((chapter) => {
+          if (!chapter?.$id) return false;
+          const sameTitle = localTitle && String(chapter?.title || "").trim() === localTitle;
+          const sameOrder = Number.isFinite(localOrder) && Number(getBookChapterOrder(chapter)) === localOrder;
+          return sameTitle && sameOrder;
+        });
+        if (shadowIndex >= 0) {
+          merged[shadowIndex] = { ...merged[shadowIndex], ...localChapter, $id: merged[shadowIndex].$id };
+          return;
+        }
+      }
+      merged.push(localChapter);
     });
 
-    return sortBookChaptersByOrder(merged);
+    // Final hard dedupe by $id — even with all the above, a misshapen draft
+    // could still slip through with a server $id that's already represented.
+    // Keeping this last guarantees the same server document never renders
+    // twice no matter how the upstream merge goes wrong.
+    const seenIds = new Set();
+    const dedupedById = [];
+    for (const chapter of merged) {
+      if (chapter?.$id) {
+        if (seenIds.has(chapter.$id)) continue;
+        seenIds.add(chapter.$id);
+      }
+      dedupedById.push(chapter);
+    }
+
+    return sortBookChaptersByOrder(dedupedById);
   }, [bookChapters, isEdit, localDraftChapters]);
   const latestDisplayedChapters = useMemo(
     () =>
@@ -639,10 +676,23 @@ const BookEditor = () => {
               ) : null}
             </View>
           ) : (
-            <TouchableOpacity onPress={handleNext} className="rounded-full px-4 py-2" style={{ backgroundColor: theme.primary }}>
-              <Text className="text-sm font-semibold" style={{ color: theme.primaryContrast }}>
+            <TouchableOpacity
+              onPress={handleNext}
+              activeOpacity={0.9}
+              className="flex-row items-center rounded-full px-4 py-2"
+              style={{
+                backgroundColor: theme.primary,
+                shadowColor: theme.primary,
+                shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: 0.28,
+                shadowRadius: 8,
+                elevation: 3,
+              }}
+            >
+              <Text className="mr-1 text-sm font-bold" style={{ color: theme.primaryContrast, letterSpacing: 0.2 }}>
                 Next
               </Text>
+              <Ionicons name="arrow-forward" size={14} color={theme.primaryContrast} />
             </TouchableOpacity>
           )}
         </View>
@@ -652,16 +702,57 @@ const BookEditor = () => {
           showsVerticalScrollIndicator={false}
           style={{ zIndex: -999, backgroundColor: theme.background }}
         >
+          {/* Hero — premium violet-tinted intro card. Mirrors the UploadVideo
+              hero so Create Book and Create Video read as the same family.
+              Editorial title + one-line subtitle on a violet-soft chip; no
+              right-side content so the focus stays on what comes next. */}
+          {!isEdit && (
+            <View className="flex-row items-center">
+              <View
+                className="mr-3 h-10 w-10 items-center justify-center rounded-xl"
+                style={{
+                  backgroundColor: theme.primarySoft,
+                  borderWidth: 1,
+                  borderColor: theme.primary,
+                }}
+              >
+                <Ionicons name="book-outline" size={20} color={theme.primary} />
+              </View>
+              <View className="flex-1">
+                <Text className="text-lg font-bold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+                  {isLocalDraft ? "Continue your draft" : "Start a new book"}
+                </Text>
+                <Text className="mt-0.5 text-xs" style={{ color: theme.textSoft }}>
+                  Cover, title, a short description, and a few tags — that's all you need to begin.
+                </Text>
+              </View>
+            </View>
+          )}
+
           <TouchableOpacity onPress={openPicker} className="rounded-2xl p-4" style={cardStyle}>
             <View className="flex-row items-center justify-between">
-              <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
-                Book Cover
-              </Text>
+              <View className="flex-row items-center">
+                <SectionDot color={theme.primary} />
+                <Text className="text-sm font-semibold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+                  Book Cover
+                </Text>
+              </View>
               <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitThumbnailUpload / 1024 / 1024}MB`}</Text>
             </View>
             <View className="mt-3 flex-row items-center space-x-3">
               {bookForm?.thumbnail ? (
-                <View className="items-center justify-center overflow-hidden rounded-xl" style={cardStyle}>
+                <View
+                  className="items-center justify-center overflow-hidden rounded-xl"
+                  style={{
+                    borderWidth: 2,
+                    borderColor: theme.primary,
+                    shadowColor: theme.primary,
+                    shadowOffset: { width: 0, height: 4 },
+                    shadowOpacity: 0.25,
+                    shadowRadius: 8,
+                    elevation: 3,
+                  }}
+                >
                   <FastImage
                     className="h-40 w-[110px]"
                     source={{
@@ -676,8 +767,8 @@ const BookEditor = () => {
                   className="h-40 w-[110px] items-center justify-center space-y-1 rounded-xl p-3"
                   style={{ borderWidth: 1, borderStyle: "dashed", borderColor: theme.borderStrong, backgroundColor: theme.surfaceMuted }}
                 >
-                  <FontAwesome name="plus" size={28} color={theme.iconMuted} />
-                  <Text className="text-xs" style={{ color: theme.textSoft }}>
+                  <Ionicons name="cloud-upload-outline" size={26} color={theme.iconMuted} />
+                  <Text className="text-xs font-semibold uppercase" style={{ color: theme.textSoft, letterSpacing: 0.4 }}>
                     Upload
                   </Text>
                 </View>
@@ -695,9 +786,12 @@ const BookEditor = () => {
 
           <View className="rounded-2xl p-4" style={cardStyle}>
             <View className="flex-row items-center justify-between">
-              <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
-                Book Title
-              </Text>
+              <View className="flex-row items-center">
+                <SectionDot color={theme.primary} />
+                <Text className="text-sm font-semibold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+                  Book Title
+                </Text>
+              </View>
               <Text
                 className="text-[10px] font-medium"
                 style={{ color: theme.textSoft }}
@@ -718,9 +812,12 @@ const BookEditor = () => {
 
           <View className="rounded-2xl p-4" style={cardStyle}>
             <View className="flex-row items-center justify-between">
-              <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
-                Description
-              </Text>
+              <View className="flex-row items-center">
+                <SectionDot color={theme.primary} />
+                <Text className="text-sm font-semibold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+                  Description
+                </Text>
+              </View>
               <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Words ${getWordCount(bookForm.synopsis)}`}</Text>
             </View>
             <TextInput
@@ -736,39 +833,68 @@ const BookEditor = () => {
 
           <View className="rounded-2xl p-4" style={cardStyle}>
             <View className="flex-row items-center justify-between">
-              <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
-                Tags
-              </Text>
+              <View className="flex-row items-center">
+                <SectionDot color={theme.primary} />
+                <Text className="text-sm font-semibold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+                  Tags
+                </Text>
+              </View>
               <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitTags}`}</Text>
             </View>
             <Text className="mt-2 text-xs" style={{ color: theme.textSoft }}>
               Select at least 1 tag.
             </Text>
-            <View className="flex flex-row flex-wrap gap-2 pt-3">
-              {tags.map((tag, index) => {
-                const isSelected = bookForm?.tags?.includes(tag);
-                const isDisabled = !isSelected && bookForm?.tags?.length >= sizeLimitTags;
-                return (
-                  <TouchableOpacity
-                    onPress={() => handleChange("tags", tag)}
-                    className="h-fit w-fit rounded-full px-4 py-2"
-                    key={index.toString()}
-                    disabled={isDisabled}
-                    style={[
-                      {
-                        borderWidth: 1,
-                        borderColor: isSelected ? theme.primary : theme.border,
-                        backgroundColor: isSelected ? theme.primary : theme.surfaceMuted,
-                      },
-                      isDisabled ? { opacity: 0.35 } : undefined,
-                    ]}
-                  >
-                    <Text className="text-nowrap text-sm font-medium" style={{ color: isSelected ? theme.primaryContrast : theme.text }}>
-                      {tag}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
+            {/* Capped to ~3.5 rows of pills + vertical scroll + bottom fade so
+                the user can clearly see content extending below the cap. The
+                half-row peek + the fade together make scrollability obvious
+                without a scrollbar — mirrors the web design. Selected pills
+                carry the violet shadow lift used everywhere else. */}
+            <View style={{ position: "relative" }}>
+              <ScrollView
+                style={{ maxHeight: 172 }}
+                nestedScrollEnabled
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingTop: 12, paddingBottom: 22 }}
+              >
+                <View className="flex flex-row flex-wrap gap-2">
+                  {tags.map((tag, index) => {
+                    const isSelected = bookForm?.tags?.includes(tag);
+                    const isDisabled = !isSelected && bookForm?.tags?.length >= sizeLimitTags;
+                    return (
+                      <TouchableOpacity
+                        onPress={() => handleChange("tags", tag)}
+                        className="h-fit w-fit rounded-full px-4 py-2"
+                        key={index.toString()}
+                        disabled={isDisabled}
+                        style={[
+                          {
+                            borderWidth: 1,
+                            borderColor: isSelected ? theme.primary : theme.border,
+                            backgroundColor: isSelected ? theme.primary : theme.surfaceMuted,
+                            shadowColor: theme.primary,
+                            shadowOffset: { width: 0, height: 4 },
+                            shadowOpacity: isSelected ? 0.22 : 0,
+                            shadowRadius: 8,
+                            elevation: isSelected ? 2 : 0,
+                          },
+                          isDisabled ? { opacity: 0.35 } : undefined,
+                        ]}
+                      >
+                        <Text
+                          className="text-nowrap text-sm font-medium"
+                          style={{
+                            color: isSelected ? theme.primaryContrast : theme.text,
+                            letterSpacing: 0.1,
+                          }}
+                        >
+                          {tag}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </ScrollView>
+              <ScrollFadeOverlay color={theme.card} />
             </View>
           </View>
 
@@ -848,20 +974,31 @@ const BookEditor = () => {
           {isEdit && (
             <TouchableOpacity
               onPress={handleSaveBookInfo}
-              className="mt-2 flex-row items-center justify-center rounded-full px-4 py-3"
-              style={{ backgroundColor: theme.primary }}
+              activeOpacity={0.9}
+              className="mt-2 flex-row items-center justify-center rounded-full px-4 py-3.5"
+              style={{
+                backgroundColor: theme.primary,
+                shadowColor: theme.primary,
+                shadowOffset: { width: 0, height: 6 },
+                shadowOpacity: 0.32,
+                shadowRadius: 14,
+                elevation: 6,
+              }}
             >
               {bookSaving ? (
                 <View className="flex-row items-center space-x-2">
                   <ActivityIndicator size="small" color={theme.primaryContrast} />
-                  <Text className="font-medium" style={{ color: theme.primaryContrast }}>
-                    Saving Book...
+                  <Text className="font-bold" style={{ color: theme.primaryContrast, letterSpacing: 0.3 }}>
+                    Saving book…
                   </Text>
                 </View>
               ) : (
-                <Text className="font-medium" style={{ color: theme.primaryContrast }}>
-                  Save Book
-                </Text>
+                <>
+                  <Ionicons name="save-outline" size={18} color={theme.primaryContrast} style={{ marginRight: 8 }} />
+                  <Text className="font-bold" style={{ color: theme.primaryContrast, letterSpacing: 0.3 }}>
+                    Save book
+                  </Text>
+                </>
               )}
             </TouchableOpacity>
           )}

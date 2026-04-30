@@ -1,19 +1,25 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { memo, useCallback } from "react";
-import { Dimensions, FlatList, Text, View } from "react-native";
+import { FlatList, Text, View, useWindowDimensions } from "react-native";
 import { useSelector } from "react-redux";
 import useAppTheme from "../hooks/useAppTheme";
 import BookCard from "./BookCard";
 import BooksSectionTitle from "./BooksSectionTitle";
 
+// Narrow selector — only re-renders when this slice changes, not the whole
+// `state.books` object. Was the cause of cascading re-renders across every
+// section whenever any books slice updated during cold load.
+const selectWeeklyFeatured = (state) => state.books.weeklyFeatured;
+
 const BooksWeeklyFeatured = () => {
   const { theme } = useAppTheme();
-  const { weeklyFeatured } = useSelector((state) => state.books);
-  const { width } = Dimensions.get("window");
+  const weeklyFeatured = useSelector(selectWeeklyFeatured);
+  const { width } = useWindowDimensions();
 
   const renderItem = useCallback(({ item }) => {
-    return <BookCard key={item.uri} item={item} />;
+    return <BookCard item={item} />;
   }, []);
+  const keyExtractor = useCallback((item, index) => item?.$id || `weekly-${index}`, []);
 
   return (
     <View className="space-y-2">
@@ -22,7 +28,7 @@ const BooksWeeklyFeatured = () => {
         removeClippedSubviews={false}
         horizontal
         showsHorizontalScrollIndicator={false}
-        keyExtractor={(item, index) => item?.$id || `${item.type}-${index}`}
+        keyExtractor={keyExtractor}
         data={weeklyFeatured}
         renderItem={renderItem}
         initialNumToRender={6}

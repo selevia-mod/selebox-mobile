@@ -5,7 +5,7 @@ import Modal from "react-native-modal";
 import Animated, { Easing, LinearTransition, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import useAppTheme from "../hooks/useAppTheme";
 import { BOOK_CHAPTER_LIST_SELECT, BookService, getBookChapterSectionLabel, isIntroductionChapter, sortBookChaptersByOrder } from "../lib/books";
-import TimeAgo from "../lib/time-ago";
+import TimeAgo from "../lib/utils/time-ago";
 
 const ROW_HEIGHT = 78;
 const ROW_LAYOUT_TRANSITION = LinearTransition.springify().damping(28).stiffness(105).mass(0.45);

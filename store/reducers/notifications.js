@@ -1,10 +1,28 @@
 import { createSlice } from "@reduxjs/toolkit";
+import { createTransform } from "redux-persist";
 import reduxStorage from "../storage";
+
+// Cap persisted notification rows. Same rationale as post.js — runtime state
+// keeps everything; cold-start hydration only restores the most recent 50.
+// markAllAsRead etc. cause cascade updates; without throttling, each one was
+// re-serializing the full notifications list to MMKV.
+const PERSISTED_NOTIFICATIONS_CAP = 50;
+const cappedNotificationsTransform = createTransform(
+  (inboundState) => {
+    if (!inboundState || !Array.isArray(inboundState.items)) return inboundState;
+    if (inboundState.items.length <= PERSISTED_NOTIFICATIONS_CAP) return inboundState;
+    return { ...inboundState, items: inboundState.items.slice(0, PERSISTED_NOTIFICATIONS_CAP) };
+  },
+  (outboundState) => outboundState,
+  { whitelist: ["notifications"] },
+);
 
 export const notificationsPersistConfig = {
   key: "notifications",
   storage: reduxStorage,
   whitelist: ["userId", "items", "lastId", "hasMore", "lastFetchedAt"],
+  throttle: 1000,
+  transforms: [cappedNotificationsTransform],
 };
 
 const initialState = {

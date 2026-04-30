@@ -53,6 +53,10 @@ const getMonogramColor = (name, theme) => {
  *   - size        : number (px). Default 48.
  *   - borderRadius: number (px). Default 12 (matches Tailwind rounded-xl).
  *   - borderColor : string|null. If provided, applies a 1px border.
+ *   - priority    : "low" | "normal" | "high". FastImage priority. Default "normal".
+ *                   Avatars are secondary content; keep it normal in lists so the
+ *                   primary thumbnail/photo isn't starved of bandwidth. Pass "high"
+ *                   when the avatar IS the focus (profile header, full-screen).
  *   - style       : object. Additional style overrides for the outer container.
  */
 const UserAvatar = ({
@@ -61,6 +65,7 @@ const UserAvatar = ({
   size = 48,
   borderRadius = 12,
   borderColor = null,
+  priority = "normal",
   style,
   ...rest
 }) => {
@@ -82,9 +87,15 @@ const UserAvatar = ({
   ];
 
   if (showPhoto) {
+    const fastImagePriority =
+      priority === "low"
+        ? FastImage.priority.low
+        : priority === "high"
+        ? FastImage.priority.high
+        : FastImage.priority.normal;
     return (
       <FastImage
-        source={{ uri: avatarUri, priority: FastImage.priority.high }}
+        source={{ uri: avatarUri, priority: fastImagePriority }}
         style={[...containerStyle, { backgroundColor: theme.surfaceMuted }]}
         resizeMode={FastImage.resizeMode.cover}
         accessibilityLabel={`${name || "User"} avatar`}

@@ -3,7 +3,7 @@ import React from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import useAppTheme from "../hooks/useAppTheme";
-import TimeAgo from "../lib/time-ago";
+import TimeAgo from "../lib/utils/time-ago";
 
 const ClipCard = ({ item, customHeight, customWidth, ...props }) => {
   const { theme } = useAppTheme();
@@ -23,7 +23,7 @@ const ClipCard = ({ item, customHeight, customWidth, ...props }) => {
     <TouchableOpacity onPress={handlePress} activeOpacity={0.7} className="m-2" style={{ height: customHeight, width: customWidth }}>
       <View className="w-full">
         <FastImage
-          source={{ uri: item.thumbnail, priority: FastImage.priority.high }}
+          source={{ uri: item.thumbnail, priority: FastImage.priority.normal }}
           className="aspect-[9/16] w-full rounded-md"
           resizeMode={FastImage.resizeMode.cover}
         />

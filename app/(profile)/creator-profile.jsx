@@ -1,6 +1,29 @@
+// Creator profile screen — opened anywhere a user is tapped (post owners,
+// video uploaders, comment authors, suggested creators, search results, …).
+//
+// Why the pre-hydrate + module cache:
+//   The original implementation gated the entire screen on a fresh
+//   getUserByID + fetchVideos round trip. From the user's perspective, tapping
+//   a creator showed the loading spinner until BOTH calls resolved (~800-1500ms
+//   on a real network). That felt like the screen was lagging.
+//
+//   Now we paint with whatever we already know about the user *before* the
+//   network call finishes:
+//     1. CREATOR_PROFILE_CACHE — a module-level Map<userId, user> with a 5min
+//        TTL. Tapping the same creator twice in a session is instant.
+//     2. allVideos — the global feed cache already has uploader objects with
+//        username + avatar + accountId. If the tapped creator authored any
+//        cached video, we have enough to paint the name/avatar immediately.
+//     3. allVideos.uploader.uploader — if the creator IS a viewer (commented
+//        elsewhere), we may have richer data. Same lookup.
+//
+//   The fresh fetch still runs in the background and replaces the placeholder
+//   user once it resolves, so any data we don't have (banner, bio, exact
+//   stats) lands within the same beat without ever showing a blocked screen.
+
 import { Feather, MaterialIcons } from "@expo/vector-icons";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { Profile, StyledSafeAreaView, StyledTitle } from "../../components";
 import { useGlobalContext } from "../../context/global-provider";
@@ -10,13 +33,63 @@ import { listBlockedUsers, unblockUser } from "../../lib/safety";
 import { getUserByID } from "../../lib/users";
 import { VideosService } from "../../lib/video";
 
+// Module-level so it survives across mounts. 5 minutes is short enough that
+// stale data rarely matters (the most volatile fields here are bio + banner)
+// but long enough that flicking back-and-forth between two creators feels
+// instant.
+const CREATOR_PROFILE_TTL_MS = 5 * 60 * 1000;
+const CREATOR_PROFILE_CACHE = new Map();
+
+const readCachedUser = (userId) => {
+  const cached = CREATOR_PROFILE_CACHE.get(userId);
+  if (!cached) return null;
+  if (Date.now() - cached.cachedAt > CREATOR_PROFILE_TTL_MS) {
+    CREATOR_PROFILE_CACHE.delete(userId);
+    return null;
+  }
+  return cached.user;
+};
+
+const writeCachedUser = (userId, user) => {
+  if (!userId || !user) return;
+  CREATOR_PROFILE_CACHE.set(userId, { user, cachedAt: Date.now() });
+};
+
+// Pulls the richest user payload we already have in memory for this userId,
+// without making any network calls. Sources, in order of richness:
+//   - the module-level CREATOR_PROFILE_CACHE (most recently fetched)
+//   - any uploader object hanging off allVideos (username + avatar + role)
+const findCachedCreator = (userId, allVideos) => {
+  if (!userId) return null;
+
+  const cachedUser = readCachedUser(userId);
+  if (cachedUser) return cachedUser;
+
+  if (Array.isArray(allVideos)) {
+    const fromVideo = allVideos.find((video) => {
+      const uploaderId = video?.uploader?.$id || video?.uploader?.uid;
+      return uploaderId === userId;
+    });
+    if (fromVideo?.uploader && typeof fromVideo.uploader === "object") return fromVideo.uploader;
+  }
+
+  return null;
+};
+
 const CreatorProfile = () => {
   const { userId } = useLocalSearchParams();
   const { allVideos, user: viewer } = useGlobalContext();
   const { theme } = useAppTheme();
-  const [user, setUser] = useState();
-  const [videos, setVideos] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // Pre-hydrate the user state synchronously on first mount so the screen
+  // paints with the cached creator immediately. The fresh fetch below will
+  // replace this placeholder once it resolves.
+  const initialUser = useMemo(() => findCachedCreator(userId, allVideos), [userId, allVideos]);
+  const [user, setUser] = useState(initialUser);
+  const [videos, setVideos] = useState(() => (allVideos?.length && userId ? filterVideosByOwner(allVideos, userId) : []));
+  // Only show the loading state if we don't already have *something* to show
+  // for the user — i.e. it's a fresh creator we've never opened before AND
+  // none of their videos have hit our feed cache yet.
+  const [loading, setLoading] = useState(!initialUser);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
   const videosService = useRef(new VideosService()).current;
@@ -34,7 +107,10 @@ const CreatorProfile = () => {
   const fetchUserAndVideos = useCallback(async () => {
     if (!userId) return;
     const cachedVideos = hydrateCachedVideos();
-    if (!hasLoadedOnce.current) setLoading(!cachedVideos.length);
+    // Only flip the loading flag if we have nothing pre-hydrated AND we
+    // haven't already loaded this user once in this mount. Otherwise the
+    // screen is already painted and the fresh fetch is a silent refresh.
+    if (!hasLoadedOnce.current && !user) setLoading(!cachedVideos.length);
     setIsRefreshing(true);
 
     try {
@@ -43,7 +119,10 @@ const CreatorProfile = () => {
         videosService.fetchVideos({ userId, limit: 50, status: "published" }),
       ]);
 
-      setUser(userData);
+      if (userData) {
+        setUser(userData);
+        writeCachedUser(userId, userData);
+      }
       setVideos(videosData?.documents?.length ? videosData.documents : cachedVideos);
     } catch (error) {
       console.log("fetchUserAndVideos: error", error);
@@ -55,23 +134,22 @@ const CreatorProfile = () => {
       setIsRefreshing(false);
       hasLoadedOnce.current = true;
     }
-  }, [hydrateCachedVideos, userId, videos.length, videosService]);
+  }, [hydrateCachedVideos, user, userId, videos.length, videosService]);
 
   useFocusEffect(
     useCallback(() => {
       fetchUserAndVideos();
 
-      const checkBlocked = async () => {
-        if (!viewer?.$id || !userId) return;
-        try {
-          const blocked = await listBlockedUsers({ blockerId: viewer.$id });
-          setIsBlocked(blocked.includes(userId));
-        } catch (err) {
-          setIsBlocked(false);
-        }
-      };
-
-      checkBlocked();
+      // Run the blocked-user check non-blocking. Previously this was awaited
+      // inline alongside the user fetch, which delayed first paint by a full
+      // round trip even though the result only affects an edge-case overlay.
+      // Now the profile renders immediately and the block check resolves in
+      // the background.
+      if (viewer?.$id && userId) {
+        listBlockedUsers({ blockerId: viewer.$id })
+          .then((blocked) => setIsBlocked(blocked.includes(userId)))
+          .catch(() => setIsBlocked(false));
+      }
     }, [fetchUserAndVideos, userId, viewer?.$id]),
   );
 

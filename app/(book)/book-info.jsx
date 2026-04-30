@@ -8,6 +8,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Share from "react-native-share";
 import { useSelector } from "react-redux";
 import { ShareIcon } from "../../assets/svgs";
+import axios from "axios";
 import {
   BookChaptersModal,
   BookChaptersUnlockModal,
@@ -16,6 +17,7 @@ import {
   BookRatingModal,
   BookTag,
   ContentNotFound,
+  ReportModal,
   UserRoleBadgeIcons,
 } from "../../components";
 import AnimatedSkeleton, { getRandomSkeletonWidth } from "../../components/AnimatedSkeleton";
@@ -81,6 +83,9 @@ const BookInfo = () => {
   const [isDownloaded, setIsDownloaded] = useState(false);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportDetail, setReportDetail] = useState("");
+  const [reportLoading, setReportLoading] = useState(false);
 
   const bookService = new BookService();
   const bookUnlockService = new BookUnlocksService();
@@ -392,6 +397,77 @@ const BookInfo = () => {
     });
   };
 
+  const handleOpenReport = () => {
+    setShowReportModal(true);
+  };
+
+  const handleCloseReport = () => setShowReportModal(false);
+
+  // Mirrors the email-based report flow used by StyledPlaylistButton (videos)
+  // and ProfileActionsMenu (users). Lands in the admin inbox via the existing
+  // appwrite.global function until Phase 5 unifies all reports under
+  // contentReportsCollection.
+  const handleSubmitReport = async (reportDetails) => {
+    Alert.alert(
+      "Report book",
+      "Are you sure you want to report this book? Confirming will submit your report for review by our team.",
+      [
+        { text: "No", style: "cancel" },
+        {
+          text: "Yes",
+          onPress: async () => {
+            setReportLoading(true);
+            try {
+              const adminEmails = (() => {
+                try {
+                  return JSON.parse(globalSettings?.["ADMIN_EMAILS"] || "[]").join(",");
+                } catch {
+                  return "";
+                }
+              })();
+              const bccEmails = (() => {
+                try {
+                  return JSON.parse(globalSettings?.["BCC_EMAILS"] || "[]").join(",");
+                } catch {
+                  return "";
+                }
+              })();
+              const response = await axios.post("https://67e9284815c6fe834817.appwrite.global", {
+                from: "selebox.dev@gmail.com",
+                to: adminEmails,
+                cc: user?.email,
+                bcc: bccEmails,
+                subject: `${user?.username} | Selebox | Reported Book`,
+                html: `
+                  <p><strong>Dear Selebox Team,</strong></p>
+                  <p>I am writing to report this book <b><u>${secrets.WEBSITE}/books/${book?.$id}</u></b> ("${book?.title}"). Please find this report for your review.</p>
+                  <p><strong>Report Detail:</strong></p>
+                  <p>${reportDetails}</p>
+                  <p>Thank you for your time and consideration.</p>
+                  <p>Best regards,<br>
+                  ${user?.username}<br>
+                  ${user?.accountId}<br>
+                  ${user?.email}<br>
+                  ${new Date(user?.$createdAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</p>`,
+              });
+              if (response.data?.success) {
+                setReportDetail("");
+                setShowReportModal(false);
+                Alert.alert("Success", "Your report has been submitted for review.");
+              } else {
+                Alert.alert("Error", "There was an error submitting your report. Please try again.");
+              }
+            } catch (error) {
+              Alert.alert("Error", error?.message || "Failed to submit report.");
+            }
+            setReportLoading(false);
+          },
+        },
+      ],
+      { cancelable: true },
+    );
+  };
+
   const ensureBookInLibrary = async () => {
     if (!book?.$id || !user?.$id) return null;
     try {
@@ -504,32 +580,86 @@ const BookInfo = () => {
 
   return (
     <SafeAreaView edges={["top"]} className="flex-1" style={{ backgroundColor: theme.background }}>
-      {/* HEADER */}
+      {/* HEADER — premium icon pills matching the MainScreensHeader / Books-pill
+          design language: 36×36 surfaceMuted disc, subtle border, 18px icon.
+          Each action is now a self-contained pill with consistent hit area and
+          obvious affordance, replacing the bare-icon row. The flag now opens
+          the existing ReportModal flow (mirrors video / profile reports). */}
       <View className="flex-row items-center justify-between px-4 py-3">
-        <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={24} color={theme.icon} />
+        <TouchableOpacity
+          onPress={() => router.back()}
+          accessibilityLabel="Back"
+          style={{
+            height: 36,
+            width: 36,
+            borderRadius: 18,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: theme.surfaceMuted,
+            borderWidth: 1,
+            borderColor: theme.border,
+          }}
+        >
+          <Ionicons name="arrow-back" size={18} color={theme.icon} />
         </TouchableOpacity>
-        <View className="flex-row space-x-4" style={{ opacity: book ? 1 : 0 }}>
+        <View className="flex-row" style={{ gap: 8, opacity: book ? 1 : 0 }}>
           <TouchableOpacity
             onPress={handleDownload}
             disabled={isDownloading || isDownloaded}
-            className={isDownloading || isDownloaded ? "opacity-50" : ""}
+            accessibilityLabel={isDownloaded ? "Downloaded" : "Download book"}
+            style={{
+              height: 36,
+              width: 36,
+              borderRadius: 18,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: theme.surfaceMuted,
+              borderWidth: 1,
+              borderColor: theme.border,
+              opacity: isDownloading || isDownloaded ? 0.7 : 1,
+            }}
           >
             {isDownloading ? (
               <ActivityIndicator size="small" color={theme.primary} />
             ) : (
               <Ionicons
                 name={isDownloaded ? "checkmark-circle" : "download-outline"}
-                size={22}
+                size={18}
                 color={isDownloaded ? theme.accentGreen : theme.icon}
               />
             )}
           </TouchableOpacity>
-          <TouchableOpacity onPress={handleSharePress}>
-            <ShareIcon width={22} height={22} color={theme.icon} />
+          <TouchableOpacity
+            onPress={handleSharePress}
+            accessibilityLabel="Share book"
+            style={{
+              height: 36,
+              width: 36,
+              borderRadius: 18,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: theme.surfaceMuted,
+              borderWidth: 1,
+              borderColor: theme.border,
+            }}
+          >
+            <ShareIcon width={18} height={18} color={theme.icon} />
           </TouchableOpacity>
-          <TouchableOpacity>
-            <Ionicons name="flag-outline" size={22} color={theme.icon} />
+          <TouchableOpacity
+            onPress={handleOpenReport}
+            accessibilityLabel="Report book"
+            style={{
+              height: 36,
+              width: 36,
+              borderRadius: 18,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: theme.surfaceMuted,
+              borderWidth: 1,
+              borderColor: theme.border,
+            }}
+          >
+            <Ionicons name="flag-outline" size={18} color={theme.icon} />
           </TouchableOpacity>
         </View>
       </View>
@@ -698,6 +828,16 @@ const BookInfo = () => {
       />
 
       <BookRatingModal isVisible={ratingVisible} onClose={() => setRatingVisible(false)} onSubmit={handleSubmitRating} />
+
+      <ReportModal
+        type="Book"
+        isVisible={showReportModal}
+        onClose={handleCloseReport}
+        handleSubmitReport={handleSubmitReport}
+        reportDetail={reportDetail}
+        setReportDetail={setReportDetail}
+        reportLoading={reportLoading}
+      />
     </SafeAreaView>
   );
 };

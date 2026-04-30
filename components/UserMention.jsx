@@ -112,7 +112,7 @@ const MentionSuggestionsVariant = memo(
                 }}
               >
                 <FastImage
-                  source={{ uri: item?.avatar || "", priority: FastImage.priority.high }}
+                  source={{ uri: item?.avatar || "", priority: FastImage.priority.normal }}
                   className={joinClasses(avatarClassName, isSelectedMention && selectedAvatarClassName)}
                   style={{ backgroundColor: theme.surfaceStrong }}
                 />

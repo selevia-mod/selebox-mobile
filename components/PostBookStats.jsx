@@ -5,7 +5,7 @@ import { Text, TouchableOpacity, View } from "react-native";
 import { useBookStats } from "../context/book-stats-provider";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
-import FormatNumber from "../lib/format-number";
+import FormatNumber from "../lib/utils/format-number";
 import { consumePostCommentModalResume } from "../lib/post-comment-modal-resume";
 import BookCommentModal from "./BookCommentModal";
 import StyledDivider from "./StyledDivider";

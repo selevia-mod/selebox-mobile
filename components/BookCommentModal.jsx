@@ -914,7 +914,7 @@ const BookCommentModal = ({ book, isVisible, onClose, onCommentPosted, focusComm
   );
 
   const handleReplyPress = useCallback(
-    (comment) => {
+    (comment, mentionUser) => {
       if (!comment?.$id) return;
       setReplyTarget({
         id: comment.$id,
@@ -923,6 +923,12 @@ const BookCommentModal = ({ book, isVisible, onClose, onCommentPosted, focusComm
       });
       committedMentionRangeRef.current = null;
       clearMentionSuggestions();
+      // Reply-on-reply: prefill the composer with @username so the reply
+      // visually addresses the original reply author, while threading to the
+      // top-level parent (matches web's flat-thread model).
+      if (mentionUser?.username) {
+        setCommentText(`@${mentionUser.username} `);
+      }
       setTimeout(() => inputRef.current?.focus(), 100);
     },
     [clearMentionSuggestions],
@@ -1263,6 +1269,15 @@ const BookCommentModal = ({ book, isVisible, onClose, onCommentPosted, focusComm
               setIsComposerFocused(false);
               clearMentionSuggestions();
             }}
+            // Virtualization tuning. Comment rows are heavy (avatar + reactions
+            // + replies + mention parsing). Without these caps, RN's default
+            // windowSize=21 would keep ~21 screens of rendered comments alive
+            // and `VirtualizedList: slow to update` fires when the renderItem
+            // backlog exceeds the scroll velocity.
+            initialNumToRender={8}
+            maxToRenderPerBatch={6}
+            windowSize={10}
+            updateCellsBatchingPeriod={50}
             removeClippedSubviews={Platform.OS !== "android"}
             ListEmptyComponent={
               <View className="flex flex-1 items-center justify-center">

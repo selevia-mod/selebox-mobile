@@ -81,7 +81,7 @@ const UploadClips = ({ showMessage }) => {
     } catch (error) {
       setFormLoading(false);
       showMessage("Your clip upload was unsuccessful :(", 500);
-      console.log(error);
+      console.log("UploadClips error", error?.message || error);
     }
   };
 

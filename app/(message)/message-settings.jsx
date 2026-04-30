@@ -9,7 +9,7 @@ import { CustomAlertModal, MessageAddUserModal, MessageAvatars } from "../../com
 import { useGlobalContext } from "../../context/global-provider";
 import { MessagesService } from "../../lib/messages";
 import { getRoleNames } from "../../lib/user-roles";
-import { useModalMessage } from "../../lib/useModalMessage";
+import { useModalMessage } from "../../hooks/useModalMessage";
 
 const MessageSettings = () => {
   const navigation = useNavigation();
@@ -176,7 +176,7 @@ const MessageSettings = () => {
               className="mb-2 flex-row items-center justify-between rounded-2xl bg-white/5 p-3"
             >
               <View className="flex-row items-center">
-                <FastImage source={{ uri: item?.avatar, priority: FastImage.priority.high }} className="h-12 w-12 rounded-xl bg-white/10" />
+                <FastImage source={{ uri: item?.avatar, priority: FastImage.priority.normal }} className="h-12 w-12 rounded-xl bg-white/10" />
                 <View className="ml-4">
                   <View className="flex-row items-center">
                     <Text className="font-sans text-base font-medium text-white">{item?.username ?? "Deleted User"}</Text>

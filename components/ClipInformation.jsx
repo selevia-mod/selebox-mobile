@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useClipsStats } from "../context/clip-stats-provider";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
-import FormatNumber from "../lib/format-number";
+import FormatNumber from "../lib/utils/format-number";
 import useIsOffline from "../hooks/useIsOffline";
 import StyledDivider from "./StyledDivider";
 

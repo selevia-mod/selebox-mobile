@@ -223,7 +223,7 @@ const NewChat = () => {
             onPress={() => toggleUserSelection(item)}
           >
             <View className="flex-row items-center">
-              <FastImage source={{ uri: item.avatar, priority: FastImage.priority.high }} className="h-12 w-12 rounded-xl bg-white/10" />
+              <FastImage source={{ uri: item.avatar, priority: FastImage.priority.normal }} className="h-12 w-12 rounded-xl bg-white/10" />
               <Text className="ml-4 font-sans text-base font-medium text-white">{item.username}</Text>
             </View>
             <TouchableOpacity onPress={() => toggleUserSelection(item)}>
@@ -257,7 +257,7 @@ const NewChat = () => {
                   >
                     <View className="flex-row items-center">
                       <FastImage
-                        source={{ uri: item?.followingId?.avatar, priority: FastImage.priority.high }}
+                        source={{ uri: item?.followingId?.avatar, priority: FastImage.priority.normal }}
                         className="h-12 w-12 rounded-xl bg-white/10"
                       />
                       <Text className="ml-4 font-sans text-base font-medium text-white">{item?.followingId?.username ?? "Deleted User"}</Text>

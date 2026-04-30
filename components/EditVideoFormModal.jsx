@@ -6,6 +6,7 @@ import FastImage from "react-native-fast-image";
 import LoaderKit from "react-native-loader-kit";
 import Modal from "react-native-modal";
 import useAppTheme from "../hooks/useAppTheme";
+import ScrollFadeOverlay from "./ScrollFadeOverlay";
 
 export default function EditVideoFormModal({ visible, onClose, initialData = {}, onSubmit, globalSettings = {}, allowScheduleEdit = false }) {
   const { theme, isDarkMode } = useAppTheme();
@@ -235,22 +236,35 @@ export default function EditVideoFormModal({ visible, onClose, initialData = {},
                 </Text>
                 <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitTags}`}</Text>
               </View>
-              <View className="flex-row flex-wrap gap-2">
-                {tags.map((tag) => {
-                  const isSelected = videoForm.tags.includes(tag);
-                  const isDisabled = !isSelected && videoForm.tags.length >= sizeLimitTags;
-                  return (
-                    <TouchableOpacity
-                      key={tag}
-                      onPress={() => setVideoForm((p) => ({ ...p, tags: p.tags.includes(tag) ? p.tags.filter((t) => t !== tag) : [...p.tags, tag] }))}
-                      className="rounded-full px-4 py-2"
-                      disabled={isDisabled}
-                      style={{ backgroundColor: isSelected ? theme.primary : theme.surfaceStrong, opacity: isDisabled ? 0.35 : 1 }}
-                    >
-                      <Text style={{ color: isSelected ? theme.primaryContrast : theme.text }}>{tag}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
+              {/* Capped to ~3.5 rows of pills + vertical scroll + bottom fade so
+                  the user clearly reads "more below" without a scrollbar.
+                  Matches the Create Book / Create Video treatment. */}
+              <View style={{ position: "relative" }}>
+                <ScrollView
+                  style={{ maxHeight: 172 }}
+                  nestedScrollEnabled
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={{ paddingBottom: 22 }}
+                >
+                  <View className="flex-row flex-wrap gap-2">
+                    {tags.map((tag) => {
+                      const isSelected = videoForm.tags.includes(tag);
+                      const isDisabled = !isSelected && videoForm.tags.length >= sizeLimitTags;
+                      return (
+                        <TouchableOpacity
+                          key={tag}
+                          onPress={() => setVideoForm((p) => ({ ...p, tags: p.tags.includes(tag) ? p.tags.filter((t) => t !== tag) : [...p.tags, tag] }))}
+                          className="rounded-full px-4 py-2"
+                          disabled={isDisabled}
+                          style={{ backgroundColor: isSelected ? theme.primary : theme.surfaceStrong, opacity: isDisabled ? 0.35 : 1 }}
+                        >
+                          <Text style={{ color: isSelected ? theme.primaryContrast : theme.text }}>{tag}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+                <ScrollFadeOverlay color={theme.surfaceElevated} />
               </View>
             </View>
 

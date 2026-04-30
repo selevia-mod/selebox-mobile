@@ -6,9 +6,9 @@ import FastImage from "react-native-fast-image";
 import { useSelector } from "react-redux";
 import useAppTheme from "../hooks/useAppTheme";
 import { BookReadService } from "../lib/book-reads";
-import { BookService } from "../lib/books";
+import { BookService, hydrateDiscoverStats } from "../lib/books";
 import { BooksRankingService } from "../lib/books-rankings";
-import FormatNumber from "../lib/format-number";
+import FormatNumber from "../lib/utils/format-number";
 import tabNavigationEvents from "../lib/tab-navigation-events";
 
 const DISCOVER_TAB_OPTIONS = [
@@ -16,6 +16,11 @@ const DISCOVER_TAB_OPTIONS = [
   { key: "trending", label: "Trending" },
   { key: "new-rising", label: "New & Rising" },
   { key: "readers-choice", label: "Readers' Choice" },
+  // Hidden Gem rewards books with a strong like-rate but a small reader base — the kind of
+  // story that's clearly resonating with the few people who found it. Daily Picks is a
+  // mixed engagement+freshness+quality lens that rotates each day so the tab feels alive.
+  { key: "hidden-gem", label: "Hidden Gem" },
+  { key: "daily-picks", label: "Daily Picks" },
 ];
 
 const GRID_ITEMS_PER_ROW = 5;
@@ -223,10 +228,17 @@ const DiscoverPickCard = memo(({ item, onPressBook }) => {
   const { theme } = useAppTheme();
   const book = item?.book;
   const [stats, setStats] = useState(() => resolveInitialPickStats(item));
+  // Track image load failures so we can swap to a placeholder when the URL is dead
+  // (deleted storage file, expired preview, network failure). Reset on URL change.
+  const [thumbnailFailed, setThumbnailFailed] = useState(false);
 
   useEffect(() => {
     setStats(resolveInitialPickStats(item));
   }, [item]);
+
+  useEffect(() => {
+    setThumbnailFailed(false);
+  }, [book?.thumbnail]);
 
   useEffect(() => {
     let cancelled = false;
@@ -272,16 +284,32 @@ const DiscoverPickCard = memo(({ item, onPressBook }) => {
       style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}
     >
       <View className="flex-row">
-        <FastImage
-          source={book?.thumbnail ? { uri: book.thumbnail, priority: FastImage.priority.high } : null}
-          style={{
-            height: 118,
-            width: 84,
-            borderRadius: 10,
-            backgroundColor: theme.surfaceMuted,
-          }}
-          resizeMode={FastImage.resizeMode.cover}
-        />
+        {book?.thumbnail && !thumbnailFailed ? (
+          <FastImage
+            source={{ uri: book.thumbnail, priority: FastImage.priority.normal }}
+            style={{
+              height: 118,
+              width: 84,
+              borderRadius: 10,
+              backgroundColor: theme.surfaceMuted,
+            }}
+            resizeMode={FastImage.resizeMode.cover}
+            onError={() => setThumbnailFailed(true)}
+          />
+        ) : (
+          <View
+            style={{
+              height: 118,
+              width: 84,
+              borderRadius: 10,
+              backgroundColor: theme.surfaceMuted,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Ionicons name="book-outline" size={28} color={theme.iconMuted} />
+          </View>
+        )}
         <View className="ml-3 flex-1">
           <Text className="text-xl font-bold" style={{ color: theme.text }} numberOfLines={2}>
             {book?.title || "Untitled"}
@@ -310,6 +338,114 @@ const DiscoverPickCard = memo(({ item, onPressBook }) => {
           <Text className="ml-1.5 text-base" style={{ color: theme.textMuted }}>
             {stats?.chaptersTotal || 0} parts
           </Text>
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+});
+
+// Grid card extracted as a memoized component (was an inline render fn in BooksDiscover).
+// Reason: it now needs its own `loadFailed` state so a dead thumbnail URL or a missing
+// thumbnail field renders a book-outline placeholder instead of a blank rectangle.
+const DiscoverGridCard = memo(({ cardItem, cardWidth, cardHeight, onPressBook }) => {
+  const { theme } = useAppTheme();
+  const [thumbnailFailed, setThumbnailFailed] = useState(false);
+  const book = cardItem?.book;
+
+  useEffect(() => {
+    setThumbnailFailed(false);
+  }, [book?.thumbnail]);
+
+  if (!book?.$id) return null;
+
+  const safeTags = Array.isArray(book?.tags) ? book.tags.filter(Boolean).slice(0, 3) : [];
+  const statusMeta = getStatusMeta(book?.status, theme);
+  const coverTop = Math.max(8, (cardHeight - 132) / 2);
+
+  return (
+    <TouchableOpacity
+      onPress={() => onPressBook(book.$id)}
+      activeOpacity={0.9}
+      className="mr-2 overflow-hidden rounded-xl"
+      style={{ width: cardWidth, height: cardHeight, backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}
+    >
+      <View className="relative h-full flex-row">
+        {/* Book covers have a natural 2:3 aspect ratio. The 88×132 cover scales the
+            previous 74×111 up by ~20% so it fills more of the card's vertical real
+            estate while remaining uncropped. Vertically centered for snug alignment
+            when the card height runs slightly taller than the cover. */}
+        {book?.thumbnail && !thumbnailFailed ? (
+          <FastImage
+            source={{ uri: book.thumbnail, priority: FastImage.priority.normal }}
+            style={{
+              position: "absolute",
+              top: coverTop,
+              left: 8,
+              width: 88,
+              height: 132,
+              borderRadius: 8,
+              backgroundColor: theme.surfaceMuted,
+            }}
+            resizeMode={FastImage.resizeMode.cover}
+            onError={() => setThumbnailFailed(true)}
+          />
+        ) : (
+          <View
+            style={{
+              position: "absolute",
+              top: coverTop,
+              left: 8,
+              width: 88,
+              height: 132,
+              borderRadius: 8,
+              backgroundColor: theme.surfaceMuted,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Ionicons name="book-outline" size={32} color={theme.iconMuted} />
+          </View>
+        )}
+        <View className="h-full flex-1 px-2 py-2 space-y-2" style={{ paddingLeft: 104 }}>
+          <View>
+            <Text className="text-[13px] font-bold" style={{ color: theme.text }} numberOfLines={2}>
+              {book?.title || "Untitled"}
+            </Text>
+            <Text className="mt-0.5 text-[11px]" style={{ color: theme.textSoft }} numberOfLines={1}>
+              {book?.uploader?.username}
+            </Text>
+          </View>
+
+          <View>
+            <View className="mt-1 flex-row items-center">
+              <Ionicons name="flame" size={12} color={theme.accentAmber} />
+              <Text className="ml-1 text-[11px] font-medium" style={{ color: theme.accentPurple }}>
+                {FormatNumber(cardItem?.totalReads || 0)} Views
+              </Text>
+            </View>
+
+            <View className="mt-1 flex-row items-center">
+              <MaterialCommunityIcons name={statusMeta.icon} size={13} color={statusMeta.iconColor} />
+              <Text className="ml-1 text-[11px]" style={{ color: statusMeta.textColor }}>
+                {statusMeta.label}
+              </Text>
+            </View>
+          </View>
+          <View>
+            <View className="my-1 border-t" style={{ borderColor: theme.divider }} />
+
+            {safeTags.length > 0 ? (
+              safeTags.map((tag, index) => (
+                <Text key={`${cardItem.id}-tag-${index}`} className="text-[11px] leading-4" style={{ color: theme.textSoft }} numberOfLines={1}>
+                  {tag}
+                </Text>
+              ))
+            ) : (
+              <Text className="text-[11px] leading-4" style={{ color: theme.textSubtle }} numberOfLines={1}>
+                General
+              </Text>
+            )}
+          </View>
         </View>
       </View>
     </TouchableOpacity>
@@ -345,6 +481,11 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
   const lastScrollY = useRef(0);
   const navHiddenRef = useRef(false);
   const isActiveRef = useRef(isActive);
+  // Once-per-session guard for the full-pool fetch. Replaces the previous
+  // "skip if discoverRankings already populated" check, which had a bug — users
+  // with persisted (stale) ranking cache would never pick up the wider pool
+  // because length > 0 already from the persistence hydrate.
+  const hasFetchedFullPoolRef = useRef(false);
 
   useEffect(() => {
     isActiveRef.current = isActive;
@@ -367,17 +508,23 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
 
   const fetchDiscoverRankings = useCallback(
     async ({ forceRefresh = false } = {}) => {
-      if (!forceRefresh && discoverRankings.length > 0) return;
+      // Fire once per session unless explicitly refreshed. Persisted-cache
+      // hydration (above) provides instant content while this runs.
+      if (!forceRefresh && hasFetchedFullPoolRef.current) return;
 
       try {
         setIsLoading(true);
-        const { items } = await BooksRankingService.getCurrentRankingsByTags({
-          tags: discoverTags,
-          limit: 30,
-          offset: 0,
-        });
-
-        setDiscoverRankings(Array.isArray(items) ? items : []);
+        // Pull from the FULL books catalogue, not just the rankings collection.
+        // Most published books don't have ranking entries yet (no engagement data),
+        // so the rankings-only pool was capped well below what 6 sub-tabs need.
+        // Now we pull up to 500 published books and hydrate their stats in batch.
+        // Books without engagement still appear — they just score low on tabs that
+        // weight engagement, and surface naturally in tabs that bias on metadata
+        // (New & Rising rewards recency, Daily Picks rotates by date, etc.).
+        const pool = await PICKS_BOOK_SERVICE.fetchDiscoverPool({ limit: 500 });
+        const enriched = await hydrateDiscoverStats(pool);
+        setDiscoverRankings(enriched);
+        hasFetchedFullPoolRef.current = true;
       } catch (error) {
         console.error("fetchDiscoverRankings error:", error);
       } finally {
@@ -491,7 +638,12 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
   }, [discoverCandidatePool, getBookMetrics]);
 
   const discoverSources = useMemo(() => {
-    const readQualifiedCandidates = scoredCandidates.filter((entry) => entry.metrics.reads > 0);
+    // Previously this filtered to entries with reads > 0, which collapsed the pool to
+    // whatever tiny slice had ranking data. With the full books-collection pool now
+    // hydrated, books without engagement still participate in scoring — they just
+    // score low on engagement-weighted tabs (Popular, Trending, Reader's Choice) and
+    // surface naturally on metadata-weighted tabs (New & Rising, Daily Picks).
+    const readQualifiedCandidates = scoredCandidates;
 
     if (!readQualifiedCandidates.length) {
       return {
@@ -499,6 +651,8 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
         trending: [],
         "new-rising": [],
         "readers-choice": [],
+        "hidden-gem": [],
+        "daily-picks": [],
       };
     }
 
@@ -511,42 +665,102 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
         })
         .sort((a, b) => b.score - a.score);
 
+    // ────────────────────────────────────────────────────────────────────────────
+    // Discover scoring algos — Wattpad-flavoured.
+    //
+    // Wattpad's public surfaces (What's Hot, Trending, What's New, Editor's Picks)
+    // each express a different signal of the same underlying engagement data. We
+    // mirror the spirit, not the literal numbers — the constants are tuned for our
+    // smaller catalog.
+    //
+    //   • likes  ≅ Wattpad votes — the strongest single intent signal.
+    //   • reads  ≅ Wattpad reads — high volume but lower intent. Log-scaled so
+    //              a 1M-read story isn't 1000× more "popular" than a 1k-read one.
+    //   • rating ≅ Wattpad's average rating where present (we don't have comments).
+    //   • recencyHours / chaptersTotal / status ≅ Wattpad freshness + commitment.
+    // ────────────────────────────────────────────────────────────────────────────
+
+    // POPULAR — Wattpad "What's Hot" spirit. Long-tail vote-weighted accumulator with a
+    // gentle recency multiplier so months-old hits stay visible but the very freshest
+    // entries get a small lift. Half-life on the recency factor is ~90 days.
     const popularScored = withScore(readQualifiedCandidates, "popular", (entry) => {
       const { reads, likes, rating, chaptersTotal, recencyHours } = entry.metrics;
-      const recencyLift = 1 / (1 + recencyHours / (24 * 21));
-      return log1pSafe(reads) * 1.55 + log1pSafe(likes) * 1.85 + rating * 0.8 + log1pSafe(chaptersTotal) * 0.22 + recencyLift * 0.35;
+      const voteWeight = log1pSafe(likes) * 2.4;
+      const readWeight = log1pSafe(reads) * 1.2;
+      const ratingWeight = rating * 0.6;
+      const chaptersWeight = log1pSafe(chaptersTotal) * 0.25;
+      const recencyDecay = Math.pow(0.5, recencyHours / (24 * 90)); // 90-day half-life
+      return (voteWeight + readWeight + ratingWeight + chaptersWeight) * (0.7 + 0.3 * recencyDecay);
     });
 
+    // TRENDING — Wattpad "Hot Now" spirit. Velocity-driven: how fast is this book
+    // accumulating engagement *right now*. Vote velocity weighted 4× read velocity
+    // (votes are higher-intent). Recency pulse uses an exponential 48-hour half-life
+    // so books published / updated this week dominate.
     const trendingScored = withScore(readQualifiedCandidates, "trending", (entry) => {
       const { reads, likes, rating, recencyHours } = entry.metrics;
-      const ageDays = Math.max(0.25, recencyHours / 24);
-      const velocity = (likes * 2.6 + reads * 0.42) / Math.sqrt(ageDays + 1.5);
-      const recencyPulse = 1 / (1 + recencyHours / 36);
-      const ongoingBoost = entry.status === "ongoing" ? 0.4 : 0;
-      return velocity * 1.45 + recencyPulse * 2 + log1pSafe(reads) * 0.45 + rating * 0.45 + ongoingBoost;
+      const ageDays = Math.max(0.5, recencyHours / 24);
+      const voteVelocity = likes / Math.sqrt(ageDays + 1);
+      const readVelocity = (reads / Math.sqrt(ageDays + 1)) * 0.05;
+      const recencyPulse = Math.pow(0.5, recencyHours / 48); // 48-hour half-life
+      const ongoingBoost = entry.status === "ongoing" ? 0.6 : 0;
+      return voteVelocity * 4 + readVelocity + recencyPulse * 8 + rating * 0.6 + ongoingBoost;
     });
 
+    // NEW & RISING — Wattpad "What's New" + "Rising" spirit. Spotlight recently-
+    // published books showing early traction signals. Eligibility window tightened to
+    // 90 days (Wattpad's What's New is roughly that recent), with an underdog escape
+    // hatch for low-read books past the cutoff.
     const newAndRisingPool = readQualifiedCandidates.filter((entry) => {
-      const ageHours = entry.metrics.recencyHours;
-      return ageHours <= 24 * 180 || entry.metrics.reads <= 15000;
+      const ageDays = entry.metrics.recencyHours / 24;
+      return ageDays <= 90 || entry.metrics.reads <= 8000;
     });
 
     const risingScored = withScore(newAndRisingPool, "new-rising", (entry) => {
       const { reads, likes, rating, recencyHours } = entry.metrics;
-      const freshness = Math.max(0, 1 - recencyHours / (24 * 120));
-      const underdogBoost = 1 / (1 + log1pSafe(reads) * 0.85);
-      const traction = (log1pSafe(likes) * 1.25 + log1pSafe(reads) * 0.8 + rating * 0.55) * (1 + underdogBoost);
-      const ongoingBoost = entry.status === "ongoing" ? 0.35 : 0;
-      return freshness * 4 + traction + ongoingBoost;
+      const ageDays = Math.max(0.5, recencyHours / 24);
+      const earlyVoteRate = likes / Math.max(1, ageDays); // votes per day since publish
+      const earlyReadRate = reads / Math.max(1, ageDays); // reads per day since publish
+      const freshnessLift = Math.max(0, 1 - ageDays / 30); // linear decay over 30 days
+      const underdogBoost = 1 / (1 + log1pSafe(reads) * 0.8); // boost low-read books
+      const ongoingBoost = entry.status === "ongoing" ? 0.5 : 0;
+      return earlyVoteRate * 4 + earlyReadRate * 0.08 + freshnessLift * 6 + rating * 0.7 + underdogBoost * 1.5 + ongoingBoost;
     });
 
+    // READER'S CHOICE — Wattpad "Editor's Picks" spirit. Quality-driven, rewarding
+    // books with strong vote-to-read ratios (the cleanest single "did people love this"
+    // signal), substantive chapter counts, and completed status. Vote rate weighted
+    // very heavily (220×) because it's the most reliable quality discriminator we have.
     const readersChoiceScored = withScore(readQualifiedCandidates, "readers-choice", (entry) => {
-      const { reads, likes, rating } = entry.metrics;
-      const likeRate = likes / Math.max(1, reads);
-      const completedBoost = entry.status === "completed" ? 0.35 : 0;
-      return rating * 2.45 + likeRate * 145 + log1pSafe(likes) * 0.95 + log1pSafe(reads) * 0.3 + completedBoost;
+      const { reads, likes, rating, chaptersTotal } = entry.metrics;
+      const voteRate = likes / Math.max(1, reads);
+      const ratingWeight = rating * 3;
+      const voteFloor = log1pSafe(likes) * 1.4; // prevents single-reader 5-stars dominating
+      const completedBoost = entry.status === "completed" ? 1.5 : 0;
+      const chaptersBoost = log1pSafe(chaptersTotal) * 0.4;
+      return voteRate * 220 + ratingWeight + voteFloor + completedBoost + chaptersBoost;
     });
 
+    // ────────────────────────────────────────────────────────────────────────────
+    // Tab selection — strict no-overlap chain across all six tabs.
+    //   Popular         → no exclusion (the entry point)
+    //   Trending        → excludes Popular
+    //   New & Rising    → excludes Popular + Trending
+    //   Reader's Choice → excludes Popular + Trending + New & Rising
+    //   Hidden Gem      → excludes the four above
+    //   Daily Picks     → excludes the five above
+    //
+    // The PRIMARY pass enforces the strict chain with 2-per-author / 4-per-tag caps,
+    // so each tab gets a visually distinct slate of books drawn from the same scored
+    // pool. With the 200-rankings cap on getCurrentRankingsByTags, the candidate pool
+    // is ~200 stats-bearing books — comfortably larger than the 90 minimum unique
+    // books needed to fill all six grids without overlap.
+    //
+    // A FALLBACK pass kicks in only if a tab comes up short (rare with the big pool).
+    // It PRESERVES the cross-tab exclusion and only relaxes diversity caps to 3-per-
+    // author / 6-per-tag, so when it fires it pulls books that were skipped earlier
+    // due to author/tag caps — never books that are already showing on another tab.
+    // ────────────────────────────────────────────────────────────────────────────
     const popularList = selectDiverseFromScored({
       scored: popularScored,
       limit: 30,
@@ -560,13 +774,32 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
         .filter(Boolean),
     );
 
-    const trendingList = selectDiverseFromScored({
+    const trendingPrimaryList = selectDiverseFromScored({
       scored: trendingScored,
       limit: 30,
       excludedBookIds: popularTopIds,
-      maxPerAuthor: 1,
-      maxPerTag: 3,
+      maxPerAuthor: 2,
+      maxPerTag: 4,
     });
+    const trendingList =
+      trendingPrimaryList.length >= DISCOVER_TAB_MIN_ITEMS
+        ? trendingPrimaryList
+        : mergeUniqueByBookId(
+            trendingPrimaryList,
+            selectDiverseFromScored({
+              scored: trendingScored,
+              limit: 30,
+              // Preserve cross-tab exclusion (books on Popular still won't show here).
+              // Only relax diversity caps to find more eligible candidates.
+              excludedBookIds: new Set([
+                ...popularTopIds,
+                ...trendingPrimaryList.map((item) => resolveBookId(item)).filter(Boolean),
+              ]),
+              maxPerAuthor: 3,
+              maxPerTag: 6,
+            }),
+            30,
+          );
     const trendingTopIds = new Set(
       trendingList
         .slice(0, GRID_LIMIT)
@@ -579,8 +812,8 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
       scored: risingScored,
       limit: 30,
       excludedBookIds: newRisingExcluded,
-      maxPerAuthor: 1,
-      maxPerTag: 3,
+      maxPerAuthor: 2,
+      maxPerTag: 4,
     });
     const newRisingList =
       newRisingPrimaryList.length >= DISCOVER_TAB_MIN_ITEMS
@@ -590,9 +823,13 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
             selectDiverseFromScored({
               scored: risingScored,
               limit: 30,
-              excludedBookIds: new Set(newRisingPrimaryList.map((item) => resolveBookId(item)).filter(Boolean)),
-              maxPerAuthor: 2,
-              maxPerTag: 4,
+              excludedBookIds: new Set([
+                ...popularTopIds,
+                ...trendingTopIds,
+                ...newRisingPrimaryList.map((item) => resolveBookId(item)).filter(Boolean),
+              ]),
+              maxPerAuthor: 3,
+              maxPerTag: 6,
             }),
             30,
           );
@@ -619,9 +856,125 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
             selectDiverseFromScored({
               scored: readersChoiceScored,
               limit: 30,
-              excludedBookIds: new Set(readersChoicePrimaryList.map((item) => resolveBookId(item)).filter(Boolean)),
-              maxPerAuthor: 2,
-              maxPerTag: 4,
+              excludedBookIds: new Set([
+                ...popularTopIds,
+                ...trendingTopIds,
+                ...newRisingTopIds,
+                ...readersChoicePrimaryList.map((item) => resolveBookId(item)).filter(Boolean),
+              ]),
+              maxPerAuthor: 3,
+              maxPerTag: 6,
+            }),
+            30,
+          );
+
+    // Continue the strict no-overlap chain into Hidden Gem and Daily Picks. After this
+    // block, the same book will not appear in any two tabs of the six.
+    const readersChoiceTopIds = new Set(
+      readersChoiceList
+        .slice(0, GRID_LIMIT)
+        .map((item) => resolveBookId(item))
+        .filter(Boolean),
+    );
+
+    // Hidden Gem: high engagement (like-rate, rating, raw likes) weighted up by an
+    // "obscurity" factor that rewards low read counts. A book with 200 reads, 80 likes,
+    // and a 4.6 average outranks a 50k-read book with the same like-rate.
+    //
+    // The effortScore tail surfaces under-discovered works with substantial chapter
+    // counts even when they have zero engagement yet — these are the literal "hidden
+    // gems" of an early-stage catalogue. Multiplied by obscurityFactor so already-
+    // engaged books still dominate when there's a real signal to compare against.
+    const hiddenGemScored = withScore(readQualifiedCandidates, "hidden-gem", (entry) => {
+      const { reads, likes, rating, chaptersTotal } = entry.metrics;
+      const likeRate = likes / Math.max(1, reads);
+      const obscurityFactor = 1 / (1 + log1pSafe(reads) * 0.5);
+      const engagement = rating * 1.8 + log1pSafe(likes) * 1.2 + likeRate * 65;
+      const effortScore = log1pSafe(chaptersTotal) * 0.6;
+      return engagement * obscurityFactor + likeRate * 25 + effortScore * obscurityFactor;
+    });
+
+    const hiddenGemExcluded = new Set([...popularTopIds, ...trendingTopIds, ...newRisingTopIds, ...readersChoiceTopIds]);
+    const hiddenGemPrimaryList = selectDiverseFromScored({
+      scored: hiddenGemScored,
+      limit: 30,
+      excludedBookIds: hiddenGemExcluded,
+      maxPerAuthor: 2,
+      maxPerTag: 4,
+    });
+    const hiddenGemList =
+      hiddenGemPrimaryList.length >= DISCOVER_TAB_MIN_ITEMS
+        ? hiddenGemPrimaryList
+        : mergeUniqueByBookId(
+            hiddenGemPrimaryList,
+            selectDiverseFromScored({
+              scored: hiddenGemScored,
+              limit: 30,
+              excludedBookIds: new Set([
+                ...popularTopIds,
+                ...trendingTopIds,
+                ...newRisingTopIds,
+                ...readersChoiceTopIds,
+                ...hiddenGemPrimaryList.map((item) => resolveBookId(item)).filter(Boolean),
+              ]),
+              maxPerAuthor: 3,
+              maxPerTag: 6,
+            }),
+            30,
+          );
+    const hiddenGemTopIds = new Set(
+      hiddenGemList
+        .slice(0, GRID_LIMIT)
+        .map((item) => resolveBookId(item))
+        .filter(Boolean),
+    );
+
+    // Daily Picks: a mix of engagement, freshness, and quality. The tabKey embeds today's
+    // date so the deterministic per-entry jitter inside withScore rotates the picks daily —
+    // same algorithm, fresh ordering each calendar day.
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const dailyPicksScored = withScore(readQualifiedCandidates, `daily-picks:${todayKey}`, (entry) => {
+      const { reads, likes, rating, recencyHours } = entry.metrics;
+      const likeRate = likes / Math.max(1, reads);
+      const ageDays = Math.max(0.5, recencyHours / 24);
+      const freshnessLift = 1 / Math.sqrt(ageDays + 0.5);
+      const engagement = log1pSafe(likes) * 1.4 + likeRate * 50;
+      const quality = rating * 2.4;
+      return engagement + freshnessLift * 2 + quality + log1pSafe(reads) * 0.25;
+    });
+
+    const dailyPicksExcluded = new Set([
+      ...popularTopIds,
+      ...trendingTopIds,
+      ...newRisingTopIds,
+      ...readersChoiceTopIds,
+      ...hiddenGemTopIds,
+    ]);
+    const dailyPicksPrimaryList = selectDiverseFromScored({
+      scored: dailyPicksScored,
+      limit: 30,
+      excludedBookIds: dailyPicksExcluded,
+      maxPerAuthor: 2,
+      maxPerTag: 4,
+    });
+    const dailyPicksList =
+      dailyPicksPrimaryList.length >= DISCOVER_TAB_MIN_ITEMS
+        ? dailyPicksPrimaryList
+        : mergeUniqueByBookId(
+            dailyPicksPrimaryList,
+            selectDiverseFromScored({
+              scored: dailyPicksScored,
+              limit: 30,
+              excludedBookIds: new Set([
+                ...popularTopIds,
+                ...trendingTopIds,
+                ...newRisingTopIds,
+                ...readersChoiceTopIds,
+                ...hiddenGemTopIds,
+                ...dailyPicksPrimaryList.map((item) => resolveBookId(item)).filter(Boolean),
+              ]),
+              maxPerAuthor: 3,
+              maxPerTag: 6,
             }),
             30,
           );
@@ -631,22 +984,29 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
       trending: trendingList,
       "new-rising": newRisingList,
       "readers-choice": readersChoiceList,
+      "hidden-gem": hiddenGemList,
+      "daily-picks": dailyPicksList,
     };
   }, [completedExcellent, discoverRankings, freshRead, recentlyUploaded, scoredCandidates]);
 
   const selectedDiscoverItems = useMemo(() => {
     const source = discoverSources[selectedTabKey] || [];
 
-    return source.map(toDiscoverCard).filter((item) => {
-      if (!item) return false;
-      return Number(item.totalReads) > 0;
-    });
+    // Drop the strict reads > 0 gate. With the full-catalogue pool now hydrated,
+    // each tab's scoring already biases on the right signals — books with no
+    // engagement just sort to the bottom of engagement-heavy tabs, and bubble up
+    // on tabs that prize recency or metadata.
+    return source.map(toDiscoverCard).filter(Boolean);
   }, [discoverSources, selectedTabKey, toDiscoverCard]);
 
   const gridItems = useMemo(() => selectedDiscoverItems.slice(0, GRID_LIMIT), [selectedDiscoverItems]);
   const gridRows = useMemo(() => chunkIntoRows(gridItems, GRID_ITEMS_PER_ROW), [gridItems]);
-  const gridCardWidth = useMemo(() => Math.max(128, Math.floor(windowWidth / 2.3)), [windowWidth]);
-  const gridCardHeight = useMemo(() => Math.max(160, Math.min(188, Math.floor(gridCardWidth * 1.02))), [gridCardWidth]);
+  // Wider, more rectangular cards so the 88×132 cover (proper 2:3 book ratio) fills the
+  // card height naturally — the previous 165×168 squares left obvious empty rows above
+  // and below a too-small thumbnail. Card width follows screen width so layouts stay
+  // proportional across phone sizes.
+  const gridCardWidth = useMemo(() => Math.max(180, Math.floor(windowWidth / 1.95)), [windowWidth]);
+  const gridCardHeight = useMemo(() => Math.max(150, Math.min(168, Math.floor(gridCardWidth * 0.78))), [gridCardWidth]);
   const gridBookIds = useMemo(() => new Set(gridItems.map((item) => item?.book?.$id).filter(Boolean)), [gridItems]);
 
   const picksForYouSource = useMemo(() => {
@@ -720,86 +1080,23 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
     };
   }, []);
 
-  const renderDiscoverGridCard = (cardItem) => {
-    const book = cardItem?.book;
-    if (!book?.$id) return null;
-
-    const safeTags = Array.isArray(book?.tags) ? book.tags.filter(Boolean).slice(0, 3) : [];
-    const statusMeta = getStatusMeta(book?.status, theme);
-
-    return (
-      <TouchableOpacity
-        key={cardItem.id}
-        onPress={() => handlePressBook(book.$id)}
-        activeOpacity={0.9}
-        className="mr-2 overflow-hidden rounded-xl"
-        style={{ width: gridCardWidth, height: gridCardHeight, backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}
-      >
-        <View className="relative h-full flex-row">
-          <FastImage
-            source={book?.thumbnail ? { uri: book.thumbnail, priority: FastImage.priority.high } : null}
-            style={{
-              position: "absolute",
-              top: 8,
-              bottom: 8,
-              left: 8,
-              width: 74,
-              borderRadius: 8,
-              backgroundColor: theme.surfaceMuted,
-            }}
-            resizeMode={FastImage.resizeMode.cover}
-          />
-          <View className="h-full flex-1 px-2 py-2 space-y-2" style={{ paddingLeft: 90 }}>
-            <View>
-              <Text className="text-[13px] font-bold" style={{ color: theme.text }} numberOfLines={2}>
-                {book?.title || "Untitled"}
-              </Text>
-              <Text className="mt-0.5 text-[11px]" style={{ color: theme.textSoft }} numberOfLines={1}>
-                {book?.uploader?.username}
-              </Text>
-            </View>
-
-            <View>
-              <View className="mt-1 flex-row items-center">
-                <Ionicons name="flame" size={12} color={theme.accentAmber} />
-                <Text className="ml-1 text-[11px] font-medium" style={{ color: theme.accentPurple }}>
-                  {FormatNumber(cardItem?.totalReads || 0)} Views
-                </Text>
-              </View>
-
-              <View className="mt-1 flex-row items-center">
-                <MaterialCommunityIcons name={statusMeta.icon} size={13} color={statusMeta.iconColor} />
-                <Text className="ml-1 text-[11px]" style={{ color: statusMeta.textColor }}>
-                  {statusMeta.label}
-                </Text>
-              </View>
-            </View>
-            <View>
-              <View className="my-1 border-t" style={{ borderColor: theme.divider }} />
-
-              {safeTags.length > 0 ? (
-                safeTags.map((tag, index) => (
-                  <Text key={`${cardItem.id}-tag-${index}`} className="text-[11px] leading-4" style={{ color: theme.textSoft }} numberOfLines={1}>
-                    {tag}
-                  </Text>
-                ))
-              ) : (
-                <Text className="text-[11px] leading-4" style={{ color: theme.textSubtle }} numberOfLines={1}>
-                  General
-                </Text>
-              )}
-            </View>
-          </View>
-        </View>
-      </TouchableOpacity>
-    );
-  };
+  const renderDiscoverGridCard = (cardItem) => (
+    <DiscoverGridCard
+      key={cardItem.id}
+      cardItem={cardItem}
+      cardWidth={gridCardWidth}
+      cardHeight={gridCardHeight}
+      onPressBook={handlePressBook}
+    />
+  );
 
   const renderPickCard = ({ item }) => <DiscoverPickCard item={item} onPressBook={handlePressBook} />;
 
   const headerComponent = (
     <View className="pb-3">
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingVertical: 6 }}>
+      {/* Underline-style sub-tabs. Padded so the first label doesn't hug the screen edge,
+          sized down to 13px so they feel quieter than the primary pill tabs above. */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 4, paddingVertical: 6 }}>
         {DISCOVER_TAB_OPTIONS.map((tab) => {
           const isSelected = tab.key === selectedTabKey;
           return (
@@ -807,10 +1104,17 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
               key={tab.key}
               onPress={() => setSelectedTabKey(tab.key)}
               activeOpacity={0.85}
-              className="mr-5 border-b-2 pb-1"
-              style={{ borderColor: isSelected ? theme.accentPurple : "transparent" }}
+              className="mr-4 border-b-2 pb-1"
+              style={{ borderColor: isSelected ? theme.primary : "transparent" }}
             >
-              <Text className={`text-base ${isSelected ? "font-semibold" : ""}`} style={{ color: isSelected ? theme.text : theme.textSoft }}>
+              <Text
+                style={{
+                  fontSize: 13,
+                  fontWeight: isSelected ? "700" : "500",
+                  letterSpacing: 0.1,
+                  color: isSelected ? theme.text : theme.textSoft,
+                }}
+              >
                 {tab.label}
               </Text>
             </TouchableOpacity>

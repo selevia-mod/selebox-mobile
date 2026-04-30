@@ -20,7 +20,7 @@ import { useClipsStats } from "../context/clip-stats-provider";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { createClipComment, fetchClipComments, updateClip } from "../lib/clips";
-import TimeAgo from "../lib/time-ago";
+import TimeAgo from "../lib/utils/time-ago";
 import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 
 const SCREEN_HEIGHT = Dimensions.get("window").height;
@@ -207,6 +207,11 @@ const ClipCommentModal = ({ isVisible, onClose, item, onCommentPosted }) => {
             }}
             showsVerticalScrollIndicator={false}
             renderItem={renderCommentItem}
+            // Virtualization tuning — see PostCommentModal for rationale.
+            initialNumToRender={8}
+            maxToRenderPerBatch={6}
+            windowSize={10}
+            updateCellsBatchingPeriod={50}
             ListEmptyComponent={
               <View className="flex flex-1 items-center justify-center">
                 <Text className="font-sans text-sm font-medium" style={{ color: theme.textSoft }}>

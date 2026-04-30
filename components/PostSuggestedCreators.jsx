@@ -80,7 +80,7 @@ const PostSuggestedCreators = ({ forceUpdate, hideDivider = false }) => {
         style={{ width: ITEM_SIZE }}
       >
         <FastImage
-          source={{ uri: item.avatar, priority: FastImage.priority.high }}
+          source={{ uri: item.avatar, priority: FastImage.priority.normal }}
           style={{
             height: ITEM_SIZE,
             width: ITEM_SIZE,

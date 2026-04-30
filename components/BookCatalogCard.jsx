@@ -216,7 +216,7 @@ const BookCatalogCard = ({
       <View className="flex-row items-start" style={{ zIndex: -999 }}>
         {/* Thumbnail */}
         {thumbnailUri ? (
-          <FastImage source={{ uri: thumbnailUri, priority: FastImage.priority.high }} style={{ height: 165, width: 84, borderRadius: 12 }} />
+          <FastImage source={{ uri: thumbnailUri, priority: FastImage.priority.normal }} style={{ height: 165, width: 84, borderRadius: 12 }} />
         ) : (
           <View
             className="h-[108px] w-[84px] items-center justify-center rounded-[12px] border border-dashed"

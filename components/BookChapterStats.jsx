@@ -4,7 +4,7 @@ import { Text, View } from "react-native";
 import useAppTheme from "../hooks/useAppTheme";
 import { BookReadService } from "../lib/book-reads";
 import { BookService } from "../lib/books";
-import FormatNumber from "../lib/format-number";
+import FormatNumber from "../lib/utils/format-number";
 import AnimatedSkeleton from "./AnimatedSkeleton";
 
 const BookChapterStats = ({ chapter, bookReadingTheme, pageColor }) => {

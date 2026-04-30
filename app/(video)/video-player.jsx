@@ -10,6 +10,7 @@ import {
   Animated,
   AppState,
   Dimensions,
+  Image,
   InteractionManager,
   Keyboard,
   KeyboardAvoidingView,
@@ -41,21 +42,26 @@ import {
   StyledSafeAreaView,
   StyledStarIndicator,
   UserRoleBadgeIcons,
+  VideoUnlockChoiceModal,
+  VideosDownloadQualityModal,
 } from "../../components";
 import AnimatedSkeleton from "../../components/AnimatedSkeleton";
+import logger from "../../lib/utils/logger";
+import ReactionPicker from "../../components/ReactionPicker";
 import UserMention from "../../components/UserMention";
 import { useGlobalContext } from "../../context/global-provider";
 import { useVideosStats } from "../../context/video-stats-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import useAutoUnlock from "../../hooks/useAutoUnlock";
+import useCommentReactionState from "../../hooks/useCommentReactionState";
 import useIsOffline from "../../hooks/useIsOffline";
 import { addToHistory, databases, getCoinDeductionByTags, getCoinPacks, limitVideos, ShuffleVideos } from "../../lib/appwrite";
 import { FollowService } from "../../lib/follows";
 
-import FormatNumber from "../../lib/format-number";
+import FormatNumber from "../../lib/utils/format-number";
 import { buildVideoNotificationResourceId, NotificationService } from "../../lib/notifications";
-import TimeAgo from "../../lib/time-ago";
-import { useModalMessage } from "../../lib/useModalMessage";
+import TimeAgo from "../../lib/utils/time-ago";
+import { useModalMessage } from "../../hooks/useModalMessage";
 import {
   buildMentionSearchTerms,
   extractMentionTargetsFromMarkup,
@@ -222,6 +228,8 @@ const Description = ({ item, onOpenComments, onDownloadPress, downloadStatus, do
   const { theme } = useAppTheme();
   const [isFollowing, setIsFollowing] = useState(false);
   const [isLoadingFollow, setIsLoadingFollow] = useState(false);
+  // Mirrors PostCard's See more / See less behavior (web uses Show more / less).
+  const [descExpanded, setDescExpanded] = useState(false);
 
   const videoId = item?.$id;
   const notificationService = new NotificationService();
@@ -352,23 +360,42 @@ const Description = ({ item, onOpenComments, onDownloadPress, downloadStatus, do
           </ScrollView>
         </View>
 
-        {(joinedTags || item?.description) && (
-          <View className="mt-3 rounded-xl p-1" style={{ backgroundColor: theme.surfaceMuted }}>
-            <Text className="mb-2 font-sans text-xs font-semibold" style={{ color: theme.textMuted }}>
-              Description
-            </Text>
-            {joinedTags ? (
-              <Text className="mb-2 font-sans text-xs" style={{ color: theme.textSoft }}>
-                {joinedTags}
+        {(joinedTags || item?.description) && (() => {
+          const description = item?.description || "No description provided.";
+          const descLineCount = description.split(/\r\n|\r|\n/).length;
+          const showToggle = description.length > 130 || descLineCount > 3;
+
+          return (
+            <View className="mt-3 rounded-xl p-1" style={{ backgroundColor: theme.surfaceMuted }}>
+              <Text className="mb-2 font-sans text-xs font-semibold" style={{ color: theme.textMuted }}>
+                Description
               </Text>
-            ) : null}
-            <ScrollView nestedScrollEnabled showsVerticalScrollIndicator className="max-h-[165px]">
-              <Text className="font-sans text-sm leading-5" style={{ color: theme.textMuted }}>
-                {item?.description || "No description provided."}
+              {joinedTags ? (
+                <Text className="mb-2 font-sans text-xs" style={{ color: theme.textSoft }}>
+                  {joinedTags}
+                </Text>
+              ) : null}
+              <Text
+                className="font-sans text-sm leading-5"
+                style={{ color: theme.textMuted }}
+                numberOfLines={descExpanded ? undefined : 3}
+                ellipsizeMode="tail"
+                // Tap anywhere on the description to toggle — matches web.
+                onPress={showToggle ? () => setDescExpanded((prev) => !prev) : undefined}
+                suppressHighlighting
+              >
+                {description}
               </Text>
-            </ScrollView>
-          </View>
-        )}
+              {showToggle ? (
+                <TouchableOpacity onPress={() => setDescExpanded((prev) => !prev)}>
+                  <Text className="mt-1 font-sans text-sm" style={{ color: theme.primary }}>
+                    {descExpanded ? "See less" : "See more"}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          );
+        })()}
       </View>
     </View>
   );
@@ -408,11 +435,37 @@ const RecommendedVideos = React.memo(({ videos, isHidden }) => {
 
   return (
     <View className={`${isHidden ? "hidden" : ""} px-2 pb-6`}>
-      <View className="flex-row items-center justify-between px-1 py-2">
-        <View className="flex-row items-center space-x-2">
-          <FontAwesome name="star" size={16} color={theme.coin} />
-          <Text className="text-sm font-psemibold  tracking-[3px]" style={{ color: theme.text }}>
-            Recommended Videos
+      {/* Section header — violet sparkles chip + letter-spaced title +
+          premium refresh disc. Replaces the yellow "coin star" with the
+          app's primary violet so this row reads as part of the same
+          system as the Books / Videos section titles. */}
+      <View className="mb-2 flex-row items-center justify-between px-1 py-2">
+        <View className="flex-row items-center">
+          <View
+            style={{
+              width: 26,
+              height: 26,
+              borderRadius: 8,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: theme.primarySoft,
+              borderWidth: 1,
+              borderColor: theme.primary,
+              marginRight: 10,
+              shadowColor: theme.primary,
+              shadowOffset: { width: 0, height: 3 },
+              shadowOpacity: 0.35,
+              shadowRadius: 6,
+              elevation: 3,
+            }}
+          >
+            <Ionicons name="sparkles" size={13} color={theme.primary} />
+          </View>
+          <Text
+            className="font-psemibold"
+            style={{ color: theme.text, fontSize: 13, letterSpacing: 1.6, textTransform: "uppercase" }}
+          >
+            Recommended
           </Text>
         </View>
         <TouchableOpacity
@@ -422,13 +475,19 @@ const RecommendedVideos = React.memo(({ videos, isHidden }) => {
             setRefreshing(true);
             fetchRecommendations();
           }}
-          className="h-8 w-8 items-center justify-center rounded-full"
-          style={{ backgroundColor: theme.surfaceMuted }}
+          className="items-center justify-center rounded-full"
+          style={{
+            height: 30,
+            width: 30,
+            backgroundColor: theme.surfaceMuted,
+            borderWidth: 1,
+            borderColor: theme.border,
+          }}
         >
           {refreshing ? (
-            <LoaderKit style={{ width: 15, height: 15, opacity: 0.8 }} name={"BallSpinFadeLoader"} color={theme.primary} />
+            <LoaderKit style={{ width: 14, height: 14, opacity: 0.85 }} name={"BallSpinFadeLoader"} color={theme.primary} />
           ) : (
-            <MaterialIcons name="refresh" size={18} color={theme.icon} />
+            <MaterialIcons name="refresh" size={16} color={theme.iconMuted} />
           )}
         </TouchableOpacity>
       </View>
@@ -437,10 +496,12 @@ const RecommendedVideos = React.memo(({ videos, isHidden }) => {
         <View className="space-y-3 px-1 pb-3">
           {[1, 2, 3].map((i) => (
             <View key={i} className="flex-row space-x-3 rounded-2xl border p-2" style={{ borderColor: theme.border, backgroundColor: theme.card }}>
-              <AnimatedSkeleton className="h-20 w-[118px] rounded-lg" />
-              <View className="flex-1 space-y-2">
+              {/* Skeleton mirrors the new 1.8× thumbnail size (212×119). */}
+              <AnimatedSkeleton className="rounded-lg" style={{ width: 212, height: 119 }} />
+              <View className="flex-1 space-y-2 py-1">
                 <AnimatedSkeleton className="h-4 rounded-lg" style={{ width: "88%" }} />
                 <AnimatedSkeleton className="h-4 rounded-lg" style={{ width: "64%" }} />
+                <AnimatedSkeleton className="h-3 rounded-lg" style={{ width: "50%" }} />
               </View>
             </View>
           ))}
@@ -456,12 +517,14 @@ const RecommendedVideos = React.memo(({ videos, isHidden }) => {
           {filteredVideos.map((item) => {
             if (!item?.uri) return null;
 
+            const tagText = Array.isArray(item?.tags)
+              ? item.tags.filter(Boolean).slice(0, 3).join(" · ")
+              : "";
+
             return (
               <TouchableOpacity
                 key={item.uri}
-                activeOpacity={0.8}
-                className="rounded-2xl border p-2"
-                style={{ borderColor: theme.border, backgroundColor: theme.card }}
+                activeOpacity={0.85}
                 onPress={() => {
                   try {
                     router.replace({
@@ -472,29 +535,112 @@ const RecommendedVideos = React.memo(({ videos, isHidden }) => {
                     console.error(error);
                   }
                 }}
+                style={{
+                  borderRadius: 18,
+                  borderWidth: 1,
+                  borderColor: theme.border,
+                  backgroundColor: theme.card,
+                  padding: 8,
+                  // Subtle violet shadow lift only — dropped the right-edge
+                  // violet wash that was reading as a broken gradient on
+                  // light card surfaces.
+                  shadowColor: theme.primary,
+                  shadowOffset: { width: 0, height: 4 },
+                  shadowOpacity: 0.12,
+                  shadowRadius: 10,
+                  elevation: 2,
+                }}
               >
-                <View className="flex-row space-x-3">
-                  <FastImage
-                    source={{ uri: item?.thumbnail, priority: FastImage.priority.high }}
-                    className="aspect-video w-[118px] rounded-lg"
-                    style={{ backgroundColor: theme.surfaceMuted }}
-                    resizeMode={FastImage.resizeMode.cover}
-                  />
-                  <View className="flex-1">
-                    <Text className="font-sans text-sm font-semibold" style={{ color: theme.text }} numberOfLines={2}>
-                      {item?.title}
-                    </Text>
-                    <View className="mt-1 flex-row items-center self-start pr-2" style={{ maxWidth: "100%" }}>
-                      <Text className="font-sans text-xs" style={{ flexShrink: 1, color: theme.textSoft }} numberOfLines={1}>
-                        {item?.uploader?.username || "Unknown"}
+                <View className="flex-row" style={{ gap: 10 }}>
+                  {/* Thumbnail bumped 1.8× from 118 → 212 wide for a
+                      chunkier, more cinematic feel. Aspect-video keeps the
+                      16:9 ratio so height grows proportionally to ~119 px. */}
+                  <View
+                    style={{
+                      borderRadius: 12,
+                      overflow: "hidden",
+                      borderWidth: 1,
+                      borderColor: theme.border,
+                    }}
+                  >
+                    <FastImage
+                      source={{ uri: item?.thumbnail, priority: FastImage.priority.high }}
+                      className="aspect-video"
+                      style={{ width: 212, backgroundColor: theme.surfaceMuted }}
+                      resizeMode={FastImage.resizeMode.cover}
+                    />
+                  </View>
+                  <View className="flex-1 justify-between" style={{ paddingVertical: 2 }}>
+                    <View>
+                      <Text
+                        className="font-sans"
+                        style={{ color: theme.text, fontSize: 13, fontWeight: "700", letterSpacing: 0.1, lineHeight: 17 }}
+                        numberOfLines={3}
+                      >
+                        {item?.title}
                       </Text>
-                      <UserRoleBadgeIcons user={item?.uploader} size={14} />
+                      <View className="mt-1 flex-row items-center self-start pr-2" style={{ maxWidth: "100%" }}>
+                        <Text
+                          className="font-sans"
+                          style={{ flexShrink: 1, color: theme.textSoft, fontSize: 11, fontWeight: "500", letterSpacing: 0.1 }}
+                          numberOfLines={1}
+                        >
+                          {item?.uploader?.username || "Unknown"}
+                        </Text>
+                        <UserRoleBadgeIcons user={item?.uploader} size={14} />
+                      </View>
                     </View>
-                    <Text className="mt-1 font-sans text-xs" style={{ color: theme.textSoft }} numberOfLines={2}>
-                      {Array.isArray(item?.tags) ? item.tags.filter(Boolean).join(" • ") : ""}
-                      {Array.isArray(item?.tags) && item.tags.length > 0 ? " • " : ""}
-                      {TimeAgo(item?.$createdAt)}
-                    </Text>
+                    <View className="flex-col" style={{ gap: 4, marginTop: 4 }}>
+                      {tagText ? (
+                        <View
+                          style={{
+                            alignSelf: "flex-start",
+                            paddingHorizontal: 6,
+                            paddingVertical: 1.5,
+                            borderRadius: 999,
+                            backgroundColor: theme.primarySoft,
+                            borderWidth: 0.5,
+                            borderColor: theme.primary,
+                            maxWidth: "100%",
+                          }}
+                        >
+                          <Text
+                            className="font-sans"
+                            style={{ color: theme.primary, fontSize: 9, fontWeight: "700", letterSpacing: 0.4, textTransform: "uppercase" }}
+                            numberOfLines={1}
+                          >
+                            {tagText}
+                          </Text>
+                        </View>
+                      ) : null}
+                      {/* Views · time-ago row. Same formula as VideoCardNew
+                          so the displayed count matches the home/main video
+                          tabs: raw totalViews × VIEWS_MULTIPLIER from
+                          globalSettings (default 1). */}
+                      <View className="flex-row items-center" style={{ gap: 4 }}>
+                        <Ionicons name="eye-outline" size={11} color={theme.textSoft} />
+                        <Text
+                          className="font-sans"
+                          style={{ color: theme.textSoft, fontSize: 10, fontWeight: "600", letterSpacing: 0.1 }}
+                          numberOfLines={1}
+                        >
+                          {FormatNumber(
+                            (item?.videoStats?.totalViews || 0) * (Number(globalSettings?.["VIEWS_MULTIPLIER"]) || 1),
+                          )}
+                          {" views"}
+                        </Text>
+                        <Text className="font-sans" style={{ color: theme.textSoft, fontSize: 10 }}>
+                          {"·"}
+                        </Text>
+                        <Text
+                          className="font-sans"
+                          style={{ color: theme.textSoft, fontSize: 10, fontWeight: "500", letterSpacing: 0.1, flexShrink: 1 }}
+                          numberOfLines={1}
+                        >
+                          {TimeAgo(item?.$createdAt)}
+                        </Text>
+                      </View>
+                    </View>
                   </View>
                 </View>
               </TouchableOpacity>
@@ -941,17 +1087,23 @@ const CommentSection = React.memo(
 
         setComments(commentsWithReplies);
       } catch (error) {
-        console.log("fetchComments: error", error);
+        logger.error("video-player", "fetchComments failed", error);
       } finally {
         setCommentsLoading(false);
         setRefreshing(false);
       }
     }, [globalSettings, videoID]);
 
-    const handleReplyPress = (comment) => {
+    const handleReplyPress = (comment, mentionUser) => {
       setReplyTarget({ id: comment.$id, username: comment.commentOwner?.username, recipient: comment.commentOwner });
       committedMentionRangeRef.current = null;
       clearMentionSuggestions();
+      // Reply-on-reply: prefill the composer with @username so the reply
+      // visually addresses the original reply author, while threading to the
+      // top-level parent (matches web's flat-thread model).
+      if (mentionUser?.username) {
+        setCommentText(`@${mentionUser.username} `);
+      }
       setTimeout(() => {
         scrollToCommentThread(comment?.$id, true);
         inputRef.current?.focus();
@@ -1895,7 +2047,7 @@ const CommentSection = React.memo(
                 }
               }
             } catch (error) {
-              console.log("handleLikeComment error:", error);
+              logger.error("video-player", "handleLikeComment failed", error);
               desiredLikedRef.current = committedLikedRef.current;
               if (isMountedRef.current) {
                 applyOptimisticLikeState(committedLikedRef.current, committedLikedRef.current, committedCountRef.current);
@@ -1920,6 +2072,34 @@ const CommentSection = React.memo(
         applyOptimisticLikeState(nextDesiredLiked);
         syncLikeMutation();
       }, [applyOptimisticLikeState, item?.$id, normalizedCurrentUserId, syncLikeMutation]);
+
+      // Reaction overlay over the existing binary like wiring.
+      const reactions = useCommentReactionState({ initialLiked: liked });
+
+      const handleReactionTap = useCallback(() => {
+        if (!item?.$id || !normalizedCurrentUserId) return;
+        const wasReacted = !!reactions.userReactionKey;
+        reactions.toggleTopLevelDefault();
+        const targetLiked = !wasReacted;
+        if (targetLiked !== desiredLikedRef.current) {
+          desiredLikedRef.current = targetLiked;
+          applyOptimisticLikeState(targetLiked);
+          syncLikeMutation();
+        }
+      }, [applyOptimisticLikeState, item?.$id, normalizedCurrentUserId, reactions, syncLikeMutation]);
+
+      const handlePickReactionWithSync = useCallback(
+        (key) => {
+          const wasTopLevel = reactions.isPickerForTopLevel;
+          reactions.handlePickReaction(key);
+          if (wasTopLevel && !desiredLikedRef.current) {
+            desiredLikedRef.current = true;
+            applyOptimisticLikeState(true);
+            syncLikeMutation();
+          }
+        },
+        [applyOptimisticLikeState, reactions, syncLikeMutation],
+      );
 
       const handleToggleReplies = () => {
         if (!showReplies) {
@@ -1969,26 +2149,53 @@ const CommentSection = React.memo(
                     "mt-1 font-sans text-sm leading-5",
                     "font-sans font-semibold",
                     { color: theme.textMuted },
-                    { color: theme.accentBlue },
+                    { color: theme.primary },
                   )}
                 </View>
 
-                <View className="mt-1 flex-row items-center space-x-3 px-1">
+                <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>
                   <Text className="font-sans text-xs" style={{ color: theme.textSoft }}>
                     {TimeAgo(item?.$createdAt)}
                   </Text>
+                  <TouchableOpacity
+                    ref={reactions.likeButtonRef}
+                    onPress={handleReactionTap}
+                    onLongPress={reactions.openTopLevelPicker}
+                    delayLongPress={220}
+                    disabled={!normalizedCurrentUserId}
+                    hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                    style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+                  >
+                    {reactions.activeReaction ? (
+                      <Text style={{ fontSize: 13, lineHeight: 16 }}>{reactions.activeReaction.emoji}</Text>
+                    ) : (
+                      <Text className="font-sans text-xs font-semibold" style={{ color: theme.textSoft }}>
+                        React
+                      </Text>
+                    )}
+                    {likeCount > 0 ? (
+                      <Text className="font-sans text-xs font-semibold" style={{ color: reactions.activeReaction ? theme.like : theme.textSoft }}>
+                        {likeCount}
+                      </Text>
+                    ) : null}
+                  </TouchableOpacity>
                   <TouchableOpacity onPress={() => onReplyPress(item)}>
-                    <Text className="font-sans text-xs font-semibold" style={{ color: theme.accentBlue }}>
+                    {/* "Reply" promoted to violet primary so it lives in the
+                        same accent system as the rest of the surface. Was
+                        accentBlue, which read as a different design language. */}
+                    <Text className="font-sans text-xs font-bold" style={{ color: theme.primary, letterSpacing: 0.3 }}>
                       Reply
                     </Text>
                   </TouchableOpacity>
                 </View>
 
                 {replies.length > 0 && (
-                  <View className="mt-3 border-l pl-3" style={{ borderLeftColor: theme.divider }}>
+                  <View className="mt-3 border-l pl-3" style={{ borderLeftColor: `${theme.primary}40` }}>
                     {!showReplies ? (
                       <TouchableOpacity onPress={handleToggleReplies}>
-                        <Text className="font-sans text-xs" style={{ color: theme.textSubtle }}>
+                        {/* "View N replies" — violet bold so it reads as an
+                            interactive affordance, not body copy. */}
+                        <Text className="font-sans text-xs font-bold" style={{ color: theme.primary, letterSpacing: 0.3 }}>
                           View {replies.length === 1 ? "1 reply" : `${replies.length} replies`}
                         </Text>
                       </TouchableOpacity>
@@ -2027,13 +2234,42 @@ const CommentSection = React.memo(
                                   "mt-0.5 font-sans text-xs leading-5",
                                   "font-sans font-semibold",
                                   { color: theme.textMuted },
-                                  { color: theme.accentBlue },
+                                  { color: theme.primary },
                                 )}
                               </View>
-                              <View className="mt-1 px-1">
+                              <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>
                                 <Text className="font-sans text-[11px]" style={{ color: theme.textSoft }}>
                                   {TimeAgo(reply?.$createdAt)}
                                 </Text>
+                                <TouchableOpacity
+                                  ref={(el) => reactions.registerReplyButton(reply.$id, el)}
+                                  onPress={() => reactions.toggleReplyDefault(reply.$id)}
+                                  onLongPress={() => reactions.openReplyPicker(reply.$id)}
+                                  delayLongPress={220}
+                                  disabled={!normalizedCurrentUserId}
+                                  hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                                  style={{ flexDirection: "row", alignItems: "center" }}
+                                >
+                                  {reactions.getReplyReaction(reply.$id) ? (
+                                    <Text style={{ fontSize: 13, lineHeight: 16 }}>
+                                      {reactions.getReplyReaction(reply.$id).emoji}
+                                    </Text>
+                                  ) : (
+                                    <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.textSoft }}>
+                                      React
+                                    </Text>
+                                  )}
+                                </TouchableOpacity>
+                                {normalizedCurrentUserId ? (
+                                  <TouchableOpacity
+                                    onPress={() => onReplyPress(item, reply?.commentOwner)}
+                                    hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                                  >
+                                    <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.accentBlue }}>
+                                      Reply
+                                    </Text>
+                                  </TouchableOpacity>
+                                ) : null}
                               </View>
                             </View>
                           </View>
@@ -2059,17 +2295,16 @@ const CommentSection = React.memo(
                 )}
               </View>
 
-              <TouchableOpacity onPress={handleLikeComment} disabled={!normalizedCurrentUserId} className="ml-3 items-center pt-2">
-                <MaterialCommunityIcons name={liked ? "heart" : "heart-outline"} size={16} color={liked ? theme.like : theme.textSoft} />
-                <Text
-                  className="mt-1 font-sans text-[11px] font-semibold text-center"
-                  style={{ color: theme.textSoft, minWidth: 16, opacity: likeCount > 0 ? 1 : 0 }}
-                >
-                  {likeCount > 0 ? likeCount : 0}
-                </Text>
-              </TouchableOpacity>
             </View>
           </View>
+
+          <ReactionPicker
+            visible={reactions.pickerVisible}
+            anchor={reactions.pickerAnchor}
+            activeKey={reactions.pickerActiveKey}
+            onSelect={handlePickReactionWithSync}
+            onClose={reactions.closePicker}
+          />
         </View>
       );
     };
@@ -2128,22 +2363,48 @@ const CommentSection = React.memo(
         style={{ borderTopColor: theme.border, backgroundColor: theme.surfaceElevated }}
         onLayout={updatePanelBottomInWindow}
       >
-        <View className="px-4 pb-3 pt-2">
-          <View className="items-center pb-3">
-            <View className="h-1.5 w-12 rounded-full" style={{ backgroundColor: theme.handle }} />
-          </View>
+        {/* Header — premium violet chip + uppercase letter-spaced "COMMENTS"
+            label + count badge. Same accent system as the Library / Recommended
+            section headers. The handle pill is dropped because this surface
+            isn't a draggable sheet — it's a pinned panel with its own close
+            affordance. */}
+        <View className="px-4 pb-3 pt-3">
           <View className="flex-row items-center justify-between">
-            <View className="flex-row items-center space-x-3">
-              <View className="h-10 w-10 items-center justify-center rounded-2xl" style={{ backgroundColor: theme.surfaceMuted }}>
-                <FontAwesome name="comments" size={16} color={theme.icon} />
+            <View className="flex-row items-center" style={{ flex: 1 }}>
+              <View
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 9,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: theme.primarySoft,
+                  borderWidth: 1,
+                  borderColor: theme.primary,
+                  marginRight: 10,
+                  shadowColor: theme.primary,
+                  shadowOffset: { width: 0, height: 3 },
+                  shadowOpacity: 0.3,
+                  shadowRadius: 6,
+                  elevation: 3,
+                }}
+              >
+                <Ionicons name="chatbubble-ellipses" size={14} color={theme.primary} />
               </View>
-              <View>
-                <Text className="font-sans text-base font-semibold" style={{ color: theme.text }}>
+              <View className="flex-1">
+                <Text
+                  className="font-psemibold"
+                  style={{ color: theme.text, fontSize: 12, letterSpacing: 1.6, textTransform: "uppercase" }}
+                >
                   Comments
                 </Text>
-                <Text className="font-sans text-xs" style={{ color: theme.textSoft }}>
+                <Text
+                  className="font-sans"
+                  style={{ color: theme.textSoft, fontSize: 11, letterSpacing: 0.2, marginTop: 1 }}
+                  numberOfLines={1}
+                >
                   {commentsLoading
-                    ? "Loading conversation..."
+                    ? "Loading conversation…"
                     : totalDiscussionCount === 1
                       ? "1 comment"
                       : `${FormatNumber(totalDiscussionCount)} comments`}
@@ -2151,7 +2412,7 @@ const CommentSection = React.memo(
               </View>
             </View>
 
-            <View className="flex-row items-center space-x-2">
+            <View className="flex-row items-center" style={{ gap: 6 }}>
               <TouchableOpacity
                 activeOpacity={0.7}
                 onPress={() => {
@@ -2159,22 +2420,40 @@ const CommentSection = React.memo(
                   setRefreshing(true);
                   fetchComments();
                 }}
-                className="h-9 w-9 items-center justify-center rounded-full"
-                style={{ backgroundColor: theme.surfaceMuted }}
+                accessibilityLabel="Refresh comments"
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 999,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: theme.surfaceMuted,
+                  borderWidth: 1,
+                  borderColor: theme.border,
+                }}
               >
                 {refreshing ? (
                   <LoaderKit style={{ width: 14, height: 14, opacity: 0.85 }} name={"BallSpinFadeLoader"} color={theme.primary} />
                 ) : (
-                  <MaterialIcons name="refresh" size={18} color={theme.icon} />
+                  <MaterialIcons name="refresh" size={16} color={theme.iconMuted} />
                 )}
               </TouchableOpacity>
               <TouchableOpacity
                 activeOpacity={0.7}
                 onPress={onCloseComments}
-                className="h-9 w-9 items-center justify-center rounded-full"
-                style={{ backgroundColor: theme.surfaceMuted }}
+                accessibilityLabel="Close comments"
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 999,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: theme.surfaceMuted,
+                  borderWidth: 1,
+                  borderColor: theme.border,
+                }}
               >
-                <MaterialIcons name="close" size={18} color={theme.icon} />
+                <MaterialIcons name="close" size={16} color={theme.iconMuted} />
               </TouchableOpacity>
             </View>
           </View>
@@ -2198,12 +2477,33 @@ const CommentSection = React.memo(
               <LoaderKit style={{ width: 40, height: 40, opacity: 0.4 }} name={"BallTrianglePath"} color={theme.primary} />
             </View>
           ) : comments.length === 0 ? (
-            <View className="flex-1 items-center justify-center px-4 py-10">
-              <View className="w-full rounded-3xl border px-5 py-6" style={{ borderColor: theme.border, backgroundColor: theme.card }}>
-                <Text className="text-center font-sans text-sm" style={{ color: theme.textSoft }}>
-                  No comments yet. Be the first to comment.
-                </Text>
+            // Premium empty state — violet chip + headline + nudge to type.
+            // Same language as the Library / From-Creators-You-Follow empties.
+            <View className="flex-1 items-center justify-center px-6 py-10">
+              <View
+                style={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: 999,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: theme.primarySoft,
+                  borderWidth: 1,
+                  borderColor: theme.primary,
+                  marginBottom: 14,
+                }}
+              >
+                <Ionicons name="chatbubble-ellipses-outline" size={24} color={theme.primary} />
               </View>
+              <Text className="font-bold" style={{ color: theme.text, fontSize: 15, letterSpacing: 0.2 }}>
+                Start the conversation
+              </Text>
+              <Text
+                className="mt-1.5 max-w-[260px] text-center"
+                style={{ color: theme.textSoft, fontSize: 13, lineHeight: 18, letterSpacing: 0.1 }}
+              >
+                No comments yet — be the first to share your thoughts on this video.
+              </Text>
             </View>
           ) : (
             <View className="space-y-2 pb-2">
@@ -2243,25 +2543,64 @@ const CommentSection = React.memo(
           onLayout={handleCommentComposerLayout}
         >
           {replyTarget ? (
+            // Reply target chip — uses violet primary instead of the previous
+            // blue so the composer reads as part of the same accent system as
+            // the rest of the surface.
             <View
-              className="mb-3 flex-row items-center justify-between rounded-2xl border px-4 py-2.5"
-              style={{ borderColor: theme.accentBlue, backgroundColor: theme.accentBlueSoft }}
+              className="mb-3 flex-row items-center justify-between rounded-2xl"
+              style={{
+                paddingHorizontal: 14,
+                paddingVertical: 9,
+                borderWidth: 1,
+                borderColor: theme.primary,
+                backgroundColor: theme.primarySoft,
+              }}
             >
-              <Text className="text-xs" style={{ color: theme.textMuted }}>
-                Replying to {replyTarget.username}
-              </Text>
-              <TouchableOpacity onPress={handleCancelReply}>
-                <Text className="text-xs font-semibold" style={{ color: theme.accentBlue }}>
+              <View className="flex-row items-center" style={{ flex: 1 }}>
+                <Ionicons name="return-down-forward" size={13} color={theme.primary} style={{ marginRight: 6 }} />
+                <Text
+                  className="font-medium"
+                  style={{ color: theme.text, fontSize: 12, letterSpacing: 0.1 }}
+                  numberOfLines={1}
+                >
+                  Replying to{" "}
+                  <Text style={{ color: theme.primary, fontWeight: "700" }}>{replyTarget.username}</Text>
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={handleCancelReply}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityLabel="Cancel reply"
+              >
+                <Text
+                  className="font-bold"
+                  style={{ color: theme.primary, fontSize: 11, letterSpacing: 0.4, textTransform: "uppercase" }}
+                >
                   Cancel
                 </Text>
               </TouchableOpacity>
             </View>
           ) : null}
 
-          <View className="flex-row items-end space-x-3">
+          <View className="flex-row items-end" style={{ gap: 10 }}>
+            {/* Composer wrapper — gains a violet 1.5px ring when focused so
+                the input clearly signals "you're typing here" without being
+                noisy when blurred. Background stays at theme.inputBackground
+                in either state. */}
             <View
-              className="flex-1 rounded-3xl border px-4 py-2.5"
-              style={{ borderColor: theme.inputBorder, backgroundColor: theme.inputBackground }}
+              className="flex-1 rounded-3xl"
+              style={{
+                paddingHorizontal: 16,
+                paddingVertical: 9,
+                borderWidth: isComposerFocused ? 1.5 : 1,
+                borderColor: isComposerFocused ? theme.primary : theme.inputBorder,
+                backgroundColor: theme.inputBackground,
+                shadowColor: theme.primary,
+                shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: isComposerFocused ? 0.18 : 0,
+                shadowRadius: 8,
+                elevation: isComposerFocused ? 2 : 0,
+              }}
             >
               <TextInput
                 ref={inputRef}
@@ -2284,29 +2623,60 @@ const CommentSection = React.memo(
                     clearMentionSuggestions();
                   }, 40);
                 }}
-                placeholder={replyTarget ? "Write a reply..." : "Add a comment..."}
+                placeholder={replyTarget ? "Write a reply…" : "Add a comment…"}
                 placeholderTextColor={theme.placeholder}
                 selectionColor={theme.primary}
-                className="font-sans text-sm leading-5"
-                style={{ maxHeight: 112, minHeight: 22, color: theme.inputText }}
+                className="font-sans"
+                style={{
+                  maxHeight: 112,
+                  minHeight: 22,
+                  fontSize: 14,
+                  lineHeight: 20,
+                  color: theme.inputText,
+                  letterSpacing: 0.1,
+                }}
               >
                 {renderComposerMentionText}
               </TextInput>
             </View>
 
+            {/* Send button — premium violet pill with shadow lift when there's
+                content to post. Disabled state stays muted so the button
+                doesn't beg for taps on an empty input. */}
             <TouchableOpacity
               disabled={isSubmitting || !commentText.trim()}
-              className="h-11 w-11 items-center justify-center rounded-full"
+              accessibilityLabel="Post comment"
               style={{
-                backgroundColor: isSubmitting ? theme.surfaceStrong : commentText.trim() ? theme.primary : theme.surfaceMuted,
+                width: 44,
+                height: 44,
+                borderRadius: 999,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: isSubmitting
+                  ? theme.surfaceStrong
+                  : commentText.trim()
+                    ? theme.primary
+                    : theme.surfaceMuted,
+                borderWidth: commentText.trim() ? 0 : 1,
+                borderColor: theme.border,
+                shadowColor: theme.primary,
+                shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: commentText.trim() && !isSubmitting ? 0.35 : 0,
+                shadowRadius: 10,
+                elevation: commentText.trim() && !isSubmitting ? 5 : 0,
               }}
-              activeOpacity={0.7}
+              activeOpacity={0.85}
               onPress={handlePostComment}
             >
               {isSubmitting ? (
-                <LoaderKit style={{ width: 14, height: 14, opacity: 0.85 }} name={"BallSpinFadeLoader"} color={theme.primaryContrast} />
+                <LoaderKit style={{ width: 14, height: 14, opacity: 0.9 }} name={"BallSpinFadeLoader"} color={theme.primaryContrast} />
               ) : (
-                <MaterialIcons name="north" size={20} color={commentText.trim() ? theme.primaryContrast : theme.iconMuted} />
+                <Ionicons
+                  name="send"
+                  size={17}
+                  color={commentText.trim() ? theme.primaryContrast : theme.iconMuted}
+                  style={{ marginLeft: -1 }}
+                />
               )}
             </TouchableOpacity>
           </View>
@@ -2389,7 +2759,7 @@ const VideoPlayer = () => {
   const params = useLocalSearchParams();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const screenHeight = Dimensions.get("screen").height;
-  const { id, view, startAt, played, docId, localUri, focusCommentId, focusReplyId } = params;
+  const { id, view, startAt, played, docId, localUri, focusCommentId, focusReplyId, playlistUris, playlistIndex } = params;
   const currentVideoUri = Array.isArray(id) ? id[0] : id;
   const currentVideoDocId = Array.isArray(docId) ? docId[0] : docId;
   const localVideoUriParam = Array.isArray(localUri) ? localUri[0] : localUri;
@@ -2397,6 +2767,18 @@ const VideoPlayer = () => {
   const playedParam = Array.isArray(played) ? played[0] : played;
   const focusCommentIdParam = normalizeNotificationTargetId(focusCommentId);
   const focusReplyIdParam = normalizeNotificationTargetId(focusReplyId);
+  // Playlist-context params — set by VideosPlaylist when a row is tapped. When
+  // present, we override the category-similarity nextVideo resolver below with
+  // the next URI in the queue so auto-advance follows the user's saved order.
+  const playlistUrisParam = Array.isArray(playlistUris) ? playlistUris[0] : playlistUris;
+  const playlistIndexParam = Array.isArray(playlistIndex) ? playlistIndex[0] : playlistIndex;
+  const playlistQueue = useMemo(() => {
+    if (!playlistUrisParam || typeof playlistUrisParam !== "string") return null;
+    const uris = playlistUrisParam.split(",").map((u) => u.trim()).filter(Boolean);
+    if (uris.length === 0) return null;
+    const idx = Number(playlistIndexParam);
+    return { uris, index: Number.isFinite(idx) ? idx : 0 };
+  }, [playlistIndexParam, playlistUrisParam]);
   const shouldOpenCommentsFromNotification = Boolean(focusCommentIdParam || focusReplyIdParam);
   const currentVideoIdentityKey = currentVideoDocId || currentVideoUri;
 
@@ -2632,7 +3014,46 @@ const VideoPlayer = () => {
     const parsed = Number(coinDeduction);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
   }, [coinDeduction]);
-  const defaultVideoPlayerHeight = useMemo(() => windowWidth * (9 / 16), [windowWidth]);
+  // Detect the video's natural aspect ratio (width/height) from its
+  // thumbnail. Same approach used in PostVideo for the home feed —
+  // expo-video's `videoTrack` is unreliable for HLS streams, but the
+  // CDN-served thumbnail is a static image whose ratio mirrors the
+  // source video. Updating this state drives the player container's
+  // height so portrait videos go full-portrait inside the player
+  // (YouTube-style) instead of being letterboxed at 16:9.
+  const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9);
+
+  useEffect(() => {
+    const thumbUri = video?.thumbnail;
+    if (!thumbUri) return;
+
+    let cancelled = false;
+    Image.getSize(
+      thumbUri,
+      (w, h) => {
+        if (cancelled) return;
+        if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
+        const naturalRatio = w / h;
+        // Clamp to keep edge cases sane:
+        //   - max 16:9 (anything wider stays at 16:9 — letterbox top/bottom)
+        //   - min  9:16 (anything more portrait clamps to full phone portrait)
+        const clamped = Math.max(9 / 16, Math.min(16 / 9, naturalRatio));
+        setVideoAspectRatio((prev) => (Math.abs(prev - clamped) > 0.01 ? clamped : prev));
+      },
+      (err) => {
+        if (!cancelled && __DEV__) console.log("video-player Image.getSize:", err?.message || err);
+      },
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [video?.thumbnail]);
+
+  // height = width / aspectRatio. Default 16/9 → height = width * 9/16
+  // (preserves the original landscape rendering); a portrait video at
+  // 9/16 → height = width * 16/9 (taller player, no letterboxing).
+  const defaultVideoPlayerHeight = useMemo(() => windowWidth / videoAspectRatio, [windowWidth, videoAspectRatio]);
   const compactVideoPlayerHeight = useMemo(() => {
     const compactFloor = screenHeight < 700 ? 92 : screenHeight < 780 ? 104 : 116;
     const scaledCompactHeight = defaultVideoPlayerHeight * 0.54;
@@ -2781,6 +3202,22 @@ const VideoPlayer = () => {
   }, [setAndroidControlsReadyAfter]);
 
   const {
+    // New web-mirroring threshold-model API
+    showChoiceModal,
+    modalThreshold,
+    initialUnlockSeconds,
+    recurringSeconds,
+    starRate,
+    coinRate,
+    loadingCurrency,
+    handleChoice: handleUnlockChoice,
+    handleCancel: handleUnlockCancel,
+    isUnlocking,
+    // Kept for the download flow + any legacy consumers
+    resetUnlockFlow,
+    manualUnlock,
+    // Legacy fields are still returned by the hook (no-ops) so destructure
+    // doesn't break — keeping the names that already had usages downstream.
     bannerMessage,
     bannerOpacity,
     bannerTranslateX,
@@ -2789,10 +3226,7 @@ const VideoPlayer = () => {
     bannerTextWidth,
     showBanner,
     countdown,
-    isUnlocking,
     isPurchaseBlocked,
-    resetUnlockFlow,
-    manualUnlock,
   } = useAutoUnlock({
     player,
     user,
@@ -3203,6 +3637,33 @@ const VideoPlayer = () => {
       };
     }
 
+    // Playlist context override: when the user is watching a video that came
+    // from VideosPlaylist, the "next" video should be the next item in their
+    // saved queue, not a category-similarity recommendation. Look up the doc
+    // in allVideos so the player has the title/thumbnail/uploader it needs to
+    // render the "Up Next" pill.
+    if (playlistQueue && Array.isArray(allVideos) && allVideos.length > 0) {
+      const nextUri = playlistQueue.uris[playlistQueue.index + 1];
+      if (nextUri) {
+        const nextDoc = allVideos.find((v) => v?.uri === nextUri);
+        if (nextDoc) {
+          setNextVideo(nextDoc);
+          setNextVideoLoading(false);
+          return () => {
+            isCancelled = true;
+          };
+        }
+      } else {
+        // End of the playlist — no next video to queue. Don't fall through to
+        // category-similarity, leave it empty so autoplay simply stops.
+        setNextVideo(null);
+        setNextVideoLoading(false);
+        return () => {
+          isCancelled = true;
+        };
+      }
+    }
+
     const localSameTagCandidate = pickLocalSameTagCandidate(allVideos);
     if (localSameTagCandidate) {
       setNextVideo(localSameTagCandidate);
@@ -3252,6 +3713,7 @@ const VideoPlayer = () => {
     effectiveVideoUri,
     pickLocalDifferentTagCandidate,
     pickLocalSameTagCandidate,
+    playlistQueue,
     resolveRemoteDifferentTagCandidate,
     resolveRemoteSameTagCandidate,
   ]);
@@ -3284,6 +3746,20 @@ const VideoPlayer = () => {
         resetUnlockFlow();
         safePause();
 
+        // Carry playlist context forward so auto-advance chains beyond the
+        // first hop. If we're inside a playlist queue, increment the index;
+        // when the next video isn't actually the queue's next item (because
+        // category-similarity fallback kicked in), drop the playlist params
+        // entirely so the player stops trying to advance through the queue.
+        const playlistForwardParams = (() => {
+          if (!playlistQueue) return {};
+          const expectedNextUri = playlistQueue.uris[playlistQueue.index + 1];
+          if (expectedNextUri && expectedNextUri === targetVideo.uri) {
+            return { playlistUris: playlistQueue.uris.join(","), playlistIndex: String(playlistQueue.index + 1) };
+          }
+          return {};
+        })();
+
         router.replace({
           pathname: "video-player",
           params: {
@@ -3291,6 +3767,7 @@ const VideoPlayer = () => {
             docId: targetVideo.$id,
             view: displayComp || "RECOMMENDED",
             played: serializePlayedHistoryParam(appendToHistory(effectivePlayedHistory, targetVideo.uri)),
+            ...playlistForwardParams,
           },
         });
       } catch (err) {
@@ -3313,6 +3790,7 @@ const VideoPlayer = () => {
       nextVideo,
       pickLocalDifferentTagCandidate,
       pickLocalSameTagCandidate,
+      playlistQueue,
       safePause,
       resetUnlockFlow,
       resolveRemoteDifferentTagCandidate,
@@ -3952,6 +4430,12 @@ const VideoPlayer = () => {
                   </Animated.View>
                 )}
 
+                {/* The 0:00–2:00 floating "Unlock now" pill was removed when
+                    we ported the web's threshold model — the web has no
+                    early-watching CTA, the choice modal at 3:00 is the only
+                    paywall affordance. The modal itself is rendered at the
+                    bottom of the page (see <VideoUnlockChoiceModal /> below). */}
+
                 {/* Countdown bottom-right */}
                 {monetizationActive && !isUnlocked && countdown && (
                   <View
@@ -3994,56 +4478,65 @@ const VideoPlayer = () => {
                   className="h-full w-full"
                   player={player}
                   ref={videoViewRef}
-                  nativeControls={canControlPlayer && (Platform.OS !== "android" || (androidNativeControlsReady && player?.status === "readyToPlay"))}
+                  // Native controls are now allowed on LOCKED monetized videos so
+                  // the user can pause / seek / scrub before the 3:00 unlock.
+                  // Was previously gated on canControlPlayer, which forced
+                  // nativeControls=false until the video unlocked. Revenue is
+                  // still protected: useAutoUnlock's timeUpdate listener fires
+                  // the deduction the moment currentTime >= unlockTime, whether
+                  // that happens by watching or by scrubbing the playhead past
+                  // the mark. Fullscreen / PIP / video-frame-analysis remain
+                  // gated by isEnabledFeatures (post-unlock) on purpose.
+                  nativeControls={Platform.OS !== "android" || (androidNativeControlsReady && player?.status === "readyToPlay")}
                   allowsFullscreen={isEnabledFeatures}
                   allowsPictureInPicture={Platform.OS === "android" ? false : isEnabledFeatures}
                   allowsVideoFrameAnalysis={Platform.OS === "android" ? false : isEnabledFeatures}
                 />
-                {monetizationActive && unlockStatusReady && !isUnlocked && (
-                  <Pressable style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 15 }} onPress={handleLockedVideoPress} />
-                )}
-                {monetizationActive && unlockStatusReady && !isUnlocked && lockedProgressVisible && (
-                  <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, zIndex: 20 }} className="px-4 pb-3">
-                    <View
-                      className="rounded-2xl border px-4 py-3 shadow-lg shadow-black"
-                      style={{ borderColor: theme.border, backgroundColor: theme.mediaOverlayStrong }}
-                    >
-                      <View className="mb-2 flex-row items-center justify-between">
-                        <Text
-                          className="font-sans text-xs font-semibold"
-                          style={{ color: theme.primaryContrast }}
-                        >{`Unlocks at ${unlockTimeDisplay}`}</Text>
-                        <Text className="font-sans text-xs" style={{ color: theme.textMuted }}>
-                          {formatTimecode(lockedProgress.current)}
-                        </Text>
-                      </View>
-                      <View className="h-2 w-full overflow-hidden rounded-full" style={{ backgroundColor: theme.surfaceMuted }}>
-                        <View className="h-full rounded-full" style={{ width: `${lockedProgressPercent}%`, backgroundColor: theme.accentGreen }} />
-                      </View>
-                      <View className="mt-3 flex-row items-center justify-between">
-                        <Text className="font-sans text-[11px]" style={{ color: theme.textMuted }}>
-                          Skip the wait and unlock now.
-                        </Text>
-                        <TouchableOpacity
-                          disabled={isUnlocking}
-                          activeOpacity={0.7}
-                          onPress={manualUnlock}
-                          className="flex-row items-center space-x-2 rounded-full px-3 py-2"
-                          style={{ backgroundColor: isUnlocking ? theme.surfaceMuted : theme.accentGreen }}
-                        >
-                          {isUnlocking ? (
-                            <LoaderKit style={{ width: 14, height: 14, opacity: 0.85 }} name="BallSpinFadeLoader" color={theme.primaryContrast} />
-                          ) : (
-                            <MaterialIcons name="lock-open" size={16} color={theme.primaryContrast} />
-                          )}
-                          <Text className="font-sans text-xs font-semibold" style={{ color: isUnlocking ? theme.textMuted : theme.primaryContrast }}>
-                            {isUnlocking ? "Unlocking..." : "Unlock Now"}
-                          </Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  </View>
-                )}
+                {/* The full-screen Pressable that used to sit here intercepted
+                    every tap on the locked video so it could reveal the green
+                    "Unlocks at 2:00" progress strip on tap. Both are gone now:
+                    the new floating violet "Unlock now" pill is always visible
+                    during 0:00–2:00, and the timeUpdate listener handles the
+                    auto-deduction regardless of how the playhead reaches the
+                    3:00 mark — so blocking taps was no longer earning its keep
+                    and was preventing the user from accessing pause / seek /
+                    fullscreen on the native player controls. */}
+
+                {/* Threshold-crossing choice modal — port of the web's
+                    openVideoMonetThresholdDialog, but rendered INSIDE the
+                    video container so it overlays just the player area
+                    (not the whole screen). 5-second auto-deduct fallback
+                    inside the modal: prefers coin, falls back to star.
+                    Hook owns visibility + threshold; we just render and
+                    forward the pick back. */}
+                <VideoUnlockChoiceModal
+                  isVisible={showChoiceModal}
+                  videoTitle={video?.title}
+                  thresholdSeconds={modalThreshold}
+                  recurringSeconds={recurringSeconds}
+                  coinCost={coinRate}
+                  starCost={starRate}
+                  coinBalance={Number(balance) || 0}
+                  starBalance={Number(starsData?.stars) || 0}
+                  loadingCurrency={loadingCurrency}
+                  onChoice={(currency) => {
+                    // If the user picked (or auto-pick fired with) a
+                    // currency they can't afford, surface the store overlay
+                    // and dismiss the modal. Should be rare — auto-pick
+                    // already filters by affordability and disabled tiles
+                    // can't be tapped — but defensive in case rates or
+                    // balances drift.
+                    const cost = currency === "coin" ? coinRate : starRate;
+                    const have = currency === "coin" ? Number(balance) || 0 : Number(starsData?.stars) || 0;
+                    if (have < cost) {
+                      handleUnlockCancel();
+                      setShowCoinOverlay(true);
+                      return;
+                    }
+                    handleUnlockChoice(currency);
+                  }}
+                  onCancel={handleUnlockCancel}
+                />
               </Animated.View>
 
               {/* COIN PACK OVERLAY WHEN NO BALANCE (video area only) */}
@@ -4328,27 +4821,94 @@ const VideoPlayer = () => {
                         )}
                       </View>
 
-                      <View className="mt-4 flex-row items-center space-x-2">
-                        <TouchableOpacity
-                          onPress={() => setDisplayComp("RECOMMENDED")}
-                          activeOpacity={0.7}
-                          className="flex-row items-center space-x-1.5 rounded-full px-3 py-1.5"
-                          style={{ backgroundColor: displayComp === "RECOMMENDED" ? theme.surfaceStrong : theme.surfaceMuted }}
-                        >
-                          <Ionicons name="play-circle-sharp" size={14} color={theme.icon} />
-                          <Text className="font-sans text-sm" style={{ color: theme.text }}>
-                            Recommended
-                          </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          onPress={() => setDisplayComp("COMMENTS")}
-                          activeOpacity={0.7}
-                          className="flex-row items-center space-x-1.5 rounded-full px-3 py-1.5"
-                          style={{ backgroundColor: displayComp === "COMMENTS" ? theme.surfaceStrong : theme.surfaceMuted }}
-                        >
-                          <FontAwesome name="comments" size={13} color={theme.icon} />
-                          <Text className="font-sans text-sm" style={{ color: theme.text }}>{`Comments (${FormatNumber(commentTabCount)})`}</Text>
-                        </TouchableOpacity>
+                      {/* Recommended / Comments segmented pills — premium
+                          violet language matching the Books / Videos / Profile
+                          pill bars. Active pill carries the violet shadow lift,
+                          inactive sits in surfaceMuted with a 1px border so it
+                          reads as a tap target without competing visually. */}
+                      <View className="mt-4 flex-row items-center" style={{ gap: 8 }}>
+                        {(() => {
+                          const isActive = displayComp === "RECOMMENDED";
+                          return (
+                            <TouchableOpacity
+                              onPress={() => setDisplayComp("RECOMMENDED")}
+                              activeOpacity={0.85}
+                              accessibilityLabel="Show recommended videos"
+                              className="flex-row items-center rounded-full"
+                              style={{
+                                paddingHorizontal: 14,
+                                paddingVertical: 8,
+                                backgroundColor: isActive ? theme.primary : theme.surfaceMuted,
+                                borderWidth: isActive ? 0 : 1,
+                                borderColor: isActive ? "transparent" : theme.border,
+                                shadowColor: theme.primary,
+                                shadowOffset: { width: 0, height: 4 },
+                                shadowOpacity: isActive ? 0.28 : 0,
+                                shadowRadius: 10,
+                                elevation: isActive ? 4 : 0,
+                              }}
+                            >
+                              <Ionicons
+                                name="play-circle"
+                                size={14}
+                                color={isActive ? theme.primaryContrast : theme.iconMuted}
+                                style={{ marginRight: 6 }}
+                              />
+                              <Text
+                                className="font-sans"
+                                style={{
+                                  fontSize: 13,
+                                  fontWeight: isActive ? "700" : "600",
+                                  letterSpacing: 0.2,
+                                  color: isActive ? theme.primaryContrast : theme.textMuted,
+                                }}
+                              >
+                                Recommended
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })()}
+                        {(() => {
+                          const isActive = displayComp === "COMMENTS";
+                          return (
+                            <TouchableOpacity
+                              onPress={() => setDisplayComp("COMMENTS")}
+                              activeOpacity={0.85}
+                              accessibilityLabel="Show comments"
+                              className="flex-row items-center rounded-full"
+                              style={{
+                                paddingHorizontal: 14,
+                                paddingVertical: 8,
+                                backgroundColor: isActive ? theme.primary : theme.surfaceMuted,
+                                borderWidth: isActive ? 0 : 1,
+                                borderColor: isActive ? "transparent" : theme.border,
+                                shadowColor: theme.primary,
+                                shadowOffset: { width: 0, height: 4 },
+                                shadowOpacity: isActive ? 0.28 : 0,
+                                shadowRadius: 10,
+                                elevation: isActive ? 4 : 0,
+                              }}
+                            >
+                              <Ionicons
+                                name="chatbubble-ellipses"
+                                size={13}
+                                color={isActive ? theme.primaryContrast : theme.iconMuted}
+                                style={{ marginRight: 6 }}
+                              />
+                              <Text
+                                className="font-sans"
+                                style={{
+                                  fontSize: 13,
+                                  fontWeight: isActive ? "700" : "600",
+                                  letterSpacing: 0.2,
+                                  color: isActive ? theme.primaryContrast : theme.textMuted,
+                                }}
+                              >
+                                {`Comments (${FormatNumber(commentTabCount)})`}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })()}
                       </View>
                     </View>
 
@@ -4387,6 +4947,15 @@ const VideoPlayer = () => {
           )}
         </View>
       </KeyboardAvoidingView>
+      {/* Download confirmation — bottom sheet shown after the user taps the
+          download icon inside the player. Two states:
+            • Unlocked: show a violet primary chip + "Download for offline
+              viewing?" body and a violet primary "Download" CTA with shadow
+              lift. Mirrors the rest of the offline-download flow (Quality
+              picker + Downloads tab).
+            • Locked: show an amber lock chip + a per-video unlock cost row
+              and the "Unlock & Download" amber CTA so users can clearly tell
+              the action will deduct Coin/Star. */}
       <Modal
         isVisible={downloadConfirmationVisible && !showCoinOverlay}
         onBackdropPress={() => closeDownloadConfirmation(false)}
@@ -4394,78 +4963,136 @@ const VideoPlayer = () => {
         swipeDirection="down"
         onSwipeComplete={() => closeDownloadConfirmation(false)}
         style={{ justifyContent: "flex-end", margin: 0 }}
-        backdropOpacity={0.45}
+        backdropOpacity={0.55}
+        useNativeDriver
         propagateSwipe
       >
-        <View className="rounded-t-3xl border-t px-5 pb-7 pt-4" style={{ borderColor: theme.border, backgroundColor: theme.surfaceElevated }}>
+        <View
+          className="rounded-t-3xl px-5 pb-7 pt-4"
+          style={{
+            borderTopWidth: 1,
+            borderTopColor: theme.border,
+            backgroundColor: theme.surfaceElevated,
+          }}
+        >
           <View className="mb-3 h-1.5 w-10 self-center rounded-full" style={{ backgroundColor: theme.handle }} />
-          <View className="mb-4 flex-row items-center space-x-3">
+
+          <View className="mb-4 flex-row items-center">
             <View
-              className="h-10 w-10 items-center justify-center rounded-full"
-              style={{ backgroundColor: downloadConfirmationLocked ? theme.accentAmberSoft : theme.accentGreenSoft }}
+              style={{
+                width: 40,
+                height: 40,
+                borderRadius: 12,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: downloadConfirmationLocked ? theme.accentAmberSoft : theme.primarySoft,
+                borderWidth: 1,
+                borderColor: downloadConfirmationLocked ? theme.accentAmber : theme.primary,
+                marginRight: 12,
+                shadowColor: downloadConfirmationLocked ? theme.accentAmber : theme.primary,
+                shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: 0.35,
+                shadowRadius: 8,
+                elevation: 3,
+              }}
             >
               {downloadConfirmationLocked ? (
-                <MaterialIcons name="lock-outline" size={20} color={theme.coin} />
+                <MaterialIcons name="lock-outline" size={20} color={theme.accentAmber} />
               ) : (
-                <MaterialIcons name="download" size={20} color={theme.accentGreen} />
+                <MaterialCommunityIcons name="cloud-download-outline" size={20} color={theme.primary} />
               )}
             </View>
             <View className="flex-1">
-              <Text className="font-sans text-base font-semibold" style={{ color: theme.text }}>
-                {downloadConfirmationLocked ? "This video is locked." : "This video is already unlocked."}
+              <Text
+                className="font-psemibold"
+                style={{ color: theme.text, fontSize: 13, letterSpacing: 1.4, textTransform: "uppercase" }}
+              >
+                {downloadConfirmationLocked ? "Locked video" : "Save offline"}
               </Text>
-              <Text className="font-sans text-xs" style={{ color: theme.textSoft }}>
+              <Text className="mt-0.5" style={{ color: theme.textSoft, fontSize: 12, lineHeight: 16 }}>
                 {downloadConfirmationLocked
                   ? `Downloading will unlock it and deduct ${downloadUnlockCost} Coin/Star${downloadUnlockCost === 1 ? "" : "s"}.`
-                  : "Download for offline viewing?"}
+                  : "Download this video for offline viewing?"}
               </Text>
             </View>
           </View>
 
           {downloadConfirmationLocked && (
             <View
-              className="mb-4 flex-row items-center justify-between rounded-2xl border px-4 py-3"
-              style={{ borderColor: theme.accentAmber, backgroundColor: theme.accentAmberSoft }}
+              className="mb-4 flex-row items-center justify-between rounded-2xl px-4 py-3"
+              style={{
+                borderWidth: 1,
+                borderColor: theme.accentAmber,
+                backgroundColor: theme.accentAmberSoft,
+              }}
             >
-              <View className="flex-row items-center space-x-2">
-                <View className="h-9 w-9 items-center justify-center rounded-2xl" style={{ backgroundColor: theme.accentAmberSoft }}>
-                  <StarIcon size={20} color={theme.coin} />
+              <View className="flex-row items-center" style={{ gap: 10 }}>
+                <View
+                  className="items-center justify-center rounded-2xl"
+                  style={{
+                    height: 36,
+                    width: 36,
+                    backgroundColor: theme.accentAmberSoft,
+                    borderWidth: 1,
+                    borderColor: theme.accentAmber,
+                  }}
+                >
+                  <StarIcon size={18} color={theme.coin} />
                 </View>
                 <View>
-                  <Text className="font-sans text-xs" style={{ color: theme.textSoft }}>
+                  <Text style={{ color: theme.textSoft, fontSize: 11, letterSpacing: 0.4, textTransform: "uppercase", fontWeight: "700" }}>
                     Unlock cost
                   </Text>
-                  <Text className="font-sans text-sm font-semibold" style={{ color: theme.text }}>
+                  <Text className="font-psemibold mt-0.5" style={{ color: theme.text, fontSize: 14 }}>
                     {downloadUnlockCost} Coin/Star{downloadUnlockCost === 1 ? "" : "s"}
                   </Text>
                 </View>
               </View>
-              <Text className="font-sans text-xs font-medium" style={{ color: theme.accentAmber }}>
-                Unlock and download now
+              <Text style={{ color: theme.accentAmber, fontSize: 11, fontWeight: "700", letterSpacing: 0.3, textTransform: "uppercase" }}>
+                Unlock & save
               </Text>
             </View>
           )}
 
-          <View className="flex-row items-center space-x-3">
+          <View className="flex-row items-center" style={{ gap: 10 }}>
             <TouchableOpacity
               activeOpacity={0.8}
               onPress={() => closeDownloadConfirmation(false)}
-              className="flex-1 items-center justify-center rounded-2xl border px-4 py-3"
-              style={{ borderColor: theme.border, backgroundColor: theme.surfaceMuted }}
+              className="flex-1 items-center justify-center rounded-2xl px-4 py-3"
+              style={{
+                borderWidth: 1,
+                borderColor: theme.border,
+                backgroundColor: theme.surfaceMuted,
+              }}
             >
-              <Text className="font-sans text-sm font-semibold" style={{ color: theme.textSoft }}>
+              <Text className="font-psemibold" style={{ color: theme.textSoft, fontSize: 13, letterSpacing: 0.2 }}>
                 Cancel
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              activeOpacity={0.8}
+              activeOpacity={0.85}
               onPress={() => closeDownloadConfirmation(true)}
               className="flex-1 flex-row items-center justify-center rounded-2xl px-4 py-3"
-              style={{ backgroundColor: downloadConfirmationLocked ? theme.accentAmber : theme.accentGreen }}
+              style={{
+                backgroundColor: downloadConfirmationLocked ? theme.accentAmber : theme.primary,
+                borderWidth: 1,
+                borderColor: downloadConfirmationLocked ? theme.accentAmber : theme.primary,
+                shadowColor: downloadConfirmationLocked ? theme.accentAmber : theme.primary,
+                shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: 0.4,
+                shadowRadius: 10,
+                elevation: 4,
+              }}
             >
+              <MaterialCommunityIcons
+                name={downloadConfirmationLocked ? "lock-open-variant-outline" : "cloud-download-outline"}
+                size={16}
+                color="#FFFFFF"
+                style={{ marginRight: 6 }}
+              />
               <Text
-                className="font-sans text-sm font-semibold"
-                style={{ color: downloadConfirmationLocked ? theme.textInverse : theme.primaryContrast }}
+                className="font-psemibold"
+                style={{ color: "#FFFFFF", fontSize: 13, letterSpacing: 0.4, textTransform: "uppercase" }}
               >
                 {downloadConfirmationLocked ? "Unlock & Download" : "Download"}
               </Text>
@@ -4473,72 +5100,13 @@ const VideoPlayer = () => {
           </View>
         </View>
       </Modal>
-      <Modal
-        isVisible={downloadQualityPickerVisible && !showCoinOverlay}
-        onBackdropPress={() => closeDownloadQualityPicker(null)}
-        onBackButtonPress={() => closeDownloadQualityPicker(null)}
-        swipeDirection="down"
-        onSwipeComplete={() => closeDownloadQualityPicker(null)}
-        style={{ justifyContent: "flex-end", margin: 0 }}
-        backdropOpacity={0.45}
-        propagateSwipe
-      >
-        <View className="rounded-t-3xl border-t px-5 pb-7 pt-4" style={{ borderColor: theme.border, backgroundColor: theme.surfaceElevated }}>
-          <View className="mb-3 h-1.5 w-10 self-center rounded-full" style={{ backgroundColor: theme.handle }} />
-          <View className="mb-4 flex-row items-center space-x-3">
-            <View className="h-10 w-10 items-center justify-center rounded-2xl" style={{ backgroundColor: theme.accentGreenSoft }}>
-              <MaterialIcons name="download" size={20} color={theme.accentGreen} />
-            </View>
-            <View className="flex-1">
-              <Text className="font-sans text-base font-semibold" style={{ color: theme.text }}>
-                Download quality
-              </Text>
-              <Text className="font-sans text-xs" style={{ color: theme.textSoft }}>
-                Choose the quality for offline video.
-              </Text>
-            </View>
-          </View>
-
-          <View className="space-y-2">
-            {downloadQualityPickerOptions.map((quality) => (
-              <TouchableOpacity
-                key={quality}
-                activeOpacity={0.85}
-                onPress={() => closeDownloadQualityPicker(quality)}
-                className="flex-row items-center justify-between rounded-2xl border px-4 py-3"
-                style={{ borderColor: theme.border, backgroundColor: theme.card }}
-              >
-                <View className="flex-row items-center space-x-3">
-                  <View className="h-8 w-8 items-center justify-center rounded-xl" style={{ backgroundColor: theme.surfaceMuted }}>
-                    <MaterialIcons name="high-quality" size={16} color={theme.icon} />
-                  </View>
-                  <View>
-                    <Text className="font-sans text-sm font-semibold" style={{ color: theme.text }}>
-                      {quality}p
-                    </Text>
-                    <Text className="font-sans text-[11px]" style={{ color: theme.textSoft }}>
-                      {quality >= 720 ? "HD" : quality >= 480 ? "Balanced" : "Data Saver"}
-                    </Text>
-                  </View>
-                </View>
-                <MaterialIcons name="chevron-right" size={20} color={theme.iconMuted} />
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => closeDownloadQualityPicker(null)}
-            className="mt-4 items-center justify-center rounded-2xl border px-4 py-3"
-            style={{ borderColor: theme.border, backgroundColor: theme.surfaceMuted }}
-          >
-            <Text className="font-sans text-sm font-semibold" style={{ color: theme.textSoft }}>
-              Cancel
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </Modal>
-      <CustomAlertModal message={message} messageOpen={messageOpen} closeMessage={closeMessage} iconName="download" iconColor={theme.accentGreen} />
+      <VideosDownloadQualityModal
+        showCoinOverlay={showCoinOverlay}
+        downloadQualityPickerVisible={downloadQualityPickerVisible}
+        downloadQualityPickerOptions={downloadQualityPickerOptions}
+        closeDownloadQualityPicker={closeDownloadQualityPicker}
+      />
+      <CustomAlertModal message={message} messageOpen={messageOpen} closeMessage={closeMessage} iconName="download" iconColor={theme.primary} />
     </StyledSafeAreaView>
   );
 };

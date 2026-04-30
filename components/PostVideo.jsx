@@ -3,14 +3,15 @@ import { Entypo, MaterialIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useVideoPlayer, VideoView } from "expo-video";
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { AppState, Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { AppState, Image, Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import LoaderKit from "react-native-loader-kit";
 import { useGlobalContext } from "../context/global-provider";
 import { useVideosStats } from "../context/video-stats-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import useIsOffline from "../hooks/useIsOffline";
-import TimeAgo from "../lib/time-ago";
+import playbackEvents from "../lib/playback-events";
+import TimeAgo from "../lib/utils/time-ago";
 import { VideosService } from "../lib/video";
 import AnimatedSkeleton from "./AnimatedSkeleton";
 import StyledLikeCommentShare from "./StyledLikeCommentShare";
@@ -42,6 +43,13 @@ const PostVideo = forwardRef(({ item, isPostFromVideo, onOpenSafetySheet, mutedP
   const [showIndicator, setShowIndicator] = useState(false);
   const [indicatorIcon, setIndicatorIcon] = useState("play-arrow");
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
+  // Container aspect ratio (width / height). Default to 16:9 so the
+  // skeleton state still reads as a video frame; updated to the actual
+  // natural ratio once the player reports its videoTrack size. Clamped
+  // between 9/16 (full phone portrait) and 16/9 (standard landscape) so
+  // a stray cinemascope source doesn't dominate the feed and a
+  // super-tall vertical phone clip still fits sanely.
+  const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9);
 
   const videoService = new VideosService();
   const playerRef = useRef(null);
@@ -170,6 +178,30 @@ const PostVideo = forwardRef(({ item, isPostFromVideo, onOpenSafetySheet, mutedP
   useEffect(() => {
     isPausedByTimerRef.current = isPausedByTimer;
   }, [isPausedByTimer]);
+
+  /** PAUSE WHEN A FOREGROUND-FOCUS MODAL OPENS
+   *
+   *  Some action sheets (most notably the Share Profile sheet on the user's
+   *  own profile) can't share the system playback focus with an autoplaying
+   *  video — on iOS the share sheet (UIActivityViewController) and the
+   *  expo-video player end up competing for who gets to present, and the
+   *  share sheet is force-dismissed before the user can interact. The fix
+   *  is for those modals to broadcast a "pause-all" signal via the global
+   *  playbackEvents bus and for every active video card to release playback
+   *  ownership when they hear it. We use the existing safePause + manual-
+   *  paused machinery so the user's manual play/pause state is preserved
+   *  for after the modal closes. */
+  useEffect(() => {
+    const handlePauseAll = () => {
+      try {
+        safePause();
+      } catch (_) {}
+    };
+    playbackEvents.on("pause-all", handlePauseAll);
+    return () => {
+      playbackEvents.off("pause-all", handlePauseAll);
+    };
+  }, [safePause]);
 
   /** PAUSE WHEN APP GOES BACKGROUND */
   useEffect(() => {
@@ -317,6 +349,47 @@ const PostVideo = forwardRef(({ item, isPostFromVideo, onOpenSafetySheet, mutedP
   useEffect(() => {
     if (playerRef.current) playerRef.current.muted = isMuted;
   }, [player, isMuted]);
+
+  // Detect the video's natural aspect ratio from its THUMBNAIL rather than
+  // from the player. Reasons:
+  //   • expo-video's `videoTrack.size` is unreliable for HLS streams (.m3u8) —
+  //     it can be undefined or only resolved after manifest parsing.
+  //   • System-featured posts surface here too (the "Featured" tag), and
+  //     they exhibited the side-bar issue because the player path never
+  //     reported a usable size.
+  //   • Thumbnails are static JPEGs the CDN serves immediately, generated
+  //     at the source resolution, so their aspect ratio matches the video.
+  // Image.getSize is the React Native primitive for reading remote image
+  // dimensions; it doesn't bind anything to memory once the size is read.
+  useEffect(() => {
+    const thumbUri = video?.thumbnail;
+    if (!thumbUri) return;
+
+    let cancelled = false;
+    Image.getSize(
+      thumbUri,
+      (width, height) => {
+        if (cancelled) return;
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+        const naturalRatio = width / height;
+        // Clamp 9:16 ≤ ratio ≤ 16:9 — anything more landscape stays at 16:9
+        // (so cinemascope clips letterbox top/bottom, never sideways), and
+        // anything more portrait than full phone gets capped so it can't
+        // dominate the feed beyond a typical Reels/TikTok shape.
+        const clamped = Math.max(9 / 16, Math.min(16 / 9, naturalRatio));
+        setVideoAspectRatio((prev) => (Math.abs(prev - clamped) > 0.01 ? clamped : prev));
+      },
+      (err) => {
+        // Defensive — keep the 16:9 default. Network errors / dead URLs
+        // should never crash the feed.
+        if (!cancelled && __DEV__) console.log("PostVideo Image.getSize:", err?.message || err);
+      },
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [video?.thumbnail]);
 
   // Ensure auto-pause actually stops playback.
   useEffect(() => {
@@ -526,8 +599,26 @@ const PostVideo = forwardRef(({ item, isPostFromVideo, onOpenSafetySheet, mutedP
         )}
       </View>
 
-      {/* VIDEO AREA */}
-      <View className="relative aspect-video w-full" style={{ backgroundColor: theme.mediaBackground }}>
+      {/* TITLE / DESCRIPTION — sits ABOVE the video, matches web's layout where the
+          description is read first and the video plays below. Regular weight (not bold)
+          so it reads as descriptive copy rather than a marquee headline. */}
+      {video.title ? (
+        <TouchableOpacity onPress={handleOpenVideo}>
+          <View className="px-4 pb-3 pt-1">
+            <Text className="text-[15px]" style={{ color: theme.text }}>
+              {video.title}
+            </Text>
+          </View>
+        </TouchableOpacity>
+      ) : null}
+
+      {/* VIDEO AREA — container's aspectRatio mirrors the video's natural
+          ratio (clamped between 9:16 and 16:9). Portrait clips now fill
+          the feed width without black bars on the sides; landscape clips
+          stay at 16:9. The contentFit on VideoView is `contain` by
+          default, but with the container matching the source ratio
+          there's nothing left to letterbox. */}
+      <View className="relative w-full" style={{ aspectRatio: videoAspectRatio, backgroundColor: theme.mediaBackground }}>
         <VideoView
           ref={videoViewRef}
           player={player}
@@ -535,6 +626,7 @@ const PostVideo = forwardRef(({ item, isPostFromVideo, onOpenSafetySheet, mutedP
           allowsPictureInPicture={false}
           nativeControls={false}
           requiresLinearPlayback={true}
+          contentFit="contain"
           className="h-full w-full"
           pointerEvents="none"
         />
@@ -599,15 +691,6 @@ const PostVideo = forwardRef(({ item, isPostFromVideo, onOpenSafetySheet, mutedP
           <MaterialIcons name={isMuted ? "volume-off" : "volume-up"} size={20} color={theme.primaryContrast} />
         </TouchableOpacity>
       </View>
-
-      {/* TITLE */}
-      <TouchableOpacity onPress={handleOpenVideo}>
-        <View className="p-4">
-          <Text className="text-[15px] font-bold" style={{ color: theme.text }}>
-            {video.title}
-          </Text>
-        </View>
-      </TouchableOpacity>
 
       {/* LIKE/COMMENT/SHARE */}
       <StyledLikeCommentShare item={video} variant="feed" showCommentButton={true} onCommentPress={() => setCommentModalVisible(true)} />

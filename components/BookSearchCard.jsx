@@ -38,7 +38,7 @@ const BookSearchCard = ({ item, customWidth, customHeight, customFontSize, hideA
           borderRadius: 10,
           backgroundColor: theme.surfaceMuted,
         }}
-        source={item?.thumbnail ? { uri: item.thumbnail, priority: FastImage.priority.high } : null}
+        source={item?.thumbnail ? { uri: item.thumbnail, priority: FastImage.priority.normal } : null}
         resizeMode={FastImage.resizeMode.cover}
       >
         {!item?.thumbnail && (

@@ -57,7 +57,7 @@ const Clips = () => {
             >
               <FastImage
                 style={{ height: 35, width: 35, borderRadius: 5, backgroundColor: theme.surfaceMuted }}
-                source={{ uri: user?.avatar, priority: FastImage.priority.high }}
+                source={{ uri: user?.avatar, priority: FastImage.priority.normal }}
               />
             </TouchableOpacity>
           </View>
@@ -325,7 +325,7 @@ export default Clips;
                   <TouchableOpacity onPress={() => router.push("/profile")}>
                     <FastImage
                       style={{ height: 35, width: 35, borderRadius: 5, backgroundColor: "#fff" }}
-                      source={{ uri: user?.avatar, priority: FastImage.priority.high }}
+                      source={{ uri: user?.avatar, priority: FastImage.priority.normal }}
                     />
                   </TouchableOpacity>
                 </View>

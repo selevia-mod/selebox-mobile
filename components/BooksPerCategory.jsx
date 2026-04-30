@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { memo, useCallback } from "react";
-import { Dimensions, FlatList, Text, View } from "react-native";
+import { FlatList, Text, View, useWindowDimensions } from "react-native";
 import { useSelector } from "react-redux";
 import useAppTheme from "../hooks/useAppTheme";
 import BookCard from "./BookCard";
@@ -8,14 +8,17 @@ import BooksSectionTitle from "./BooksSectionTitle";
 
 const BooksPerCategory = ({ category }) => {
   const { theme } = useAppTheme();
-  const { categories } = useSelector((state) => state.books);
-  const { width } = Dimensions.get("window");
+  // Subscribe only to this category's slice. Was reading the whole `categories`
+  // map, so any category update re-rendered every BooksPerCategory instance.
+  const books = useSelector((state) => state.books.categories?.[category]);
+  const { width } = useWindowDimensions();
 
   const renderItem = useCallback(({ item }) => {
-    return <BookCard key={item.uri} item={item} />;
+    return <BookCard item={item} />;
   }, []);
+  const keyExtractor = useCallback((item, index) => item?.$id || `${category}-${index}`, [category]);
 
-  if (categories[category]?.length <= 0) return;
+  if ((books?.length ?? 0) <= 0) return null;
 
   return (
     <View className="space-y-2">
@@ -24,8 +27,8 @@ const BooksPerCategory = ({ category }) => {
         removeClippedSubviews={false}
         horizontal
         showsHorizontalScrollIndicator={false}
-        keyExtractor={(item, index) => item?.$id || `${item.type}-${index}`}
-        data={categories[category] || []}
+        keyExtractor={keyExtractor}
+        data={books || []}
         renderItem={renderItem}
         initialNumToRender={6}
         maxToRenderPerBatch={6}

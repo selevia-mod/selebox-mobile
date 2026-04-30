@@ -37,7 +37,7 @@ import {
   threadPostComments,
   updatePost,
 } from "../lib/posts";
-import TimeAgo from "../lib/time-ago";
+import TimeAgo from "../lib/utils/time-ago";
 import {
   buildMentionSearchTerms,
   extractMentionTargetsFromMarkup,
@@ -53,7 +53,9 @@ import {
   serializeMentionsForStorage,
 } from "../lib/user-mentions";
 import { fetchUsersByQuery, getUserByID } from "../lib/users";
+import { DEFAULT_REACTION_KEY, getReactionByKey } from "../lib/reactions";
 import secrets from "../private/secrets";
+import ReactionPicker from "./ReactionPicker";
 import UserMention from "./UserMention";
 import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 
@@ -127,6 +129,21 @@ const PostCommentItem = memo(
     const syncInFlightRef = useRef(false);
     const isMountedRef = useRef(true);
     const appliedLikesSignatureRef = useRef(likesSignature);
+
+    // Reaction overlay state (visual only — backend stays binary like/unlike).
+    // userReactionKey is hydrated from server like-state into the default heart;
+    // picking a different reaction updates locally. Real per-emoji storage will
+    // land with Phase 5 of the Supabase migration.
+    const [userReactionKey, setUserReactionKey] = useState(() =>
+      likes.some((like) => String(resolveOwnerId(like?.likeOwner) || "") === normalizedCurrentUserId) ? DEFAULT_REACTION_KEY : null,
+    );
+    // Per-reply reactions are local-only — replies don't have backend like wiring yet.
+    const [replyReactions, setReplyReactions] = useState({}); // { [replyId]: reactionKey }
+    const [pickerVisible, setPickerVisible] = useState(false);
+    const [pickerAnchor, setPickerAnchor] = useState(null);
+    const [pickerTargetId, setPickerTargetId] = useState(null); // null = top-level, else replyId
+    const likeButtonRef = useRef(null);
+    const replyButtonRefsMap = useRef(new Map());
 
     const handleUserPress = (commentTarget) => {
       const ownerId = commentTarget?.commentOwner?.$id;
@@ -239,6 +256,81 @@ const PostCommentItem = memo(
       syncLikeMutation();
     }, [applyOptimisticLikeState, item?.$id, normalizedCurrentUserId, syncLikeMutation]);
 
+    // ── Reaction handlers (top-level comment) ──
+    const handleReactionTap = useCallback(() => {
+      if (!item?.$id || !normalizedCurrentUserId) return;
+      if (userReactionKey) {
+        setUserReactionKey(null);
+        // Clear server-side like too
+        if (desiredLikedRef.current) {
+          desiredLikedRef.current = false;
+          applyOptimisticLikeState(false);
+          syncLikeMutation();
+        }
+      } else {
+        setUserReactionKey(DEFAULT_REACTION_KEY);
+        if (!desiredLikedRef.current) {
+          desiredLikedRef.current = true;
+          applyOptimisticLikeState(true);
+          syncLikeMutation();
+        }
+      }
+    }, [applyOptimisticLikeState, item?.$id, normalizedCurrentUserId, syncLikeMutation, userReactionKey]);
+
+    const handleReactionLongPress = useCallback(() => {
+      if (!item?.$id || !normalizedCurrentUserId) return;
+      likeButtonRef.current?.measureInWindow?.((x, y, width, height) => {
+        setPickerAnchor({ x, y, width, height });
+        setPickerTargetId(null);
+        setPickerVisible(true);
+      });
+    }, [item?.$id, normalizedCurrentUserId]);
+
+    // ── Reaction handlers (reply) ──
+    const handleReplyReactionTap = useCallback((replyId) => {
+      if (!replyId) return;
+      setReplyReactions((prev) => {
+        const next = { ...prev };
+        if (next[replyId]) delete next[replyId];
+        else next[replyId] = DEFAULT_REACTION_KEY;
+        return next;
+      });
+    }, []);
+
+    const handleReplyReactionLongPress = useCallback((replyId) => {
+      if (!replyId) return;
+      const buttonRef = replyButtonRefsMap.current.get(replyId);
+      buttonRef?.measureInWindow?.((x, y, width, height) => {
+        setPickerAnchor({ x, y, width, height });
+        setPickerTargetId(replyId);
+        setPickerVisible(true);
+      });
+    }, []);
+
+    // ── Picker selection — routes by pickerTargetId ──
+    const handlePickReaction = useCallback(
+      (key) => {
+        if (pickerTargetId === null) {
+          // Top-level comment
+          setUserReactionKey(key);
+          if (!desiredLikedRef.current) {
+            desiredLikedRef.current = true;
+            applyOptimisticLikeState(true);
+            syncLikeMutation();
+          }
+        } else {
+          // Reply
+          setReplyReactions((prev) => ({ ...prev, [pickerTargetId]: key }));
+        }
+      },
+      [applyOptimisticLikeState, pickerTargetId, syncLikeMutation],
+    );
+
+    const closePicker = useCallback(() => setPickerVisible(false), []);
+
+    const activeReaction = userReactionKey ? getReactionByKey(userReactionKey) : null;
+    const pickerActiveKey = pickerTargetId === null ? userReactionKey : replyReactions[pickerTargetId] ?? null;
+
     return (
       <View className="mb-4">
         <View className="flex-row items-start space-x-2">
@@ -277,10 +369,32 @@ const PostCommentItem = memo(
                 })}
               </View>
 
-              <View className="mt-1 flex-row items-center space-x-2 px-1">
+              <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>
                 <Text className="font-sans text-xs" style={{ color: theme.textMuted }}>
                   {TimeAgo(item?.$createdAt)}
                 </Text>
+                <TouchableOpacity
+                  ref={likeButtonRef}
+                  onPress={handleReactionTap}
+                  onLongPress={handleReactionLongPress}
+                  delayLongPress={220}
+                  disabled={!normalizedCurrentUserId}
+                  hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                  style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+                >
+                  {activeReaction ? (
+                    <Text style={{ fontSize: 13, lineHeight: 16 }}>{activeReaction.emoji}</Text>
+                  ) : (
+                    <Text className="font-sans text-xs font-semibold" style={{ color: theme.textSoft }}>
+                      React
+                    </Text>
+                  )}
+                  {likeCount > 0 ? (
+                    <Text className="font-sans text-xs font-semibold" style={{ color: activeReaction ? theme.like : theme.textSoft }}>
+                      {likeCount}
+                    </Text>
+                  ) : null}
+                </TouchableOpacity>
                 <TouchableOpacity onPress={() => onReplyPress(item)}>
                   <Text className="font-sans text-xs font-semibold" style={{ color: theme.primary }}>
                     Reply
@@ -346,10 +460,42 @@ const PostCommentItem = memo(
                                 mentionColor: theme.accentBlue,
                               })}
                             </View>
-                            <View className="mt-1 px-1">
+                            <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>
                               <Text className="font-sans text-[11px]" style={{ color: theme.textMuted }}>
                                 {TimeAgo(reply?.$createdAt)}
                               </Text>
+                              <TouchableOpacity
+                                ref={(el) => {
+                                  if (el) replyButtonRefsMap.current.set(reply.$id, el);
+                                  else replyButtonRefsMap.current.delete(reply.$id);
+                                }}
+                                onPress={() => handleReplyReactionTap(reply.$id)}
+                                onLongPress={() => handleReplyReactionLongPress(reply.$id)}
+                                delayLongPress={220}
+                                disabled={!normalizedCurrentUserId}
+                                hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                                style={{ flexDirection: "row", alignItems: "center" }}
+                              >
+                                {replyReactions[reply.$id] ? (
+                                  <Text style={{ fontSize: 13, lineHeight: 16 }}>
+                                    {getReactionByKey(replyReactions[reply.$id])?.emoji}
+                                  </Text>
+                                ) : (
+                                  <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.textSoft }}>
+                                    React
+                                  </Text>
+                                )}
+                              </TouchableOpacity>
+                              {normalizedCurrentUserId ? (
+                                <TouchableOpacity
+                                  onPress={() => onReplyPress(item, reply?.commentOwner)}
+                                  hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                                >
+                                  <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.primary }}>
+                                    Reply
+                                  </Text>
+                                </TouchableOpacity>
+                              ) : null}
                             </View>
                           </View>
                         </View>
@@ -375,17 +521,16 @@ const PostCommentItem = memo(
               )}
             </View>
 
-            <TouchableOpacity onPress={handleLikeComment} disabled={!normalizedCurrentUserId} className="ml-3 items-center pt-2">
-              <MaterialCommunityIcons name={liked ? "heart" : "heart-outline"} size={16} color={liked ? theme.like : theme.textSubtle} />
-              <Text
-                className="mt-1 text-center font-sans text-[11px] font-semibold"
-                style={{ minWidth: 16, opacity: likeCount > 0 ? 1 : 0, color: theme.textSoft }}
-              >
-                {likeCount > 0 ? likeCount : 0}
-              </Text>
-            </TouchableOpacity>
           </View>
         </View>
+
+        <ReactionPicker
+          visible={pickerVisible}
+          anchor={pickerAnchor}
+          activeKey={pickerActiveKey}
+          onSelect={handlePickReaction}
+          onClose={closePicker}
+        />
       </View>
     );
   },
@@ -1379,7 +1524,7 @@ const PostCommentModal = ({
   }, []);
 
   const handleReplyPress = useCallback(
-    (comment) => {
+    (comment, mentionUser) => {
       if (!comment?.$id) return;
       setReplyTarget({
         id: comment.$id,
@@ -1388,6 +1533,13 @@ const PostCommentModal = ({
       });
       committedMentionRangeRef.current = null;
       clearMentionSuggestions();
+
+      // Reply-on-reply: prefill the composer with @username so the reply
+      // visually addresses the original reply author, while threading to the
+      // top-level parent (matches web's flat-thread model in app.js renderComment).
+      if (mentionUser?.username) {
+        setCommentText(`@${mentionUser.username} `);
+      }
 
       setTimeout(() => {
         inputRef.current?.focus();
@@ -1941,6 +2093,13 @@ const PostCommentModal = ({
               contentContainerStyle={commentListContentContainerStyle}
               showsVerticalScrollIndicator={false}
               renderItem={renderCommentItem}
+              // Virtualization tuning — comment rows are heavy (avatar +
+              // reactions + replies + mention parsing). RN defaults render
+              // too many off-screen and trip the "slow to update" warning.
+              initialNumToRender={8}
+              maxToRenderPerBatch={6}
+              windowSize={10}
+              updateCellsBatchingPeriod={50}
               removeClippedSubviews={Platform.OS !== "android"}
               nestedScrollEnabled
               keyboardShouldPersistTaps="handled"

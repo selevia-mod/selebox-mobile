@@ -29,7 +29,7 @@ import { PROFILE_BANNER_ASPECT_RATIO, PROFILE_BANNER_CROP_ASPECT } from "../../c
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import { getCurrentUserWithoutStream, signOut, updateAvatar, updateBanner, updateSelectedRole, updateUsername } from "../../lib/appwrite";
-import { cleanupTempFile } from "../../lib/image-utils";
+import { cleanupTempFile } from "../../lib/utils/image-utils";
 import {
   getActiveSelectedRoleKey,
   getAssignedRoleKeys,
@@ -234,6 +234,14 @@ const EditProfileSkeleton = () => {
 const EditProfile = () => {
   const { user, setUser, setIsLogged, avatar, setAvatar } = useGlobalContext();
   const { theme, isDarkMode } = useAppTheme();
+  // Sticky "we have a user" flag. The skeleton was flashing when navigating
+  // from the profile screen because, for one render cycle during the stack
+  // transition, the global context could re-emit a falsy user before settling
+  // back to the real value. Once we've seen a non-null user we never flip
+  // back to the skeleton — that prevents the swap-back-to-skeleton flicker.
+  const hasSeenUserRef = useRef(Boolean(user));
+  if (user) hasSeenUserRef.current = true;
+  const showSkeleton = !user && !hasSeenUserRef.current;
   const { width: screenWidth } = useWindowDimensions();
   const [username, setUsername] = useState("");
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -559,7 +567,7 @@ const EditProfile = () => {
 
   return (
     <>
-      {!user ? (
+      {showSkeleton ? (
         <EditProfileSkeleton />
       ) : (
         <StyledSafeAreaView style={{ backgroundColor: theme.background }}>
@@ -597,7 +605,13 @@ const EditProfile = () => {
 
               {/* Banner + Avatar */}
               <View>
-                <View className="w-full overflow-hidden rounded-xl" style={{ height: bannerHeight, backgroundColor: theme.cardStrong }}>
+                {/* Banner background matches profile.jsx (theme.surfaceStrong)
+                    so the navigation transition from profile → settings has
+                    no color swap as FastImage re-mounts on the new screen.
+                    Previously this used theme.cardStrong, which is a slightly
+                    different color and read as a flicker even when the image
+                    cache hit instantly. */}
+                <View className="w-full overflow-hidden rounded-xl" style={{ height: bannerHeight, backgroundColor: theme.surfaceStrong }}>
                   <FastImage
                     source={{ uri: bannerPreviewUri, priority: FastImage.priority.high }}
                     className="h-full w-full"
@@ -620,7 +634,10 @@ const EditProfile = () => {
                 </View>
                 <View className="absolute bottom-[-20] left-0 right-0 items-center">
                   <TouchableOpacity activeOpacity={0.7} onPress={openAvatarPicker}>
-                    <View className="rounded-lg border-2" style={{ borderColor: "rgba(139,134,248,0.6)", backgroundColor: theme.cardStrong }}>
+                    {/* Avatar placeholder also uses theme.surfaceStrong to
+                        match the profile screen's avatar slot — same reason
+                        as the banner above. */}
+                    <View className="rounded-lg border-2" style={{ borderColor: "rgba(139,134,248,0.6)", backgroundColor: theme.surfaceStrong }}>
                       <FastImage
                         source={{ uri: user?.avatar, priority: FastImage.priority.high }}
                         className="h-20 w-20 rounded-lg"

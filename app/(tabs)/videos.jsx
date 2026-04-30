@@ -1,13 +1,10 @@
-import { MaterialIcons } from "@expo/vector-icons";
 import { FlashList } from "@shopify/flash-list";
 import { useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Dimensions, RefreshControl, Text, TouchableOpacity, View } from "react-native";
-import LoaderKit from "react-native-loader-kit";
 import PagerView from "react-native-pager-view";
 import { useDispatch, useSelector } from "react-redux";
 import {
-  Loader,
   MainScreensHeader,
   StyledSafeAreaView,
   VideoCardNew,
@@ -17,7 +14,7 @@ import {
   VideosMostPeopleWant,
   VideosPerCategory,
   VideosPopularInYourArea,
-  VideosSectionTitle,
+  VideosSectionsSkeleton,
   VideosSuggestedForYou,
   VideosTrendingWeek,
   VideosYouMightLike,
@@ -27,7 +24,7 @@ import VideosPlaylist from "../../components/VideosPlaylist";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import useResetOnBlur from "../../hooks/useResetOnBlur";
-import { SearchVideos, ShuffleVideos } from "../../lib/appwrite";
+import { ShuffleVideos } from "../../lib/appwrite";
 import { FollowService } from "../../lib/follows";
 import { listBlockedUsers } from "../../lib/safety";
 import tabNavigationEvents from "../../lib/tab-navigation-events";
@@ -47,6 +44,14 @@ const SECTION_SPACING = 5;
 const LIST_PADDING_BOTTOM = 60;
 const LIST_PADDING_TOP = 12;
 const TAB_TITLES = ["For You", "Playlist", "Downloads"];
+
+// Section height estimate for FlashList. Most carousels render at ~330–360 px,
+// Category sections (rows of 2) at ~600–700 px. 420 splits the difference and
+// keeps FlashList's drawDistance budget honest. Wrong estimates here are the
+// classic cause of "white-on-fast-scroll" because the recycler can't predict
+// where the next cell will land.
+const SECTION_ESTIMATED_HEIGHT = 420;
+const SectionSeparator = () => <View style={{ height: SECTION_SPACING }} />;
 
 const chunkArray = (array, chunkSize) => {
   const result = [];
@@ -113,10 +118,6 @@ const Videos = () => {
   const videosServiceRef = useRef(new VideosService());
   const [videosLoading, setVideosLoading] = useState(true);
   const [videosSections, setVideosSections] = useState([]);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [filteredVideos, setFilteredVideos] = useState([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [searchLoading, setSearchLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   useResetOnBlur(setRefreshing);
   const [mostPeopleWant, setMostPeopleWant] = useState([]);
@@ -185,27 +186,6 @@ const Videos = () => {
     generateSections();
   }, [globalSettings]);
 
-  useEffect(() => {
-    const delaySearch = setTimeout(async () => {
-      if (!searchQuery.trim()) {
-        setFilteredVideos([]);
-        setIsSearching(false);
-        return;
-      }
-
-      setSearchLoading(true);
-      setIsSearching(true);
-
-      try {
-        const videos = await SearchVideos(searchQuery, allVideos);
-        setFilteredVideos(filterBlocked(videos));
-      } finally {
-        setSearchLoading(false);
-      }
-    }, 300);
-
-    return () => clearTimeout(delaySearch);
-  }, [searchQuery, allVideos, filterBlocked]);
 
   const loadVideosData = useCallback(
     async ({ showLoader = true } = {}) => {
@@ -435,8 +415,12 @@ const Videos = () => {
     };
   }, []);
 
-  const renderSection = ({ item }) => {
-    const getComponent = () => {
+  // Memoized so FlashList can recycle cells. Without useCallback this is a
+  // fresh fn ref every render and FlashList re-mounts visible cells on any
+  // parent state change — that's the white-on-scroll-down bug. Closes over
+  // the section data slices directly so we don't need extraData on the list.
+  const renderSection = useCallback(
+    ({ item }) => {
       switch (item.type) {
         case "MostPeopleWant":
           return <VideosMostPeopleWant videos={mostPeopleWant} />;
@@ -459,10 +443,25 @@ const Videos = () => {
         default:
           return <VideoCardNew item={item} customWidth={width - 32} />;
       }
-    };
+    },
+    [
+      mostPeopleWant,
+      fromFollowing,
+      suggestedForYou,
+      continueWatching,
+      trendingWeek,
+      youMightLike,
+      popularInYourArea,
+      latestVideos,
+      categoryVideos,
+      width,
+    ],
+  );
 
-    return <View style={{ marginBottom: SECTION_SPACING }}>{getComponent()}</View>;
-  };
+  // Tells FlashList to recycle each section type into its own pool. Without
+  // this, FlashList may try to reuse a Category cell (tall) for a TrendingWeek
+  // cell (short) and cause a measurement+layout pass that flashes blank.
+  const getItemType = useCallback((item) => item.type, []);
 
   const handleTabPress = (index) => {
     pagerRef.current?.setPage(index);
@@ -477,98 +476,100 @@ const Videos = () => {
 
   const keyExtractor = useCallback((item, index) => `${item.type}-${item.category ?? index}`, []);
 
+  // Show the inline skeleton only on first cold load — once we have any
+  // section data ready we drop the placeholder and render the real list,
+  // even if a background refresh is still running. Mirrors how the home
+  // feed handles PostCardSkeleton via FlashList's ListEmptyComponent.
+  const hasAnyVideoSectionData =
+    mostPeopleWant.length > 0 ||
+    fromFollowing.length > 0 ||
+    suggestedForYou.length > 0 ||
+    continueWatching.length > 0 ||
+    trendingWeek.length > 0 ||
+    youMightLike.length > 0 ||
+    popularInYourArea.length > 0 ||
+    latestVideos.length > 0 ||
+    Object.keys(categoryVideos).length > 0;
+  const showVideosSkeleton = videosLoading && !hasAnyVideoSectionData;
+
   return (
     <StyledSafeAreaView edges={["top"]} style={{ backgroundColor: theme.background }}>
-      <Loader isLoading={videosLoading} />
       <View className="w-full flex-1 pb-4">
         <View className="px-4 pb-2 pt-1.5">
-          <MainScreensHeader title="videos" searchPlaceholder={"Search Videos."} searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
+          <MainScreensHeader title="videos" />
         </View>
         <View className="flex-1">
-          <View
-            className="my-2 flex flex-row justify-between overflow-hidden rounded-lg"
-            style={{ backgroundColor: theme.surfaceMuted, borderWidth: 1, borderColor: theme.border }}
-          >
-            {TAB_TITLES.map((title, index) => (
-              <TouchableOpacity
-                className="flex-1 flex-row justify-center p-1.5"
-                key={index}
-                onPress={() => handleTabPress(index)}
-                style={{ backgroundColor: activePage === index ? theme.surfaceElevated : "transparent" }}
-              >
-                <Text
-                  className={`text-center text-sm ${activePage === index ? "font-bold" : ""}`}
-                  style={{ color: activePage === index ? theme.text : theme.textSoft }}
+          {/* Premium violet pill tabs — matches the home feed and Books tab language. */}
+          <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingTop: 8, paddingBottom: 10 }}>
+            {TAB_TITLES.map((title, index) => {
+              const isActive = activePage === index;
+              return (
+                <TouchableOpacity
+                  key={index}
+                  onPress={() => handleTabPress(index)}
+                  activeOpacity={0.85}
+                  style={{
+                    paddingVertical: 8,
+                    paddingHorizontal: 16,
+                    borderRadius: 999,
+                    marginRight: 6,
+                    backgroundColor: isActive ? theme.primary : "transparent",
+                    shadowColor: theme.primary,
+                    shadowOffset: { width: 0, height: 4 },
+                    shadowOpacity: isActive ? 0.25 : 0,
+                    shadowRadius: 8,
+                    elevation: isActive ? 3 : 0,
+                  }}
                 >
-                  {title}
-                </Text>
-              </TouchableOpacity>
-            ))}
+                  <Text
+                    style={{
+                      fontSize: 13,
+                      fontWeight: isActive ? "700" : "500",
+                      letterSpacing: 0.1,
+                      color: isActive ? theme.primaryContrast ?? "#ffffff" : theme.textMuted ?? theme.text,
+                    }}
+                  >
+                    {title}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
           <View className="flex-1">
             <PagerView className="flex-1" initialPage={0} ref={pagerRef} onPageSelected={handlePageSelected} scrollEnabled={false}>
               <View className="h-full flex-1">
-                {isSearching && (
-                  <View style={{ marginBottom: SECTION_SPACING / 2 }} className="px-3">
-                    <VideosSectionTitle title={"Search Results"} showSeeAll={false} />
-                  </View>
+                {showVideosSkeleton ? (
+                  // Inline skeleton stack during cold load — same pattern as
+                  // PostCardSkeleton on the home feed and EditProfileSkeleton
+                  // on settings. Replaces the previous full-screen <Loader>
+                  // modal so the loading state feels native to the screen
+                  // instead of a blocking overlay.
+                  <VideosSectionsSkeleton count={4} />
+                ) : (
+                  <FlashList
+                    data={videosSections}
+                    renderItem={renderSection}
+                    keyExtractor={keyExtractor}
+                    getItemType={getItemType}
+                    contentContainerStyle={{ paddingHorizontal: 12 }}
+                    estimatedItemSize={SECTION_ESTIMATED_HEIGHT}
+                    ItemSeparatorComponent={SectionSeparator}
+                    showsVerticalScrollIndicator={false}
+                    onScroll={handleScroll}
+                    scrollEventThrottle={16}
+                    ref={flatListRef}
+                    ListFooterComponent={SectionSeparator}
+                    refreshControl={
+                      <RefreshControl
+                        tintColor={theme.primary}
+                        titleColor={theme.primary}
+                        progressBackgroundColor={theme.surface}
+                        refreshing={refreshing}
+                        onRefresh={refreshVideos}
+                      />
+                    }
+                  />
                 )}
-
-                <FlashList
-                  data={isSearching ? filteredVideos : videosSections}
-                  renderItem={renderSection}
-                  keyExtractor={keyExtractor}
-                  contentContainerStyle={{ paddingHorizontal: 12 }}
-                  extraData={{
-                    mostPeopleWant,
-                    fromFollowing,
-                    suggestedForYou,
-                    continueWatching,
-                    trendingWeek,
-                    youMightLike,
-                    popularInYourArea,
-                    latestVideos,
-                    categoryVideos,
-                    filteredVideos,
-                  }}
-                  estimatedItemSize={300}
-                  showsVerticalScrollIndicator={false}
-                  onRefresh={refreshVideos}
-                  onScroll={handleScroll}
-                  scrollEventThrottle={16}
-                  ref={flatListRef}
-                  refreshing={refreshing}
-                  ListFooterComponent={<View style={{ height: SECTION_SPACING }} />}
-                  refreshControl={
-                    <RefreshControl
-                      tintColor={theme.primary}
-                      titleColor={theme.primary}
-                      progressBackgroundColor={theme.surface}
-                      refreshing={refreshing}
-                      onRefresh={refreshVideos}
-                    />
-                  }
-                  ListEmptyComponent={
-                    searchLoading ? (
-                      <View className="items-center justify-center px-4 py-12">
-                        <LoaderKit style={{ width: 50, height: 50 }} name="LineScalePulseOutRapid" color={theme.primary} />
-                        <Text className="mt-4 text-lg font-semibold" style={{ color: theme.text }}>
-                          Searching
-                        </Text>
-                      </View>
-                    ) : (
-                      <View className="items-center justify-center px-4 py-12">
-                        <MaterialIcons name="search-off" size={64} color={theme.textSubtle} />
-                        <Text className="mt-4 text-lg font-semibold" style={{ color: theme.text }}>
-                          No Results Found
-                        </Text>
-                        <Text className="mt-2 text-center text-base" style={{ color: theme.textSoft }}>
-                          We couldn’t find anything matching your search.{"\n"}Try different keywords.
-                        </Text>
-                      </View>
-                    )
-                  }
-                />
               </View>
               <VideosPlaylist />
               <VideosDownload />

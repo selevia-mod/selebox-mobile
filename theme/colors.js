@@ -18,6 +18,8 @@ const sharedColors = {
 
   // Accents
   accentPink: "#ec4899",                    // matches web --pink
+  accentPurple: "#8b5cf6",                  // alias of primary — used by section pills, selected-state borders, story bar accents
+  accentPurpleSoft: "rgba(139,92,246,0.16)",
   accentBlue: "#3ec5ff",
   accentBlueSoft: "rgba(62,197,255,0.16)",
   accentGreen: "#22c55e",

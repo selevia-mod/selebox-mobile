@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { fetchPostLikes } from "../lib/posts";
-import TimeAgo from "../lib/time-ago";
+import TimeAgo from "../lib/utils/time-ago";
 
 const SCREEN_HEIGHT = Dimensions.get("window").height;
 
@@ -92,7 +92,7 @@ const PostLikesModal = ({ item, isVisible, onClose, coverScreen = true }) => {
         <View className="mb-5 flex flex-row space-x-2">
           <TouchableOpacity onPress={handleUserPress}>
             <FastImage
-              source={{ uri: item?.likeOwner?.avatar || "", priority: FastImage.priority.high }}
+              source={{ uri: item?.likeOwner?.avatar || "", priority: FastImage.priority.normal }}
               className="h-10 w-10 rounded-full"
               style={{ backgroundColor: theme.surfaceStrong }}
             />

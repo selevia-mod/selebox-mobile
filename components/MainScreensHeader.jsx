@@ -1,90 +1,52 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Notifications from "expo-notifications";
 import { router, useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Animated, Dimensions, Easing, Keyboard, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { useCallback, useEffect, useState } from "react";
+import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import useIsOffline from "../hooks/useIsOffline";
-import { MessagesService } from "../lib/messages";
 import { NotificationService } from "../lib/notifications";
-import { useTotalUnreadCount } from "../lib/useTotalUnreadCount";
+import { useTotalUnreadCount } from "../hooks/useTotalUnreadCount";
 import StyledCoinIndicator from "./StyledCoinIndicator";
 
-const MainScreensHeader = ({ title, searchPlaceholder, searchQuery, setSearchQuery, onSearchFocus, onSearchBlur }) => {
+// Module-level singleton — was being instantiated on every render before.
+const notificationService = new NotificationService();
+
+const MainScreensHeader = ({ title }) => {
   const { user } = useGlobalContext();
   const { theme } = useAppTheme();
   const isOffline = useIsOffline();
-  const [isSearchActive, setIsSearchActive] = useState(false);
-  const [newMessages, setNewMessages] = useState(0);
   const [newNotifications, setNewNotifications] = useState(0);
-  const searchWidth = useRef(new Animated.Value(0)).current;
-  const { width } = Dimensions.get("window");
-  const notificationService = new NotificationService();
   const { unreadCount } = useTotalUnreadCount();
 
   useEffect(() => {
-    const subscription = Notifications.addNotificationReceivedListener(async (notification) => {
-      // A new notification just arrived!
+    const subscription = Notifications.addNotificationReceivedListener(async () => {
       await fetchNewNotificationCount();
     });
-
-    return () => subscription.remove(); // clean up when unmounting
+    return () => subscription.remove();
   }, []);
-
-  const expandSearch = () => {
-    setIsSearchActive(true);
-    Animated.timing(searchWidth, {
-      toValue: 1,
-      duration: 250,
-      easing: Easing.out(Easing.ease),
-      useNativeDriver: false,
-    }).start();
-  };
-
-  const collapseSearch = () => {
-    Keyboard.dismiss();
-    onSearchBlur?.();
-    Animated.timing(searchWidth, {
-      toValue: 0,
-      duration: 200,
-      easing: Easing.in(Easing.ease),
-      useNativeDriver: false,
-    }).start(() => {
-      setIsSearchActive(false);
-      setSearchQuery("");
-    });
-  };
-
-  const inputWidth = searchWidth.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, Math.max(0, width * 0.6)],
-  });
 
   useFocusEffect(
     useCallback(() => {
-      fetchNewMessageCount();
       fetchNewNotificationCount();
     }, []),
   );
 
-  const fetchNewMessageCount = async () => {
-    const newMessageCount = await MessagesService.countChatsWithUnreadMessages({ userId: user?.$id });
-    setNewMessages(newMessageCount);
-  };
-
   const fetchNewNotificationCount = async () => {
-    const newNotificationCount = await notificationService.getUnreadCount({ userId: user?.$id });
+    // Defense-in-depth — getUnreadCount also early-returns 0 on missing userId now,
+    // but skipping the call entirely avoids an unnecessary round-trip while logged out.
+    if (!user?.$id) {
+      setNewNotifications(0);
+      return;
+    }
+    const newNotificationCount = await notificationService.getUnreadCount({ userId: user.$id });
     setNewNotifications(newNotificationCount);
   };
 
   const handleChatsPress = () => router.push("channel-list");
-
-  const handleProfilePress = () => {
-    router.push("/profile");
-  };
-
+  const handleProfilePress = () => router.push("/profile");
   const handleNotificationsPress = async () => {
     setNewNotifications(0);
     if (!isOffline && user?.$id) {
@@ -103,12 +65,12 @@ const MainScreensHeader = ({ title, searchPlaceholder, searchQuery, setSearchQue
           </Text>
         </View>
       )}
-      <View className="flex h-[56px] flex-row items-center justify-between " style={[styles.headerWrapper, { borderBottomColor: theme.divider }]}>
+      <View className="flex h-[56px] flex-row items-center justify-between" style={[styles.headerWrapper, { borderBottomColor: theme.divider }]}>
         <View className="flex-1 flex-row items-center">
           <TouchableOpacity activeOpacity={0.7} onPress={handleProfilePress}>
             <FastImage
               style={[styles.avatar, { borderColor: theme.border, backgroundColor: theme.surfaceMuted }]}
-              source={{ uri: user?.avatar, priority: FastImage.priority.high }}
+              source={{ uri: user?.avatar, priority: FastImage.priority.normal }}
             />
           </TouchableOpacity>
           <StyledCoinIndicator
@@ -120,43 +82,17 @@ const MainScreensHeader = ({ title, searchPlaceholder, searchQuery, setSearchQue
           />
         </View>
         <View className="flex-1 items-center">
-          <Text style={[styles.title, { opacity: isSearchActive ? 0 : 1, color: theme.text }]} className="font-pbold text-[20px]">
+          <Text style={[styles.title, { color: theme.text }]} className="font-pbold text-[20px]">
             {title}
           </Text>
         </View>
 
         <View className="flex-1 flex-row items-center justify-end">
-          {isSearchActive && (
-            <Animated.View style={[styles.searchWrapper, { width: inputWidth }]}>
-              <TextInput
-                autoFocus
-                placeholder={searchPlaceholder}
-                placeholderTextColor={theme.searchPlaceholder}
-                style={[
-                  styles.searchField,
-                  {
-                    backgroundColor: theme.searchBackground,
-                    borderColor: theme.searchBorder,
-                    color: theme.searchText,
-                  },
-                ]}
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-                onFocus={onSearchFocus}
-                onBlur={onSearchBlur}
-              />
-            </Animated.View>
-          )}
-
           <TouchableOpacity
             style={[styles.iconButton, { backgroundColor: theme.surfaceMuted, borderColor: theme.border }]}
-            onPress={() => (isSearchActive ? collapseSearch() : expandSearch())}
+            onPress={() => router.push("/search")}
           >
-            {isSearchActive ? (
-              <Ionicons name="close" size={20} color={theme.icon} />
-            ) : (
-              <Ionicons name="search-outline" size={20} color={theme.icon} />
-            )}
+            <Ionicons name="search-outline" size={20} color={theme.icon} />
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -225,17 +161,6 @@ const styles = StyleSheet.create({
   },
   title: {
     letterSpacing: 0.3,
-  },
-  searchWrapper: {
-    marginRight: 8,
-  },
-  searchField: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    width: "100%",
-    borderWidth: 1,
-    fontSize: 13,
   },
   iconButton: {
     height: 36,

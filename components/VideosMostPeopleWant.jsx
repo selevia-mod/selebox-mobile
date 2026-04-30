@@ -1,17 +1,22 @@
-import { FlatList, View, useWindowDimensions } from "react-native";
+import { useCallback, useMemo } from "react";
+import { FlatList, Platform, View, useWindowDimensions } from "react-native";
 import { getSectionTitleHeight, getVideoCardLayout } from "../utils/videoCardLayout";
 import VideoCardNew from "./VideoCardNew";
 import VideosSectionTitle from "./VideosSectionTitle";
 
 const VideosMostPeopleWant = ({ videos = [] }) => {
   const { width } = useWindowDimensions();
-  const cardWidth = width * 0.8;
-  const { imageHeight, cardHeight } = getVideoCardLayout({ cardWidth, aspectRatio: 0.59 });
-  const containerHeight = getSectionTitleHeight() + cardHeight;
+  const { cardWidth, imageHeight, containerHeight } = useMemo(() => {
+    const cw = width * 0.8;
+    const layout = getVideoCardLayout({ cardWidth: cw, aspectRatio: 0.59 });
+    return { cardWidth: cw, imageHeight: layout.imageHeight, containerHeight: getSectionTitleHeight() + layout.cardHeight };
+  }, [width]);
 
-  const renderItem = ({ item }) => {
-    return <VideoCardNew key={item.uri} item={item} customWidth={cardWidth} customHeight={imageHeight} />;
-  };
+  const renderItem = useCallback(
+    ({ item }) => <VideoCardNew item={item} customWidth={cardWidth} customHeight={imageHeight} />,
+    [cardWidth, imageHeight],
+  );
+  const keyExtractor = useCallback((item, index) => item?.$id || `${item.type}-${index}`, []);
 
   return (
     <View style={{ minHeight: containerHeight }} className="space-y-2">
@@ -19,9 +24,13 @@ const VideosMostPeopleWant = ({ videos = [] }) => {
       <FlatList
         horizontal
         showsHorizontalScrollIndicator={false}
-        keyExtractor={(item, index) => item?.$id || `${item.type}-${index}`}
+        keyExtractor={keyExtractor}
         data={videos}
         renderItem={renderItem}
+        initialNumToRender={4}
+        maxToRenderPerBatch={4}
+        windowSize={3}
+        removeClippedSubviews={Platform.OS === "android"}
       />
     </View>
   );

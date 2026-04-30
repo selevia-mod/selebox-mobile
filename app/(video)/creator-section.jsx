@@ -46,7 +46,7 @@ const CreatorSection = () => {
         }),
       );
     } catch (err) {
-      console.log(err);
+      console.log("creator-section error", err?.message || err);
     }
   };
 
@@ -80,7 +80,7 @@ const CreatorSection = () => {
         }),
       );
     } catch (err) {
-      console.log(err);
+      console.log("creator-section error", err?.message || err);
     }
     setIsFetchingMore(false);
   };

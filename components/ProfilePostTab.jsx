@@ -6,13 +6,17 @@ import { ActivityIndicator, RefreshControl, Text, TouchableOpacity, View } from 
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { consumePostCommentModalResume } from "../lib/post-comment-modal-resume";
-import { fetchPosts } from "../lib/posts";
-import { useModalMessage } from "../lib/useModalMessage";
+import { attachIsLikedByCurrentUser, fetchPosts, hydrateResourcePosts } from "../lib/posts";
+import logger from "../lib/utils/logger";
+import { useModalMessage } from "../hooks/useModalMessage";
 import CustomAlertModal from "./CustomAlertModal";
 import ImageViewer from "./ImageViewer";
+import PostBook from "./PostBook";
 import PostCard from "./PostCard";
+import PostClip from "./PostClip";
 import PostCommentModal from "./PostCommentModal";
 import PostLikesModal from "./PostLikesModal";
+import PostVideo from "./PostVideo";
 
 const ProfilePostTab = ({
   userId,
@@ -23,6 +27,7 @@ const ProfilePostTab = ({
   onScroll,
   onLoadingChange,
   suppressEmptyState = false,
+  headerComponent = null,
 }) => {
   const { user } = useGlobalContext();
   const { theme } = useAppTheme();
@@ -75,13 +80,20 @@ const ProfilePostTab = ({
       if (userId) {
         const postsData = await fetchPosts({ limit: 10, userId: userId });
         if (postsData.documents.length > 0) {
-          setPosts(postsData.documents);
+          // 1) Batched isLiked attach so PostInformation skips its per-card lookup.
+          // 2) hydrateResourcePosts attaches the embedded video / clip / book doc
+          //    onto posts that share a resource — without this, PostVideo /
+          //    PostClip / PostBook receive only the bare post and render an empty
+          //    author header.
+          const enrichedDocs = await attachIsLikedByCurrentUser(postsData.documents, user?.$id);
+          const hydratedDocs = await hydrateResourcePosts(enrichedDocs);
+          setPosts(hydratedDocs);
           setLastId(postsData.documents[postsData.documents.length - 1].$id);
           setHasMore(postsData.documents.length < postsData.total);
         }
       }
     } catch (error) {
-      console.log("fetchPosts: error", error);
+      logger.error("ProfilePostTab", "getPosts failed", error);
     } finally {
       if (!hasLoadedRef.current) {
         hasLoadedRef.current = true;
@@ -95,7 +107,9 @@ const ProfilePostTab = ({
       if (!lastId || !hasMore) return;
       setIsFetchingMore(true);
       const postsData = await fetchPosts({ limit: 10, lastId: lastId, userId: userId });
-      const uniquePosts = postsData.documents.filter((post) => !posts.some((existing) => existing.$id === post.$id));
+      const enrichedDocs = await attachIsLikedByCurrentUser(postsData.documents, user?.$id);
+      const hydratedDocs = await hydrateResourcePosts(enrichedDocs);
+      const uniquePosts = hydratedDocs.filter((post) => !posts.some((existing) => existing.$id === post.$id));
       if (uniquePosts.length === 0) {
         setHasMore(false);
         setIsFetchingMore(false);
@@ -180,6 +194,7 @@ const ProfilePostTab = ({
 
   const renderListHeader = () => (
     <View style={{ paddingTop: contentPaddingTop }}>
+      {headerComponent}
       {sectionTitle ? (
         <Text className="mb-2 text-xl font-bold" style={{ color: theme.text }}>
           {sectionTitle}
@@ -212,34 +227,62 @@ const ProfilePostTab = ({
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
         estimatedItemSize={485}
-        renderItem={({ item, index }) => (
-          <PostCard
-            item={item}
-            index={index}
-            flatListRef={flatListRef}
-            handleLikesPress={handleLikesPress}
-            handleCommentPress={handleCommentPress}
-            handleSharePress={handleSharePress}
-            onLikeChange={updatePostLikeCount}
-            onOpenImageViewer={({ images: nextImages, initialIndex, item: selectedPost }) => {
-              setImages(nextImages);
-              setImageViewerInitialIndex(initialIndex);
-              setCurrentPost(selectedPost);
-              setShowImageViewer(true);
-            }}
-            onPostDeleted={(postId) => {
-              setPosts((prev) => prev.filter((p) => p.$id !== postId));
-            }}
-            isExpanded={expandedIndex === index}
-            onToggleExpand={() => {
-              setExpandedIndex((prev) => (prev === index ? null : index));
-            }}
-            isExpandedMenu={expandedMenuIndex === index}
-            onToggleExpandMenu={() => {
-              setExpandedMenuIndex((prev) => (prev === index ? null : index));
-            }}
-          />
-        )}
+        renderItem={({ item, index }) => {
+          // Posts that share a video, clip, or book carry a `postResourceId` but no
+          // inline text/images. PostCard only knows how to render inline text + image
+          // grids, so without this routing the card renders an empty body — exactly the
+          // bug visible on the Profile Posts tab. Mirrors the home feed's renderItem.
+          if (item?.postResourceId) {
+            const resourceType =
+              item.postResourceType || (item.clip ? "clip" : item.video ? "video" : item.book ? "book" : null);
+
+            if (resourceType === "clip") {
+              return <PostClip item={item.clip || item} />;
+            }
+            if (resourceType === "video") {
+              return (
+                <PostVideo
+                  item={item.video || item}
+                  videoNavId={item.video?.uri || item.postResourceId || item.video?.$id}
+                  videoDocId={item.video?.$id || item.postResourceId}
+                  isPostFromVideo
+                />
+              );
+            }
+            if (resourceType === "book") {
+              return <PostBook item={item.book || item} index={index} />;
+            }
+          }
+
+          return (
+            <PostCard
+              item={item}
+              index={index}
+              flatListRef={flatListRef}
+              handleLikesPress={handleLikesPress}
+              handleCommentPress={handleCommentPress}
+              handleSharePress={handleSharePress}
+              onLikeChange={updatePostLikeCount}
+              onOpenImageViewer={({ images: nextImages, initialIndex, item: selectedPost }) => {
+                setImages(nextImages);
+                setImageViewerInitialIndex(initialIndex);
+                setCurrentPost(selectedPost);
+                setShowImageViewer(true);
+              }}
+              onPostDeleted={(postId) => {
+                setPosts((prev) => prev.filter((p) => p.$id !== postId));
+              }}
+              isExpanded={expandedIndex === index}
+              onToggleExpand={() => {
+                setExpandedIndex((prev) => (prev === index ? null : index));
+              }}
+              isExpandedMenu={expandedMenuIndex === index}
+              onToggleExpandMenu={() => {
+                setExpandedMenuIndex((prev) => (prev === index ? null : index));
+              }}
+            />
+          );
+        }}
         keyExtractor={(item, index) => item.$id ?? index.toString()}
         onScrollToIndexFailed={handleScrollToIndexFailed}
         onEndReached={fetchMorePosts}

@@ -17,6 +17,7 @@ const ProfileClipsTab = ({
   onScroll,
   onLoadingChange,
   suppressEmptyState = false,
+  headerComponent = null,
 }) => {
   const { user } = useGlobalContext();
   const { theme } = useAppTheme();
@@ -77,6 +78,7 @@ const ProfileClipsTab = ({
 
   const renderListHeader = () => (
     <View style={{ paddingTop: contentPaddingTop }}>
+      {headerComponent}
       {sectionTitle ? (
         <Text className="mb-2 text-xl font-bold" style={{ color: theme.text }}>
           {sectionTitle}

@@ -16,6 +16,7 @@ import { BookStatsProvider } from "../context/book-stats-provider";
 import { ClipsStatsProvider } from "../context/clip-stats-provider";
 import GlobalProvider, { useGlobalContext } from "../context/global-provider";
 import { VideosStatsProvider } from "../context/video-stats-provider";
+import { isAppwriteAuthError } from "../lib/appwrite";
 import { initializeCrashlytics, recordCrashlyticsError } from "../lib/crashlytics";
 import "../lib/setup-default-fonts"; // Must be first — patches Text/TextInput for Android font override
 import {
@@ -24,8 +25,30 @@ import {
   buildPostNotificationNavigationParams,
   buildVideoNotificationNavigationParams,
 } from "../lib/notifications";
+import logger from "../lib/utils/logger";
 import store, { persistor } from "../store";
+import { setIsLoggedReducer } from "../store/reducers/auth";
 import { ThemedStatusBar } from "../components";
+import ErrorBoundary from "../components/ErrorBoundary";
+
+// Mid-session auth recovery. Detects Appwrite "session gone" errors anywhere
+// in the app (failed call buried in a useEffect, unhandled promise rejection,
+// etc.) and forces the same logout flow as bootstrap — flips isLogged to
+// false, which the InnerLayout effect picks up and redirects to /sign-in.
+// Tracked here (not per-call-site) because there are 100+ Appwrite call
+// sites and we don't want to wrap every one.
+let didDispatchLogoutFromAuthError = false;
+const handleRuntimeAuthError = (error, source) => {
+  if (didDispatchLogoutFromAuthError) return;
+  if (!isAppwriteAuthError(error)) return;
+  didDispatchLogoutFromAuthError = true;
+  logger.warn("Auth", `Session expired mid-session (${source}) — logging out`);
+  try {
+    store.dispatch(setIsLoggedReducer(false));
+  } catch (dispatchError) {
+    logger.error("Auth", "Failed to dispatch logout after auth error", dispatchError);
+  }
+};
 
 global.Buffer = Buffer;
 
@@ -34,6 +57,7 @@ if (typeof global !== "undefined") {
   const originalHandler = global.ErrorUtils?.getGlobalHandler?.();
   global.ErrorUtils?.setGlobalHandler?.((error, isFatal) => {
     console.warn("Global error caught:", error);
+    handleRuntimeAuthError(error, "globalErrorHandler");
     if (originalHandler) originalHandler(error, isFatal);
   });
 
@@ -43,6 +67,7 @@ if (typeof global !== "undefined") {
       allRejections: true,
       onUnhandled: (_id, error) => {
         console.warn("Unhandled promise rejection:", error);
+        handleRuntimeAuthError(error, "unhandledRejection");
         recordCrashlyticsError(error, "Unhandled promise rejection");
       },
       onHandled: () => {},
@@ -374,24 +399,26 @@ const InnerLayout = () => {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <Stack screenOptions={{ animation: "none" }}>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-        <Stack.Screen name="(video)" options={{ headerShown: false }} />
-        <Stack.Screen name="(edit)" options={{ headerShown: false }} />
-        <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="search" options={{ headerShown: false }} />
-        <Stack.Screen name="(store)" options={{ headerShown: false }} />
-        <Stack.Screen name="(studio)" options={{ headerShown: false }} />
-        <Stack.Screen name="(profile)" options={{ headerShown: false }} />
-        <Stack.Screen name="(post)" options={{ headerShown: false }} />
-        <Stack.Screen name="(message)" options={{ headerShown: false }} />
-        <Stack.Screen name="(notification)" options={{ headerShown: false }} />
-        <Stack.Screen name="(book)" options={{ headerShown: false }} />
-        <Stack.Screen name="(payments)" options={{ headerShown: false }} />
-        <Stack.Screen name="books" options={{ headerShown: false }} />
-        <Stack.Screen name="(story)" options={{ headerShown: false }} />
-      </Stack>
+      <ErrorBoundary>
+        <Stack screenOptions={{ animation: "none" }}>
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+          <Stack.Screen name="(video)" options={{ headerShown: false }} />
+          <Stack.Screen name="(edit)" options={{ headerShown: false }} />
+          <Stack.Screen name="index" options={{ headerShown: false }} />
+          <Stack.Screen name="search" options={{ headerShown: false }} />
+          <Stack.Screen name="(store)" options={{ headerShown: false }} />
+          <Stack.Screen name="(studio)" options={{ headerShown: false }} />
+          <Stack.Screen name="(profile)" options={{ headerShown: false }} />
+          <Stack.Screen name="(post)" options={{ headerShown: false }} />
+          <Stack.Screen name="(message)" options={{ headerShown: false }} />
+          <Stack.Screen name="(notification)" options={{ headerShown: false }} />
+          <Stack.Screen name="(book)" options={{ headerShown: false }} />
+          <Stack.Screen name="(payments)" options={{ headerShown: false }} />
+          <Stack.Screen name="books" options={{ headerShown: false }} />
+          <Stack.Screen name="(story)" options={{ headerShown: false }} />
+        </Stack>
+      </ErrorBoundary>
       <ThemedStatusBar />
     </GestureHandlerRootView>
   );

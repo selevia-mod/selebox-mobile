@@ -1,5 +1,6 @@
 import { FontAwesome } from "@expo/vector-icons";
-import { FlatList, Text, View, useWindowDimensions } from "react-native";
+import { useCallback, useMemo } from "react";
+import { FlatList, Platform, Text, View, useWindowDimensions } from "react-native";
 import useAppTheme from "../hooks/useAppTheme";
 import { getSectionTitleHeight, getVideoCardLayout } from "../utils/videoCardLayout";
 import VideoCardNew from "./VideoCardNew";
@@ -8,13 +9,16 @@ import VideosSectionTitle from "./VideosSectionTitle";
 const VideosPerCategory = ({ category, videos = [], style }) => {
   const { theme } = useAppTheme();
   const { width } = useWindowDimensions();
-  const cardWidth = width * 0.62;
-  const { imageHeight, cardHeight } = getVideoCardLayout({
-    cardWidth,
-    aspectRatio: 0.64,
-    avatarSize: 30,
-    fontSize: 13,
-  });
+  const { cardWidth, imageHeight, cardHeight } = useMemo(() => {
+    const cw = width * 0.62;
+    const layout = getVideoCardLayout({
+      cardWidth: cw,
+      aspectRatio: 0.64,
+      avatarSize: 30,
+      fontSize: 13,
+    });
+    return { cardWidth: cw, imageHeight: layout.imageHeight, cardHeight: layout.cardHeight };
+  }, [width]);
   const maxRows =
     videos.reduce((max, col) => {
       const len = Array.isArray(col) ? col.length : 0;
@@ -22,22 +26,26 @@ const VideosPerCategory = ({ category, videos = [], style }) => {
     }, 0) || 1;
   const containerHeight = getSectionTitleHeight() + maxRows * cardHeight;
 
-  if (videos.length === 0) return;
-
-  const renderColumn = ({ item }) => (
-    <View>
-      {item?.map((video, idx) => (
-        <VideoCardNew
-          key={video?.$id || idx}
-          item={video}
-          customHeight={imageHeight}
-          customWidth={cardWidth}
-          customAvatarSize={30}
-          customFontSize={13}
-        />
-      ))}
-    </View>
+  const renderColumn = useCallback(
+    ({ item }) => (
+      <View>
+        {item?.map((video, idx) => (
+          <VideoCardNew
+            key={video?.$id || idx}
+            item={video}
+            customHeight={imageHeight}
+            customWidth={cardWidth}
+            customAvatarSize={30}
+            customFontSize={13}
+          />
+        ))}
+      </View>
+    ),
+    [cardWidth, imageHeight],
   );
+  const keyExtractor = useCallback((_, index) => `column-${index}`, []);
+
+  if (videos.length === 0) return null;
 
   return (
     <View style={{ minHeight: containerHeight, ...style }} className={videos.length === 0 ? "items-center justify-center" : ""}>
@@ -45,9 +53,13 @@ const VideosPerCategory = ({ category, videos = [], style }) => {
       <FlatList
         horizontal
         showsHorizontalScrollIndicator={false}
-        keyExtractor={(_, index) => `column-${index}`}
+        keyExtractor={keyExtractor}
         data={videos}
         renderItem={renderColumn}
+        initialNumToRender={3}
+        maxToRenderPerBatch={3}
+        windowSize={3}
+        removeClippedSubviews={Platform.OS === "android"}
         ListEmptyComponent={
           <View className="flex-1 items-center justify-center">
             <FontAwesome name="film" size={48} color={theme.textSubtle} />

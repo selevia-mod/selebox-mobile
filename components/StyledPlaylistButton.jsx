@@ -1,148 +1,141 @@
-import { Entypo } from "@expo/vector-icons";
+// 3-dot action menu on a video card.
+//
+// Re-designed to match the post-actions sheet (home.jsx Post actions modal):
+// a centered react-native-modal sheet titled "Video actions" with stacked
+// rounded-rectangle action rows that each have an icon, a primary label, and
+// a small subtitle explaining what it does. Cancel sits at the bottom.
+//
+// Items, in order:
+//   1. Save / Remove (Save for later) — toggles single-playlist membership via
+//      the existing addToPlaylist + isVideoInPlaylist API.
+//   2. Not interested (See fewer like this) — recommended new action that
+//      mirrors the post sheet's "Hide post" semantic. Currently surfaces a
+//      lightweight confirmation; the future feed-quality signal can hook into
+//      `onNotInterested` when wiring is added.
+//   3. Report video (Tell us what's wrong) — opens the existing ReportModal.
+
+import { Entypo, MaterialIcons } from "@expo/vector-icons";
 import axios from "axios";
 import { useFocusEffect } from "expo-router";
-import { useCallback, useRef, useState } from "react";
-import { Alert, Animated, Modal, Pressable, Text, TouchableOpacity, View } from "react-native";
-import LoaderKit from "react-native-loader-kit";
+import { useCallback, useState } from "react";
+import { ActivityIndicator, Alert, Text, TouchableOpacity, View } from "react-native";
+import Modal from "react-native-modal";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { addToPlaylist, isVideoInPlaylist } from "../lib/appwrite";
 import secrets from "../private/secrets";
 import ReportModal from "./ReportModal";
 
-function StyledPlaylistButton({ videoId, refetchFunction = async () => {}, ...props }) {
+function StyledPlaylistButton({
+  videoId,
+  refetchFunction = async () => {},
+  onNotInterested,
+  onRequestRemove,
+  // When the caller already KNOWS whether the video is in the playlist (e.g.
+  // VideosPlaylist tab — every row is by definition in the playlist), pass
+  // this prop so we can short-circuit the async isVideoInPlaylist check.
+  // Without this, the menu's label can race the user's tap and show
+  // "Add to playlist" even though the video is already saved.
+  inPlaylist: inPlaylistProp,
+  ...props
+}) {
   const { theme } = useAppTheme();
   const { user, globalSettings } = useGlobalContext();
-  const [loading, setLoading] = useState(false);
-  const [loadingType, setLoadingType] = useState(null); // 'checking', 'adding', 'removing', or null
+  const [sheetVisible, setSheetVisible] = useState(false);
+  const [actionLoading, setActionLoading] = useState(null); // 'checking' | 'toggling' | null
   const [reportLoading, setReportLoading] = useState(false);
   const [reportDetail, setReportDetail] = useState("");
-  const [isInPlaylist, setIsInPlaylist] = useState(false);
-  const [showDropdown, setShowDropdown] = useState(false);
+  const [isInPlaylist, setIsInPlaylist] = useState(Boolean(inPlaylistProp));
   const [showReportModal, setShowReportModal] = useState(false);
-  const [buttonLayout, setButtonLayout] = useState({ x: 0, y: 0, width: 0, height: 0 });
-  const buttonRef = useRef(null);
-  const dropdownOpacity = useRef(new Animated.Value(0)).current;
-  const dropdownScale = useRef(new Animated.Value(0.95)).current;
+
+  // Keep state in sync if the caller flips the prop after mount.
+  if (typeof inPlaylistProp === "boolean" && inPlaylistProp !== isInPlaylist) {
+    // Side-effect during render is intentional and small — same pattern React
+    // recommends for "derived state from props" without an effect round-trip.
+    setIsInPlaylist(inPlaylistProp);
+  }
 
   useFocusEffect(
     useCallback(() => {
-      let isActive = true;
+      // Skip the network check entirely if the caller passed a known state.
+      if (typeof inPlaylistProp === "boolean") return;
 
+      let isActive = true;
       const checkVideoInPlaylist = async () => {
-        setLoading(true);
-        setLoadingType("checking");
+        if (!user?.$id || !videoId) return;
+        setActionLoading("checking");
         try {
           const result = await isVideoInPlaylist(user.$id, videoId);
-          if (isActive) {
-            setIsInPlaylist(result);
-          }
+          if (isActive) setIsInPlaylist(result);
         } catch (error) {
-          Alert.alert("Error", "Failed to check playlist status. Please try again.");
+          // swallow — not actionable in the sheet UI; user can still try the action
+          console.log("StyledPlaylistButton check error:", error?.message || error);
         } finally {
-          if (isActive) {
-            setLoading(false);
-            setLoadingType(null);
-          }
+          if (isActive) setActionLoading(null);
         }
       };
-
       checkVideoInPlaylist();
-
       return () => {
         isActive = false;
       };
-    }, [user, videoId]),
+    }, [inPlaylistProp, user, videoId]),
   );
 
-  const toggleDropdown = () => {
-    if (showDropdown) {
-      Animated.parallel([
-        Animated.timing(dropdownOpacity, {
-          toValue: 0,
-          duration: 150,
-          useNativeDriver: true,
-        }),
-        Animated.timing(dropdownScale, {
-          toValue: 0.95,
-          duration: 150,
-          useNativeDriver: true,
-        }),
-      ]).start(() => setShowDropdown(false));
-    } else {
-      buttonRef.current?.measureInWindow((x, y, width, height) => {
-        setButtonLayout({ x, y, width, height });
-      });
-      setShowDropdown(true);
-      Animated.parallel([
-        Animated.timing(dropdownOpacity, {
-          toValue: 1,
-          duration: 150,
-          useNativeDriver: true,
-        }),
-        Animated.timing(dropdownScale, {
-          toValue: 1,
-          duration: 150,
-          useNativeDriver: true,
-        }),
-      ]).start();
+  const closeSheet = () => setSheetVisible(false);
+  const openSheet = () => setSheetVisible(true);
+
+  const handleTogglePlaylist = async () => {
+    if (actionLoading) return;
+    closeSheet();
+
+    // If the parent owns the remove flow (optimistic remove + undo snackbar
+    // pattern in VideosPlaylist), delegate. Skip the network call here so
+    // Undo can short-circuit before any DB mutation lands.
+    if (isInPlaylist && typeof onRequestRemove === "function") {
+      onRequestRemove(videoId);
+      return;
     }
-  };
 
-  const handleAddToPlaylist = async () => {
-    if (loading) return;
-
-    toggleDropdown();
-    setLoading(true);
-    setLoadingType(isInPlaylist ? "removing" : "adding");
+    setActionLoading("toggling");
     try {
       await addToPlaylist(videoId, user.$id);
       const updatedStatus = await isVideoInPlaylist(user.$id, videoId);
       setIsInPlaylist(updatedStatus);
       if (refetchFunction) await refetchFunction();
     } catch (error) {
-      Alert.alert("Playlist Error", "Failed to add video to playlist. Please try again later.");
+      Alert.alert("Playlist Error", "Failed to update your playlist. Please try again later.");
     } finally {
-      setLoading(false);
-      setLoadingType(null);
+      setActionLoading(null);
     }
   };
 
-  const handleOpenReport = () => {
-    // Close dropdown with animation first
-    Animated.parallel([
-      Animated.timing(dropdownOpacity, {
-        toValue: 0,
-        duration: 150,
-        useNativeDriver: true,
-      }),
-      Animated.timing(dropdownScale, {
-        toValue: 0.95,
-        duration: 150,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      setShowDropdown(false);
-      // Open report modal after dropdown closes
-      setTimeout(() => {
-        setShowReportModal(true);
-      }, 50);
-    });
+  const handleNotInterested = () => {
+    closeSheet();
+    // Hook for the parent to remove this video from the local feed / signal the
+    // recommendation backend. Falls back to a confirmation toast so taps don't
+    // feel inert before the wiring lands.
+    if (typeof onNotInterested === "function") {
+      onNotInterested(videoId);
+      return;
+    }
+    setTimeout(() => {
+      Alert.alert("Got it", "We'll show fewer videos like this.");
+    }, 200);
   };
 
-  const handleCloseReport = () => {
-    setShowReportModal(false);
+  const handleOpenReport = () => {
+    closeSheet();
+    setTimeout(() => setShowReportModal(true), 200);
   };
+
+  const handleCloseReport = () => setShowReportModal(false);
 
   const handleReport = async (reportDetails) => {
     Alert.alert(
-      `Report video`,
-      `Are you sure you want to report this video? Confirming will submit your report for review by our team.`,
+      "Report video",
+      "Are you sure you want to report this video? Confirming will submit your report for review by our team.",
       [
-        {
-          text: "No",
-          style: "cancel",
-        },
+        { text: "No", style: "cancel" },
         {
           text: "Yes",
           onPress: async () => {
@@ -186,75 +179,77 @@ function StyledPlaylistButton({ videoId, refetchFunction = async () => {}, ...pr
 
   return (
     <>
-      <TouchableOpacity ref={buttonRef} className="ml-2" onPress={toggleDropdown}>
+      <TouchableOpacity className="ml-2" onPress={openSheet} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} {...props}>
         <Entypo name="dots-three-horizontal" size={18} color={theme.iconMuted} />
       </TouchableOpacity>
 
-      <Modal visible={showDropdown} transparent animationType="none" onRequestClose={toggleDropdown} statusBarTranslucent>
-        <Pressable style={{ flex: 1, backgroundColor: theme.backdrop }} onPress={toggleDropdown} activeOpacity={1}>
-          <Animated.View
-            onStartShouldSetResponder={() => true}
-            style={{
-              position: "absolute",
-              top: buttonLayout.y + buttonLayout.height + 8,
-              right: 8,
-              paddingVertical: 8,
-              paddingHorizontal: 8,
-              borderRadius: 12,
-              backgroundColor: theme.surfaceElevated,
-              borderWidth: 1,
-              borderColor: theme.border,
-              shadowColor: theme.overlayStrong,
-              shadowOffset: { width: 0, height: 4 },
-              shadowOpacity: 0.3,
-              shadowRadius: 8,
-              elevation: 10,
-              opacity: dropdownOpacity,
-              transform: [{ scale: dropdownScale }],
-            }}
+      <Modal isVisible={sheetVisible} onBackdropPress={closeSheet} onBackButtonPress={closeSheet} backdropOpacity={0.6} useNativeDriver>
+        <View className="rounded-2xl px-5 py-5" style={{ backgroundColor: theme.surfaceElevated }}>
+          <Text className="text-lg font-semibold" style={{ color: theme.text }}>
+            Video actions
+          </Text>
+
+          <TouchableOpacity
+            className="mt-4 rounded-xl px-4 py-3"
+            style={{ backgroundColor: theme.surfaceMuted }}
+            onPress={handleTogglePlaylist}
+            disabled={actionLoading === "toggling"}
           >
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={handleAddToPlaylist}
-              disabled={loading}
-              accessibilityLabel={isInPlaylist ? "Remove From Playlist" : "Add To Playlist"}
-              className="mb-2 rounded-lg px-3 py-2.5"
-              style={{ backgroundColor: theme.surfaceMuted }}
-            >
-              {loading ? (
-                <View className="flex-row items-center space-x-2">
-                  <LoaderKit style={{ width: 16, height: 16 }} name={"BallScaleMultiple"} color={theme.primary} />
-                  <Text className="text-sm font-medium" style={{ color: theme.textMuted }}>
-                    {loadingType === "checking" ? "Checking..." : loadingType === "adding" ? "Adding..." : "Removing..."}
+            <View className="flex flex-row items-center justify-between">
+              <View className="flex flex-row items-center">
+                <MaterialIcons
+                  name={isInPlaylist ? "playlist-add-check" : "playlist-add"}
+                  size={22}
+                  color={theme.icon}
+                  style={{ marginRight: 12 }}
+                />
+                <View>
+                  <Text className="text-base font-semibold" style={{ color: theme.text }}>
+                    {isInPlaylist ? "Remove from playlist" : "Add to playlist"}
+                  </Text>
+                  <Text className="mt-1 text-xs" style={{ color: theme.textSoft }}>
+                    {isInPlaylist ? "Take it out of your saved videos" : "Save it for later"}
                   </Text>
                 </View>
-              ) : (
-                <Text className="text-sm font-medium" style={{ color: theme.text }}>
-                  {isInPlaylist ? "Remove from playlist" : "Add to playlist"}
+              </View>
+              {actionLoading === "toggling" ? <ActivityIndicator size="small" color={theme.primary} /> : null}
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity className="mt-2 rounded-xl px-4 py-3" style={{ backgroundColor: theme.surfaceMuted }} onPress={handleNotInterested}>
+            <View className="flex flex-row items-center">
+              <MaterialIcons name="visibility-off" size={22} color={theme.icon} style={{ marginRight: 12 }} />
+              <View>
+                <Text className="text-base font-semibold" style={{ color: theme.text }}>
+                  Not interested
                 </Text>
-              )}
-            </TouchableOpacity>
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={handleOpenReport}
-              className="rounded-lg px-3 py-2.5"
-              style={{ backgroundColor: theme.dangerSoft }}
-            >
-              {reportLoading ? (
-                <View className="flex-row items-center space-x-2">
-                  <Text className="text-center text-sm font-medium" style={{ color: theme.danger }}>
-                    Report
-                  </Text>
-                  <LoaderKit style={{ width: 16, height: 16 }} name={"BallScaleMultiple"} color={theme.danger} />
-                </View>
-              ) : (
-                <Text className="text-center text-sm font-medium" style={{ color: theme.danger }}>
-                  Report
+                <Text className="mt-1 text-xs" style={{ color: theme.textSoft }}>
+                  See fewer videos like this
                 </Text>
-              )}
-            </TouchableOpacity>
-          </Animated.View>
-        </Pressable>
+              </View>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity className="mt-2 rounded-xl px-4 py-3" style={{ backgroundColor: theme.surfaceMuted }} onPress={handleOpenReport}>
+            <View className="flex flex-row items-center">
+              <MaterialIcons name="flag" size={22} color={theme.icon} style={{ marginRight: 12 }} />
+              <View>
+                <Text className="text-base font-semibold" style={{ color: theme.text }}>
+                  Report video
+                </Text>
+                <Text className="mt-1 text-xs" style={{ color: theme.textSoft }}>
+                  Tell us what’s wrong
+                </Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity className="mt-3 items-center" onPress={closeSheet}>
+            <Text className="text-sm" style={{ color: theme.textMuted }}>
+              Cancel
+            </Text>
+          </TouchableOpacity>
+        </View>
       </Modal>
 
       <ReportModal

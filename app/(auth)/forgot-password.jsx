@@ -13,7 +13,7 @@ import {
 } from "../../components";
 import useAppTheme from "../../hooks/useAppTheme";
 import { createRecoveryEmail } from "../../lib/appwrite";
-import { useModalMessage } from "../../lib/useModalMessage";
+import { useModalMessage } from "../../hooks/useModalMessage";
 
 const ForgotPassword = () => {
   const { theme } = useAppTheme();

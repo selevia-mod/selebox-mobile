@@ -196,7 +196,7 @@ const MessageAddUserModal = ({ existingUsers, isVisible, onClose, handleAddUsers
             >
               <View className="flex-row items-center">
                 <FastImage
-                  source={{ uri: item.avatar, priority: FastImage.priority.high }}
+                  source={{ uri: item.avatar, priority: FastImage.priority.normal }}
                   className="h-12 w-12 rounded-xl"
                   style={{ backgroundColor: theme.surfaceMuted }}
                 />
@@ -238,7 +238,7 @@ const MessageAddUserModal = ({ existingUsers, isVisible, onClose, handleAddUsers
                     >
                       <View className="flex-row items-center">
                         <FastImage
-                          source={{ uri: item?.followingId?.avatar, priority: FastImage.priority.high }}
+                          source={{ uri: item?.followingId?.avatar, priority: FastImage.priority.normal }}
                           className="h-12 w-12 rounded-xl"
                           style={{ backgroundColor: theme.surfaceMuted }}
                         />

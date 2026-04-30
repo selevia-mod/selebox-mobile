@@ -5,7 +5,7 @@ import { CustomAlertModal, CustomPicker, PaymentBreakdownEarnings, WithdrawModal
 import AnimatedSkeleton from "../../components/AnimatedSkeleton";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
-import { useEarnings } from "../../lib/useEarnings";
+import { useEarnings } from "../../hooks/useEarnings";
 
 const Earnings = () => {
   const { user, globalSettings } = useGlobalContext();

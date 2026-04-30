@@ -1,19 +1,22 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { memo, useCallback } from "react";
-import { Dimensions, FlatList, Text, View } from "react-native";
+import { FlatList, Text, View, useWindowDimensions } from "react-native";
 import { useSelector } from "react-redux";
 import useAppTheme from "../hooks/useAppTheme";
 import BookCard from "./BookCard";
 import BooksSectionTitle from "./BooksSectionTitle";
 
+const selectContinueReading = (state) => state.books.continueReading;
+
 const BooksContinueReading = () => {
   const { theme } = useAppTheme();
-  const { continueReading } = useSelector((state) => state.books);
-  const { width } = Dimensions.get("window");
+  const continueReading = useSelector(selectContinueReading);
+  const { width } = useWindowDimensions();
 
   const renderItem = useCallback(({ item }) => {
-    return <BookCard key={item.$id} item={item.book} progress={item} />;
+    return <BookCard item={item.book} progress={item} />;
   }, []);
+  const keyExtractor = useCallback((item, index) => item?.$id || `continue-${index}`, []);
 
   return (
     <View className="space-y-2">
@@ -22,7 +25,7 @@ const BooksContinueReading = () => {
         removeClippedSubviews={false}
         horizontal
         showsHorizontalScrollIndicator={false}
-        keyExtractor={(item, index) => item?.$id || `${item.type}-${index}`}
+        keyExtractor={keyExtractor}
         data={continueReading}
         renderItem={renderItem}
         initialNumToRender={6}

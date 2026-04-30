@@ -4,8 +4,10 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { InteractionManager, Text, TouchableOpacity, View } from "react-native";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
+import useCommentReactionState from "../hooks/useCommentReactionState";
 import { BookChapterCommentsService } from "../lib/book-chapter-comments";
-import TimeAgo from "../lib/time-ago";
+import TimeAgo from "../lib/utils/time-ago";
+import ReactionPicker from "./ReactionPicker";
 import UserAvatar from "./UserAvatar";
 
 const INITIAL_VISIBLE_REPLIES = 3;
@@ -173,6 +175,34 @@ const BookChapterCommentItem = ({
     syncLikeMutation();
   }, [applyOptimisticLikeState, item?.$id, syncLikeMutation, user?.$id]);
 
+  // Reaction overlay over the existing binary like wiring.
+  const reactions = useCommentReactionState({ initialLiked: liked });
+
+  const handleReactionTap = useCallback(() => {
+    if (!user?.$id || !item?.$id) return;
+    const wasReacted = !!reactions.userReactionKey;
+    reactions.toggleTopLevelDefault();
+    const targetLiked = !wasReacted;
+    if (targetLiked !== desiredLikedRef.current) {
+      desiredLikedRef.current = targetLiked;
+      applyOptimisticLikeState(targetLiked);
+      syncLikeMutation();
+    }
+  }, [applyOptimisticLikeState, item?.$id, reactions, syncLikeMutation, user?.$id]);
+
+  const handlePickReactionWithSync = useCallback(
+    (key) => {
+      const wasTopLevel = reactions.isPickerForTopLevel;
+      reactions.handlePickReaction(key);
+      if (wasTopLevel && !desiredLikedRef.current) {
+        desiredLikedRef.current = true;
+        applyOptimisticLikeState(true);
+        syncLikeMutation();
+      }
+    },
+    [applyOptimisticLikeState, reactions, syncLikeMutation],
+  );
+
   const handleToggleReplies = () => {
     if (!showReplies) {
       setShowReplies(true);
@@ -222,10 +252,32 @@ const BookChapterCommentItem = ({
               })}
             </View>
 
-            <View className="mt-1 flex-row items-center space-x-3 px-1">
+            <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>
               <Text className="font-sans text-xs" style={{ color: theme.textMuted }}>
                 {TimeAgo(item?.$createdAt)}
               </Text>
+              <TouchableOpacity
+                ref={reactions.likeButtonRef}
+                onPress={handleReactionTap}
+                onLongPress={reactions.openTopLevelPicker}
+                delayLongPress={220}
+                disabled={!user?.$id}
+                hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+              >
+                {reactions.activeReaction ? (
+                  <Text style={{ fontSize: 13, lineHeight: 16 }}>{reactions.activeReaction.emoji}</Text>
+                ) : (
+                  <Text className="font-sans text-xs font-semibold" style={{ color: theme.textSoft }}>
+                    React
+                  </Text>
+                )}
+                {likeCount > 0 ? (
+                  <Text className="font-sans text-xs font-semibold" style={{ color: reactions.activeReaction ? theme.like : theme.textSoft }}>
+                    {likeCount}
+                  </Text>
+                ) : null}
+              </TouchableOpacity>
               <TouchableOpacity onPress={() => onReplyPress?.(item)}>
                 <Text className="font-sans text-xs font-semibold" style={{ color: theme.primary }}>
                   Reply
@@ -283,10 +335,39 @@ const BookChapterCommentItem = ({
                                 mentionColor: theme.accentBlue,
                               })}
                             </View>
-                            <View className="mt-1 px-1">
+                            <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>
                               <Text className="font-sans text-[11px]" style={{ color: theme.textMuted }}>
                                 {TimeAgo(reply?.$createdAt)}
                               </Text>
+                              <TouchableOpacity
+                                ref={(el) => reactions.registerReplyButton(reply.$id, el)}
+                                onPress={() => reactions.toggleReplyDefault(reply.$id)}
+                                onLongPress={() => reactions.openReplyPicker(reply.$id)}
+                                delayLongPress={220}
+                                disabled={!user?.$id}
+                                hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                                style={{ flexDirection: "row", alignItems: "center" }}
+                              >
+                                {reactions.getReplyReaction(reply.$id) ? (
+                                  <Text style={{ fontSize: 13, lineHeight: 16 }}>
+                                    {reactions.getReplyReaction(reply.$id).emoji}
+                                  </Text>
+                                ) : (
+                                  <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.textSoft }}>
+                                    React
+                                  </Text>
+                                )}
+                              </TouchableOpacity>
+                              {user?.$id ? (
+                                <TouchableOpacity
+                                  onPress={() => onReplyPress?.(item, reply?.commentOwner)}
+                                  hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                                >
+                                  <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.primary }}>
+                                    Reply
+                                  </Text>
+                                </TouchableOpacity>
+                              ) : null}
                             </View>
                           </View>
                         </View>
@@ -313,17 +394,16 @@ const BookChapterCommentItem = ({
             )}
           </View>
 
-          <TouchableOpacity onPress={handleLikeComment} disabled={!user?.$id} className="ml-3 items-center pt-2">
-            <MaterialCommunityIcons name={liked ? "heart" : "heart-outline"} size={16} color={liked ? theme.like : theme.iconMuted} />
-            <Text
-              className="mt-1 text-center font-sans text-[11px] font-semibold"
-              style={{ color: theme.textSoft, minWidth: 16, opacity: likeCount > 0 ? 1 : 0 }}
-            >
-              {likeCount > 0 ? likeCount : 0}
-            </Text>
-          </TouchableOpacity>
         </View>
       </View>
+
+      <ReactionPicker
+        visible={reactions.pickerVisible}
+        anchor={reactions.pickerAnchor}
+        activeKey={reactions.pickerActiveKey}
+        onSelect={handlePickReactionWithSync}
+        onClose={reactions.closePicker}
+      />
     </View>
   );
 };

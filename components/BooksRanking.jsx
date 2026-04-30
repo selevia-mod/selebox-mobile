@@ -251,10 +251,14 @@ const BooksRanking = ({ isActive = false }) => {
           setHasMore(false);
         }
 
+        // Forward forceRefresh so pull-to-refresh invalidates the in-memory
+        // rankings pool cache (BooksRankingService now holds the full pool
+        // for 12h and slices client-side per tag).
         const { items, hasMore: more } = await BooksRankingService.getCurrentRankingsByTags({
           tags: selectedFilterTags,
           limit: LIMIT,
           offset: 0,
+          forceRefresh,
         });
 
         if (requestToken !== requestTokenRef.current) return;

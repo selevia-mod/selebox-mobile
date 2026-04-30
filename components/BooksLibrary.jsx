@@ -1,7 +1,7 @@
-import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { useFocusEffect } from "expo-router";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, FlatList, RefreshControl, Text, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, RefreshControl, Text, TouchableOpacity, View } from "react-native";
 import { useDispatch, useSelector } from "react-redux";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
@@ -21,7 +21,7 @@ const BooksLibrary = ({ isActive = false }) => {
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   useResetOnBlur(setRefreshing, setIsFetchingMore);
   const [localCursor, setLocalCursor] = useState();
-  const { library } = useSelector((state) => state.books);
+  const library = useSelector((state) => state.books.library);
   const lastScrollY = useRef(0);
   const navHiddenRef = useRef(false);
   const listRef = useRef(null);
@@ -178,6 +178,60 @@ const BooksLibrary = ({ isActive = false }) => {
     lastScrollY.current = y;
   }, []);
 
+  // Library count + section header pinned at the top of the list. Mirrors
+  // the language used by the Recommended-videos block under the player:
+  // small violet chip + uppercase letter-spaced label, count badge on the
+  // right. Reads as part of the same accent system as the rest of the app.
+  const libraryCount = userLibrary?.length || 0;
+  const renderHeader = () => (
+    <View className="mb-3 flex-row items-center justify-between px-4 pt-2">
+      <View className="flex-row items-center">
+        <View
+          style={{
+            width: 26,
+            height: 26,
+            borderRadius: 8,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: theme.primarySoft,
+            borderWidth: 1,
+            borderColor: theme.primary,
+            marginRight: 10,
+            shadowColor: theme.primary,
+            shadowOffset: { width: 0, height: 3 },
+            shadowOpacity: 0.3,
+            shadowRadius: 6,
+            elevation: 2,
+          }}
+        >
+          <Ionicons name="bookmark" size={13} color={theme.primary} />
+        </View>
+        <Text
+          className="font-psemibold"
+          style={{ color: theme.text, fontSize: 13, letterSpacing: 1.6, textTransform: "uppercase" }}
+        >
+          Your Library
+        </Text>
+      </View>
+      {libraryCount > 0 ? (
+        <View
+          className="rounded-full"
+          style={{
+            paddingHorizontal: 8,
+            paddingVertical: 2,
+            backgroundColor: theme.surfaceMuted,
+            borderWidth: 1,
+            borderColor: theme.border,
+          }}
+        >
+          <Text className="text-[10px] font-bold" style={{ color: theme.textMuted, letterSpacing: 0.4 }}>
+            {libraryCount} {libraryCount === 1 ? "BOOK" : "BOOKS"}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+
   return (
     <View className="flex-1">
       <FlatList
@@ -186,13 +240,14 @@ const BooksLibrary = ({ isActive = false }) => {
         refreshing={refreshing}
         keyExtractor={(item, index) => item?.$id || `${item.type}-${index}`}
         renderItem={renderItem}
-        contentContainerStyle={{ paddingBottom: 50 }}
+        contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 50 }}
         showsVerticalScrollIndicator={false}
         ref={listRef}
         onScroll={handleScroll}
         scrollEventThrottle={16}
         onRefresh={handleRefresh}
         onEndReached={fetchMoreUserLibrary}
+        ListHeaderComponent={renderHeader}
         ListFooterComponent={
           isFetchingMore ? (
             <View className="items-center py-4">
@@ -201,15 +256,54 @@ const BooksLibrary = ({ isActive = false }) => {
           ) : null
         }
         ListEmptyComponent={
-          <View className="flex-1 items-center justify-center px-4 py-12">
-            <MaterialCommunityIcons name="book-open-page-variant" size={48} color={theme.textSubtle} />
-            <Text className="mt-4 text-lg font-semibold" style={{ color: theme.text }}>
-              No Books Yet
+          /* Premium empty state — matches the violet-accent language used
+             on the From-Creators-You-Follow card and the choice modal. The
+             previous copy ("You haven't published any books yet") was wrong:
+             the Library tab holds books the user SAVED, not authored.
+             "Find books to read" CTA routes back to Discover so the empty
+             state is actionable instead of a dead end. */
+          <View className="flex-1 items-center px-6 py-12">
+            <View
+              style={{
+                height: 64,
+                width: 64,
+                borderRadius: 999,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: theme.primarySoft,
+                borderWidth: 1,
+                borderColor: theme.primary,
+                marginBottom: 16,
+              }}
+            >
+              <MaterialCommunityIcons name="bookmark-multiple-outline" size={28} color={theme.primary} />
+            </View>
+            <Text className="text-base font-bold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+              Your library is empty
             </Text>
-            <Text className="mt-2 text-center text-sm" style={{ color: theme.textSoft }}>
-              You haven’t published any books yet.{"\n"}
-              Start writing and share your first story!
+            <Text className="mt-1.5 max-w-[260px] text-center text-sm" style={{ color: theme.textSoft, lineHeight: 18 }}>
+              Save books to your library so you can pick them up anywhere — even offline.
             </Text>
+            <TouchableOpacity
+              onPress={() => router.push("/(tabs)/books")}
+              activeOpacity={0.85}
+              className="mt-5 flex-row items-center rounded-full"
+              style={{
+                paddingHorizontal: 16,
+                paddingVertical: 10,
+                backgroundColor: theme.primary,
+                shadowColor: theme.primary,
+                shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: 0.3,
+                shadowRadius: 10,
+                elevation: 4,
+              }}
+            >
+              <Ionicons name="search" size={14} color={theme.primaryContrast} style={{ marginRight: 6 }} />
+              <Text className="text-sm font-bold" style={{ color: theme.primaryContrast, letterSpacing: 0.2 }}>
+                Find books to read
+              </Text>
+            </TouchableOpacity>
           </View>
         }
         refreshControl={

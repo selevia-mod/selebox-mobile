@@ -105,7 +105,7 @@ const PostBook = ({ item, forceUpdate, onOpenSafetySheet }) => {
         <View className="mr-2">
           <TouchableOpacity onPress={handleProfilePress} activeOpacity={0.7}>
             <FastImage
-              source={{ uri: book.uploader.avatar, priority: FastImage.priority.high }}
+              source={{ uri: book.uploader.avatar, priority: FastImage.priority.normal }}
               style={{ height: 35, width: 35, borderRadius: 5, backgroundColor: theme.surfaceStrong }}
               resizeMode={FastImage.resizeMode.cover}
               className="mt-1"

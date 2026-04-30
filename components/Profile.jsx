@@ -5,9 +5,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  Modal,
-  Platform,
-  SafeAreaView,
+  ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
@@ -21,28 +19,25 @@ import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { getCurrentUserWithoutStream, updateBio } from "../lib/appwrite";
 import { FollowService } from "../lib/follows";
-import FormatNumber from "../lib/format-number";
+import FormatNumber from "../lib/utils/format-number";
 import { NotificationService } from "../lib/notifications";
 import { StreamService } from "../lib/stream";
-import { useModalMessage } from "../lib/useModalMessage";
+import { useModalMessage } from "../hooks/useModalMessage";
 import AnimatedSkeleton from "./AnimatedSkeleton";
 import CustomAlertModal from "./CustomAlertModal";
+import ProfileActionsMenu from "./ProfileActionsMenu";
 import ProfileBooksTab from "./ProfileBooksTab";
 import ProfileClipsTab from "./ProfileClipsTab";
-import ProfileHomeTab from "./ProfileHomeTab";
-import ProfilePlaylistTab from "./ProfilePlaylistTab";
 import ProfilePostTab from "./ProfilePostTab";
 import ProfileVideosTab from "./ProfileVideosTab";
 import StyledDivider from "./StyledDivider";
 import UserRoleChips from "./UserRoleChips";
 
 const PROFILE_TABS = [
-  { title: "Home", icon: "home" },
+  { title: "Posts", icon: "article" },
   { title: "Books", icon: "menu-book" },
   { title: "Videos", icon: "play-circle-filled" },
-  { title: "Posts", icon: "article" },
   { title: "Clips", icon: "movie" },
-  { title: "Playlist", icon: "playlist-play" },
 ];
 
 const BIO_MAX_LINES = 5;
@@ -65,8 +60,6 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
   const { user: loggedInUser, setUser: setLoggedInUser, globalSettings } = useGlobalContext();
   const { theme } = useAppTheme();
   const [activeTab, setActiveTab] = useState(0);
-  const [modalTabIndex, setModalTabIndex] = useState(null);
-  const [isModalLoading, setIsModalLoading] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
   const [followers, setFollowers] = useState([]);
   const [following, setFollowing] = useState([]);
@@ -120,19 +113,21 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
     if (!user) return;
     if (!hasLoadedOnce.current) setIsProfileLoading(true);
     try {
-      if (!isLoggedInUser && user) {
-        const response = await FollowService.isFollowing({ followerId: loggedInUser?.$id, followingId: user?.$id });
-        setIsFollowing(response);
-      }
+      // Parallelized — previously these three calls were sequentially
+      // awaited (isFollowing → followersCount → followingCount), so the
+      // stats row took 3 round-trips before painting. The user reported
+      // the profile screen feeling laggy on open; the bulk of that wait
+      // was these chained awaits. Promise.all collapses it to one RTT.
+      const [isFollowingResult, followersCount, followingCount] = await Promise.all([
+        !isLoggedInUser ? FollowService.isFollowing({ followerId: loggedInUser?.$id, followingId: user?.$id }) : Promise.resolve(false),
+        FollowService.getFollowersCount({ userId: user?.$id }),
+        FollowService.getFollowingCount({ userId: user?.$id }),
+      ]);
 
-      if (user) {
-        const followersCount = await FollowService.getFollowersCount({ userId: user?.$id });
-        setFollowers(followersCount);
-        setPrevFollowerCount(followers);
-
-        const followingCount = await FollowService.getFollowingCount({ userId: user?.$id });
-        setFollowing(followingCount);
-      }
+      if (!isLoggedInUser) setIsFollowing(isFollowingResult);
+      setFollowers(followersCount);
+      setPrevFollowerCount(followers);
+      setFollowing(followingCount);
     } catch (err) {
       console.error("Error loading profile data:", err);
       showMessage("❌ Failed to load profile data.");
@@ -189,14 +184,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
   };
 
   const handleTabPress = (index) => {
-    if (index === 0) {
-      setActiveTab(0);
-      setModalTabIndex(null);
-      return;
-    }
     setActiveTab(index);
-    setIsModalLoading(true);
-    setModalTabIndex(index);
   };
 
   const startBioEdit = () => {
@@ -238,93 +226,29 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
     }
   };
 
-  const closeModal = useCallback(() => {
-    setModalTabIndex(null);
-    setActiveTab(0);
-    setIsModalLoading(false);
-  }, []);
+  // Renders the currently active tab's content directly below the shared header
+  // (banner/avatar/name/stats/buttons/bio/tab bar). Each tab component receives
+  // the shared header as `headerComponent` and mounts it inside its own
+  // FlashList ListHeaderComponent so everything scrolls together — web-style.
+  const renderActiveTabContent = (sharedHeader) => {
+    const tabKey = PROFILE_TABS[activeTab]?.title;
+    const commonProps = {
+      userId: user?.$id,
+      nestedScrollEnabled,
+      sectionTitle: null,
+      contentPaddingTop: 0,
+      headerComponent: sharedHeader,
+    };
 
-  // Prevent the modal from covering screens pushed from inside it.
-  useFocusEffect(
-    useCallback(() => {
-      return () => {
-        closeModal();
-      };
-    }, [closeModal]),
-  );
-
-  const renderModalSkeleton = () => (
-    <View className="flex-1 px-4 pb-4 pt-2">
-      <View className="space-y-3">
-        {[0, 1, 2, 3].map((item) => (
-          <View key={`modal-skeleton-${item}`} className="rounded-2xl p-4" style={{ backgroundColor: theme.card }}>
-            <AnimatedSkeleton className="h-4 w-2/3 rounded" style={{ backgroundColor: theme.skeletonBase }} />
-            <AnimatedSkeleton className="mt-3 h-3 w-5/6 rounded" style={{ backgroundColor: theme.skeletonBase }} />
-            <AnimatedSkeleton className="mt-2 h-3 w-1/2 rounded" style={{ backgroundColor: theme.skeletonBase }} />
-          </View>
-        ))}
-      </View>
-    </View>
-  );
-
-  const renderModalContent = () => {
-    switch (modalTabIndex) {
-      case 1:
-        return (
-          <ProfileBooksTab
-            userId={user?.$id}
-            nestedScrollEnabled={nestedScrollEnabled}
-            sectionTitle={null}
-            contentPaddingTop={12}
-            onLoadingChange={setIsModalLoading}
-            suppressEmptyState={isModalLoading}
-          />
-        );
-      case 2:
-        return (
-          <ProfileVideosTab
-            userId={user?.$id}
-            userVideos={videos}
-            nestedScrollEnabled={nestedScrollEnabled}
-            sectionTitle={null}
-            contentPaddingTop={12}
-            onLoadingChange={setIsModalLoading}
-            suppressEmptyState={isModalLoading}
-          />
-        );
-      case 3:
-        return (
-          <ProfilePostTab
-            userId={user?.$id}
-            nestedScrollEnabled={nestedScrollEnabled}
-            sectionTitle={null}
-            contentPaddingTop={12}
-            onLoadingChange={setIsModalLoading}
-            suppressEmptyState={isModalLoading}
-          />
-        );
-      case 4:
-        return (
-          <ProfileClipsTab
-            userId={user?.$id}
-            nestedScrollEnabled={nestedScrollEnabled}
-            sectionTitle={null}
-            contentPaddingTop={12}
-            onLoadingChange={setIsModalLoading}
-            suppressEmptyState={isModalLoading}
-          />
-        );
-      case 5:
-        return (
-          <ProfilePlaylistTab
-            userId={user?.$id}
-            nestedScrollEnabled={nestedScrollEnabled}
-            sectionTitle={null}
-            contentPaddingTop={12}
-            onLoadingChange={setIsModalLoading}
-            suppressEmptyState={isModalLoading}
-          />
-        );
+    switch (tabKey) {
+      case "Posts":
+        return <ProfilePostTab {...commonProps} />;
+      case "Books":
+        return <ProfileBooksTab {...commonProps} />;
+      case "Videos":
+        return <ProfileVideosTab {...commonProps} userVideos={videos} />;
+      case "Clips":
+        return <ProfileClipsTab {...commonProps} />;
       default:
         return null;
     }
@@ -383,6 +307,21 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
           <View className="absolute inset-0" style={{ backgroundColor: theme.mediaOverlay }} />
         </View>
 
+        {/* Kebab — overlays the top-right of the banner, in line with the
+            screen header so it reads as part of the navigation chrome rather
+            than something tacked on. The trigger is a glass-tinted disc
+            (semi-transparent black + white-rim border) so it stays legible
+            on any banner image — bright, dark, busy, monochrome. On own
+            profile only Share is shown inside the menu; on other users'
+            profiles the menu shows Share / Report / Snooze / Block. */}
+        <View className="absolute right-3 top-3">
+          <ProfileActionsMenu
+            targetUser={user}
+            isOwnProfile={isLoggedInUser}
+            onBlocked={() => router.back()}
+          />
+        </View>
+
         <View
           className="absolute -bottom-6 left-4 h-16 w-16 rounded-xl p-0.5"
           style={{ borderWidth: 2, borderColor: theme.background, backgroundColor: theme.surfaceMuted }}
@@ -408,78 +347,80 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
         </View>
       </View>
 
-      <View className="mt-3 flex-row justify-between space-x-2">
+      {/* Stats row — minimal editorial style, no card, no border, no dividers. Just three
+          centered text columns. Larger numbers (text-xl) carry the visual weight; muted
+          uppercase labels read as captions. The whitespace alone provides the structure. */}
+      <View className="mt-5 flex-row">
         {isProfileLoading ? (
           <>
-            <View className="flex-1 items-center rounded-xl px-3 py-2" style={{ backgroundColor: theme.card }}>
-              <AnimatedSkeleton className="mb-1 h-4 w-10 animate-pulse rounded" style={{ backgroundColor: theme.skeletonBase }} />
-              <AnimatedSkeleton className="h-3 w-14 animate-pulse rounded" style={{ backgroundColor: theme.skeletonBase }} />
-            </View>
-            <View className="flex-1 items-center rounded-xl px-3 py-2" style={{ backgroundColor: theme.card }}>
-              <AnimatedSkeleton className="mb-1 h-4 w-10 animate-pulse rounded" style={{ backgroundColor: theme.skeletonBase }} />
-              <AnimatedSkeleton className="h-3 w-14 animate-pulse rounded" style={{ backgroundColor: theme.skeletonBase }} />
-            </View>
-            <View className="flex-1 items-center rounded-xl px-3 py-2" style={{ backgroundColor: theme.card }}>
-              <AnimatedSkeleton className="mb-1 h-4 w-10 animate-pulse rounded" style={{ backgroundColor: theme.skeletonBase }} />
-              <AnimatedSkeleton className="h-3 w-14 animate-pulse rounded" style={{ backgroundColor: theme.skeletonBase }} />
-            </View>
+            {[0, 1, 2].map((idx) => (
+              <View key={`stat-skel-${idx}`} className="flex-1 items-center">
+                <AnimatedSkeleton className="mb-1.5 h-6 w-12 animate-pulse rounded" style={{ backgroundColor: theme.skeletonBase }} />
+                <AnimatedSkeleton className="h-3 w-16 animate-pulse rounded" style={{ backgroundColor: theme.skeletonBase }} />
+              </View>
+            ))}
           </>
         ) : (
           <>
-            <TouchableOpacity
-              onPress={() => navigateToConnections("following")}
-              className="flex-1 items-center rounded-xl px-3 py-2"
-              style={{ backgroundColor: theme.surfaceMuted }}
-            >
-              <Text className="text-base font-bold" style={{ color: theme.text }}>
+            <TouchableOpacity activeOpacity={0.7} onPress={() => navigateToConnections("following")} className="flex-1 items-center">
+              <Text className="text-xl font-bold" style={{ color: theme.text, letterSpacing: 0.2 }}>
                 {FormatNumber(following || 0)}
               </Text>
-              <Text className="text-[10px] font-semibold" style={{ color: theme.textSoft }}>
+              <Text className="mt-1 text-[10px] font-semibold uppercase" style={{ color: theme.textSoft, letterSpacing: 0.8 }}>
                 Following
               </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              onPress={() => navigateToConnections("followers")}
-              className="flex-1 items-center rounded-xl px-3 py-2"
-              style={{ backgroundColor: theme.surfaceMuted }}
-            >
+            <TouchableOpacity activeOpacity={0.7} onPress={() => navigateToConnections("followers")} className="flex-1 items-center">
               <Animated.View style={{ transform: [{ scale: followerCountAnim }] }}>
-                <Text className="text-base font-bold" style={{ color: theme.text }}>
+                <Text className="text-xl font-bold" style={{ color: theme.text, letterSpacing: 0.2 }}>
                   {FormatNumber(followers || 0)}
                 </Text>
               </Animated.View>
-              <Text className="text-[10px] font-semibold" style={{ color: theme.textSoft }}>
+              <Text className="mt-1 text-[10px] font-semibold uppercase" style={{ color: theme.textSoft, letterSpacing: 0.8 }}>
                 Followers
               </Text>
             </TouchableOpacity>
 
-            <View className="flex-1 items-center rounded-xl px-3 py-2" style={{ backgroundColor: theme.surfaceMuted }}>
-              <Text className="text-base font-bold" style={{ color: theme.text }}>
-                {videos?.length ?? 0}
+            <View className="flex-1 items-center">
+              <Text className="text-xl font-bold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+                0
               </Text>
-              <Text className="text-[10px] font-semibold" style={{ color: theme.textSoft }}>
-                Videos
+              <Text className="mt-1 text-[10px] font-semibold uppercase" style={{ color: theme.textSoft, letterSpacing: 0.8 }}>
+                Achievements
               </Text>
             </View>
           </>
         )}
       </View>
 
+      {/* Follow + Message — primary violet pill with subtle shadow lift, secondary card pill.
+          Same shadow language used by the Books/Videos active tab pill so the screen feels
+          continuous with the rest of the app. */}
       {!isLoggedInUser && (
-        <View className="mt-3 flex-row justify-between space-x-3">
+        <View className="mt-4 flex-row" style={{ gap: 10 }}>
           {isProfileLoading ? (
             <>
-              <AnimatedSkeleton className="h-[36px] flex-1 animate-pulse rounded-full" style={{ backgroundColor: theme.skeletonBase }} />
-              <AnimatedSkeleton className="h-[36px] flex-1 animate-pulse rounded-full" style={{ backgroundColor: theme.skeletonBase }} />
+              <AnimatedSkeleton className="h-[40px] flex-1 animate-pulse rounded-full" style={{ backgroundColor: theme.skeletonBase }} />
+              <AnimatedSkeleton className="h-[40px] flex-1 animate-pulse rounded-full" style={{ backgroundColor: theme.skeletonBase }} />
             </>
           ) : (
             <>
               <TouchableOpacity
                 onPress={handleFollowFunction}
                 disabled={isLoadingFollow}
+                activeOpacity={0.85}
                 className={`flex-1 flex-row items-center justify-center rounded-full px-4 py-2.5 ${isLoadingFollow ? "opacity-60" : ""}`}
-                style={{ backgroundColor: isFollowing ? theme.surfaceMuted : theme.primary }}
+                style={{
+                  backgroundColor: isFollowing ? theme.surfaceMuted : theme.primary,
+                  borderWidth: isFollowing ? 1 : 0,
+                  borderColor: isFollowing ? theme.border : "transparent",
+                  shadowColor: theme.primary,
+                  shadowOffset: { width: 0, height: 4 },
+                  shadowOpacity: isFollowing ? 0 : 0.25,
+                  shadowRadius: 8,
+                  elevation: isFollowing ? 0 : 3,
+                }}
               >
                 <MaterialIcons
                   name={isFollowing ? "person-remove" : "person-add"}
@@ -487,18 +428,22 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
                   color={isFollowing ? theme.icon : theme.primaryContrast}
                   style={{ marginRight: 6 }}
                 />
-                <Text className="font-semibold" style={{ color: isFollowing ? theme.text : theme.primaryContrast }}>
+                <Text
+                  className="text-sm font-bold"
+                  style={{ color: isFollowing ? theme.text : theme.primaryContrast, letterSpacing: 0.2 }}
+                >
                   {isLoadingFollow ? "Loading..." : isFollowing ? "Unfollow" : "Follow"}
                 </Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 onPress={handleMessage}
+                activeOpacity={0.85}
                 className="flex-1 flex-row items-center justify-center rounded-full px-4 py-2.5"
-                style={{ backgroundColor: theme.surfaceMuted }}
+                style={{ backgroundColor: theme.surfaceMuted, borderWidth: 1, borderColor: theme.border }}
               >
-                <MaterialIcons name="chat-bubble" size={15} color={theme.icon} style={{ marginRight: 6 }} />
-                <Text className="font-semibold" style={{ color: theme.text }}>
+                <MaterialIcons name="chat-bubble-outline" size={15} color={theme.icon} style={{ marginRight: 6 }} />
+                <Text className="text-sm font-bold" style={{ color: theme.text, letterSpacing: 0.2 }}>
                   Message
                 </Text>
               </TouchableOpacity>
@@ -507,30 +452,13 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
         </View>
       )}
 
-      <View className="mt-3 rounded-2xl p-3" style={{ backgroundColor: theme.card }}>
-        <View className="flex-row items-center justify-between">
-          <Text className="text-[11px] font-semibold" style={{ color: theme.textSoft }}>
-            Bio
-          </Text>
-          {isLoggedInUser && !isEditingBio ? (
-            <TouchableOpacity
-              onPress={startBioEdit}
-              activeOpacity={0.8}
-              className="flex-row items-center rounded-full px-2.5 py-1"
-              style={{ backgroundColor: theme.surfaceMuted }}
-            >
-              <MaterialIcons name="edit" size={12} color={theme.icon} />
-              <Text className="ml-1 text-[11px] font-semibold" style={{ color: theme.text }}>
-                {savedBio ? "Edit" : "Add"}
-              </Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-
+      {/* Bio block — quieter visual: no "Bio" label, just the text itself with an inline
+          edit pencil for own profile. Lighter card surface, padded for breathing room. */}
+      <View className="mt-4 rounded-2xl p-4" style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}>
         {isEditingBio ? (
           <>
             <View
-              className="mt-3 rounded-2xl px-3 py-2.5"
+              className="rounded-2xl px-3 py-2.5"
               style={{ borderWidth: 1, borderColor: theme.inputBorder, backgroundColor: theme.inputBackground }}
             >
               <TextInput
@@ -549,13 +477,13 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
             <Text className="mt-2 text-xs" style={{ color: theme.textSoft }}>
               {BIO_MAX_LINES} lines max • {bioDraft.length}/{bioMaxCharacters} characters
             </Text>
-            <View className="mt-3 flex-row justify-end space-x-2">
+            <View className="mt-3 flex-row justify-end" style={{ gap: 8 }}>
               <TouchableOpacity
                 onPress={cancelBioEdit}
                 disabled={isSavingBio}
-                activeOpacity={0.8}
+                activeOpacity={0.85}
                 className="rounded-full px-4 py-2"
-                style={{ backgroundColor: theme.surfaceMuted }}
+                style={{ backgroundColor: theme.surfaceMuted, borderWidth: 1, borderColor: theme.border }}
               >
                 <Text className="text-sm font-semibold" style={{ color: theme.text }}>
                   Cancel
@@ -564,14 +492,21 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
               <TouchableOpacity
                 onPress={saveBio}
                 disabled={!hasPendingBioChanges || isSavingBio}
-                activeOpacity={0.8}
+                activeOpacity={0.85}
                 className="min-w-[88px] flex-row items-center justify-center rounded-full px-4 py-2"
-                style={{ backgroundColor: !hasPendingBioChanges || isSavingBio ? theme.surfaceStrong : theme.primary }}
+                style={{
+                  backgroundColor: !hasPendingBioChanges || isSavingBio ? theme.surfaceStrong : theme.primary,
+                  shadowColor: theme.primary,
+                  shadowOffset: { width: 0, height: 4 },
+                  shadowOpacity: !hasPendingBioChanges || isSavingBio ? 0 : 0.25,
+                  shadowRadius: 8,
+                  elevation: !hasPendingBioChanges || isSavingBio ? 0 : 3,
+                }}
               >
                 {isSavingBio ? (
                   <ActivityIndicator size="small" color={theme.primaryContrast} />
                 ) : (
-                  <Text className="text-sm font-semibold" style={{ color: theme.primaryContrast }}>
+                  <Text className="text-sm font-bold" style={{ color: theme.primaryContrast, letterSpacing: 0.2 }}>
                     Save
                   </Text>
                 )}
@@ -579,42 +514,86 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
             </View>
           </>
         ) : (
-          <Text className="mt-2 text-sm leading-5" style={{ color: savedBio ? theme.textMuted : theme.textSubtle }}>
-            {bioText}
-          </Text>
+          <View className="flex-row items-start justify-between" style={{ gap: 12 }}>
+            <Text
+              className="flex-1 text-sm leading-5"
+              style={{ color: savedBio ? theme.textMuted : theme.textSubtle }}
+            >
+              {bioText}
+            </Text>
+            {isLoggedInUser ? (
+              <TouchableOpacity
+                onPress={startBioEdit}
+                activeOpacity={0.85}
+                className="h-7 w-7 items-center justify-center rounded-full"
+                style={{ backgroundColor: theme.surfaceMuted, borderWidth: 1, borderColor: theme.border }}
+                accessibilityLabel={savedBio ? "Edit bio" : "Add bio"}
+              >
+                <MaterialIcons name="edit" size={13} color={theme.iconMuted} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
         )}
       </View>
     </View>
   );
 
+  // Premium violet pill tabs — matches the Books / Videos / Home feed tab language. The
+  // 3×2 grid of icon-tiles is replaced with a single horizontal scroll row of pills so
+  // Profile shares the same nav rhythm as the rest of the app. Active pill gets the violet
+  // shadow lift; inactive pills are transparent with muted text.
   const renderTabBar = () => (
-    <View className="pb-3 pt-2">
-      <View className="rounded-2xl p-2" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
-        <View className="flex-row flex-wrap">
-          {PROFILE_TABS.map(({ title, icon }, index) => {
-            const isActive = activeTab === index;
-            return (
-              <View key={title} className="w-1/3 px-1 pb-2">
-                <TouchableOpacity
-                  className="items-center rounded-xl px-2 py-2"
-                  style={{ backgroundColor: isActive ? theme.primarySoft : theme.surfaceMuted }}
-                  onPress={() => handleTabPress(index)}
-                >
-                  <MaterialIcons name={icon} size={16} color={isActive ? theme.primary : theme.iconMuted} />
-                  <Text
-                    className="mt-1 text-[10px] font-semibold"
-                    style={{ color: isActive ? theme.primary : theme.textSoft }}
-                  >
-                    {title}
-                  </Text>
-                  <View className="mt-2 h-1 w-6 rounded-full" style={{ backgroundColor: isActive ? theme.primary : "transparent" }} />
-                </TouchableOpacity>
-              </View>
-            );
-          })}
-        </View>
-      </View>
-      <View className="mt-3">
+    <View className="pb-2 pt-3">
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ alignItems: "center", paddingTop: 4, paddingBottom: 8 }}
+      >
+        {PROFILE_TABS.map(({ title, icon }, index) => {
+          const isActive = activeTab === index;
+          return (
+            <TouchableOpacity
+              key={title}
+              onPress={() => handleTabPress(index)}
+              activeOpacity={0.85}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                paddingVertical: 8,
+                paddingHorizontal: 14,
+                borderRadius: 999,
+                marginRight: 6,
+                backgroundColor: isActive ? theme.primary : "transparent",
+                borderWidth: isActive ? 0 : 1,
+                borderColor: isActive ? "transparent" : theme.border,
+                shadowColor: theme.primary,
+                shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: isActive ? 0.25 : 0,
+                shadowRadius: 8,
+                elevation: isActive ? 3 : 0,
+              }}
+            >
+              <MaterialIcons
+                name={icon}
+                size={14}
+                color={isActive ? theme.primaryContrast : theme.iconMuted}
+                style={{ marginRight: 6 }}
+              />
+              <Text
+                style={{
+                  fontSize: 13,
+                  fontWeight: isActive ? "700" : "500",
+                  letterSpacing: 0.1,
+                  color: isActive ? theme.primaryContrast : theme.textMuted,
+                }}
+              >
+                {title}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+      <View className="mt-2">
         <StyledDivider color={theme.divider} />
       </View>
     </View>
@@ -658,19 +637,13 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
         </View>
 
         <View className="mt-4">
-          <View className="rounded-2xl p-2" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
-            <View className="flex-row flex-wrap">
-              {PROFILE_TABS.map(({ title }) => (
-                <View key={title} className="w-1/3 px-1 pb-2">
-                  <View className="items-center rounded-xl px-2 py-2" style={{ backgroundColor: theme.surfaceMuted }}>
-                    <AnimatedSkeleton className="h-3 w-10 rounded" style={{ backgroundColor: theme.skeletonBase }} />
-                    <AnimatedSkeleton className="mt-2 h-1 w-6 rounded-full" style={{ backgroundColor: theme.skeletonBase }} />
-                  </View>
-                </View>
-              ))}
-            </View>
+          {/* Skeleton matching the new horizontal pill tab bar. */}
+          <View className="flex-row pb-2 pt-3" style={{ gap: 6 }}>
+            {PROFILE_TABS.map(({ title }) => (
+              <AnimatedSkeleton key={`tab-skel-${title}`} className="h-9 w-20 rounded-full" style={{ backgroundColor: theme.skeletonBase }} />
+            ))}
           </View>
-          <View className="mt-3">
+          <View className="mt-2">
             <StyledDivider color={theme.divider} />
           </View>
           <View className="mt-4 space-y-3">
@@ -683,50 +656,21 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
     );
   }
 
+  // Web-style layout: the active tab's FlashList is the outer scrollable, with the
+  // shared profile header (banner/avatar/name/stats/buttons/bio/tab bar) mounted as
+  // its ListHeaderComponent. Switching tabs swaps the tab component but keeps the
+  // header's data — feels continuous, scrolls naturally.
+  const sharedHeader = (
+    <>
+      {renderProfileHeader()}
+      {renderTabBar()}
+    </>
+  );
+
   return (
     <View className="flex-1">
-      <View className="flex-1">
-        <ProfileHomeTab
-          userId={user?.$id}
-          userVideos={videos}
-          nestedScrollEnabled={nestedScrollEnabled}
-          headerComponent={renderProfileHeader()}
-          tabBarComponent={renderTabBar()}
-        />
-      </View>
-
+      <View className="flex-1">{renderActiveTabContent(sharedHeader)}</View>
       <CustomAlertModal message={message} messageOpen={messageOpen} closeMessage={closeMessage} />
-
-      <Modal
-        visible={modalTabIndex !== null}
-        animationType="slide"
-        presentationStyle={Platform.OS === "ios" ? "pageSheet" : "fullScreen"}
-        onRequestClose={closeModal}
-      >
-        <SafeAreaView className="flex-1" style={{ backgroundColor: theme.background }}>
-          <View className="flex-row items-center justify-between px-4 pb-2 pt-2">
-            <Text className="text-lg font-semibold" style={{ color: theme.text }}>
-              {PROFILE_TABS[modalTabIndex]?.title ?? ""}
-            </Text>
-            <TouchableOpacity
-              activeOpacity={0.7}
-              className="h-9 w-9 items-center justify-center rounded-full"
-              style={{ backgroundColor: theme.surfaceMuted }}
-              onPress={closeModal}
-            >
-              <MaterialIcons name="close" size={20} color={theme.icon} />
-            </TouchableOpacity>
-          </View>
-          <View className="flex-1">
-            <View className="flex-1 px-4 pb-4">{renderModalContent()}</View>
-            {isModalLoading ? (
-              <View className="absolute inset-0 h-full w-full" style={{ backgroundColor: theme.background }} pointerEvents="auto">
-                <SafeAreaView className="flex-1">{renderModalSkeleton()}</SafeAreaView>
-              </View>
-            ) : null}
-          </View>
-        </SafeAreaView>
-      </Modal>
     </View>
   );
 };

@@ -1,13 +1,15 @@
-import { AntDesign, FontAwesome, MaterialIcons } from "@expo/vector-icons";
-import { useEffect } from "react";
-import { Text, TouchableOpacity, View } from "react-native";
+import { AntDesign, Feather, FontAwesome, MaterialIcons } from "@expo/vector-icons";
+import { useCallback, useEffect } from "react";
+import { Alert, Text, TouchableOpacity, View } from "react-native";
 import Share from "react-native-share";
 import { useGlobalContext } from "../context/global-provider";
-import useAppTheme from "../hooks/useAppTheme";
 import { useVideosStats } from "../context/video-stats-provider";
-import FormatNumber from "../lib/format-number";
+import useAppTheme from "../hooks/useAppTheme";
+import useCommentReactionState from "../hooks/useCommentReactionState";
+import FormatNumber from "../lib/utils/format-number";
 import { resolveVideoCommentCount } from "../lib/video";
 import secrets from "../private/secrets";
+import ReactionPicker from "./ReactionPicker";
 import StyledDivider from "./StyledDivider";
 
 export default function StyledLikeCommentShare({
@@ -60,6 +62,33 @@ export default function StyledLikeCommentShare({
   const likeColor = theme.like;
   const commentColor = theme.comment;
 
+  // Reaction overlay (visual layer over the existing toggleLike binary).
+  const reactions = useCommentReactionState({ initialLiked: liked });
+
+  const handleReactionTap = useCallback(() => {
+    const wasReacted = !!reactions.userReactionKey;
+    reactions.toggleTopLevelDefault();
+    // Sync server-side like to match reaction presence.
+    const targetLiked = !wasReacted;
+    if (targetLiked !== liked) {
+      toggleLike(item, user);
+    }
+  }, [item, liked, reactions, toggleLike, user]);
+
+  const handlePickReactionWithSync = useCallback(
+    (key) => {
+      reactions.handlePickReaction(key);
+      if (!liked) toggleLike(item, user);
+    },
+    [item, liked, reactions, toggleLike, user],
+  );
+
+  const handleRepost = () =>
+    Alert.alert(
+      "Repost — coming soon",
+      "Reposts ship with Phase 5 of the Supabase migration. The button is here so you can preview the new layout.",
+    );
+
   const handleShare = async () => {
     try {
       if (onSharePress) return onSharePress(item);
@@ -74,72 +103,123 @@ export default function StyledLikeCommentShare({
     }
   };
 
-  // === Feed Variant ===
+  // === Feed Variant === (mirrors PostInformation visual style)
   if (variant === "feed") {
+    const safeLikeCount = Number.isFinite(likeCount) ? likeCount : 0;
+    const safeCommentCount = Number.isFinite(commentsCount) ? commentsCount : 0;
+    const showStatsRow = safeLikeCount > 0 || safeCommentCount > 0;
+    const summaryEmoji = reactions.activeReaction?.emoji ?? "❤️";
+    const showLikeAccent = !!reactions.activeReaction;
+    const labelColor = theme.textMuted ?? theme.text;
+    const reactedColor = theme.isDark ? "#f472b6" : "#db2777";
+    const reactedSoft = theme.isDark ? "rgba(244, 114, 182, 0.10)" : "rgba(219, 39, 119, 0.08)";
+    const likeLabel = reactions.activeReaction?.label ?? (liked ? "Liked" : "Like");
+
     return (
-      <View className="flex flex-col space-y-2 px-4 pb-2">
-        {/* Like + Comment counts */}
-        <View className="flex flex-row items-center space-x-2 self-end pt-3 pb-1.5">
-          <TouchableOpacity className="flex-row items-center space-x-1 rounded-full px-3 py-1" style={{ backgroundColor: theme.likeSoft }}>
-            <FontAwesome name="heart" size={14} color={likeColor} />
-            <Text className="text-sm font-semibold" style={{ color: likeColor }}>
-              {FormatNumber(likeCount)}
+      <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
+        {/* Stats row — emoji + count on left, comment count on right */}
+        {showStatsRow && (
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              paddingTop: 10,
+              paddingBottom: 6,
+            }}
+          >
+            {safeLikeCount > 0 ? (
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <Text style={{ fontSize: 14, marginRight: 6 }}>{summaryEmoji}</Text>
+                <Text style={{ fontSize: 12, fontWeight: "500", color: theme.textSoft ?? labelColor }}>
+                  {FormatNumber(safeLikeCount)}
+                </Text>
+              </View>
+            ) : (
+              <View />
+            )}
+            {safeCommentCount > 0 ? (
+              <TouchableOpacity onPress={() => onCommentPress?.(item)} activeOpacity={0.7}>
+                <Text style={{ fontSize: 12, fontWeight: "500", color: theme.textSoft ?? labelColor }}>
+                  {FormatNumber(safeCommentCount)} {safeCommentCount === 1 ? "comment" : "comments"}
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <View />
+            )}
+          </View>
+        )}
+
+        {/* Action bar */}
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            paddingTop: 8,
+            paddingBottom: 8,
+            borderTopWidth: 1,
+            borderTopColor: theme.border,
+          }}
+        >
+          <TouchableOpacity
+            ref={reactions.likeButtonRef}
+            onPress={handleReactionTap}
+            onLongPress={reactions.openTopLevelPicker}
+            delayLongPress={220}
+            activeOpacity={0.85}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              paddingVertical: 9,
+              paddingHorizontal: 14,
+              borderRadius: 12,
+              backgroundColor: showLikeAccent ? reactedSoft : "transparent",
+            }}
+          >
+            {reactions.activeReaction ? (
+              <Text style={{ fontSize: 18, marginRight: 8 }}>{reactions.activeReaction.emoji}</Text>
+            ) : (
+              <AntDesign name="hearto" size={18} color={theme.icon} style={{ marginRight: 8 }} />
+            )}
+            <Text
+              style={{
+                fontSize: 13,
+                fontWeight: showLikeAccent ? "600" : "500",
+                color: showLikeAccent ? reactedColor : labelColor,
+              }}
+            >
+              {likeLabel}
             </Text>
           </TouchableOpacity>
+
+          <View style={{ flex: 1 }} />
 
           {showCommentButton && (
-            <TouchableOpacity
-              onPress={() => onCommentPress?.(item)}
-              className="flex-row items-center space-x-1 rounded-full px-3 py-1"
-              style={{ backgroundColor: theme.commentSoft }}
-            >
-              <FontAwesome name="comment" size={14} color={commentColor} />
-              <Text className="text-sm font-semibold" style={{ color: commentColor }}>
-                {commentsCount}
-              </Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        <StyledDivider color={theme.divider} className="mb-0" />
-
-        {/* Buttons row */}
-        <View className="flex flex-row items-center justify-between space-x-2">
-          <TouchableOpacity
-            onPress={() => toggleLike(item, user)}
-            activeOpacity={1.0}
-            className="flex-1 flex-row items-center justify-center space-x-1 px-3 py-2 opacity-80"
-          >
-            <AntDesign name="like1" size={15} color={liked ? theme.accentGreen : theme.icon} />
-            <Text className="font-sans text-sm font-medium" style={{ color: liked ? theme.accentGreen : theme.text }}>
-              {liked ? "Liked" : "Like"}
-            </Text>
-          </TouchableOpacity>
-
-          {showCommentButton && (
-            <TouchableOpacity
-              onPress={onCommentPress}
-              activeOpacity={1.0}
-              className="flex-1 flex-row items-center justify-center space-x-1 px-3 py-2 opacity-80"
-            >
-              <FontAwesome name="comments" size={15} color={theme.icon} />
-              <Text className="font-sans text-sm font-medium" style={{ color: theme.text }}>
-                Comment
-              </Text>
+            <TouchableOpacity onPress={onCommentPress} activeOpacity={0.85} style={secondaryFeedActionStyle}>
+              <Feather name="message-circle" size={17} color={theme.icon} style={{ marginRight: 6 }} />
+              <Text style={{ fontSize: 12, fontWeight: "500", color: labelColor }}>Comment</Text>
             </TouchableOpacity>
           )}
 
-          <TouchableOpacity
-            onPress={handleShare}
-            activeOpacity={1.0}
-            className="flex-1 flex-row items-center justify-center space-x-1 px-3 py-2 opacity-80"
-          >
-            <FontAwesome name="share" size={15} color={theme.icon} />
-            <Text className="font-sans text-sm font-medium" style={{ color: theme.text }}>
-              Share
+          <TouchableOpacity onPress={handleRepost} activeOpacity={0.85} style={secondaryFeedActionStyle}>
+            <Feather name="repeat" size={17} color={theme.icon} style={{ marginRight: 6 }} />
+            <Text style={{ fontSize: 12, fontWeight: "500", color: labelColor }}>Repost</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity onPress={handleShare} activeOpacity={0.85} style={secondaryFeedActionStyle}>
+            <Feather name="share-2" size={17} color={theme.icon} style={{ marginRight: 6 }} />
+            <Text style={{ fontSize: 12, fontWeight: "500", color: labelColor }}>Share
             </Text>
           </TouchableOpacity>
         </View>
+
+        <ReactionPicker
+          visible={reactions.pickerVisible}
+          anchor={reactions.pickerAnchor}
+          activeKey={reactions.pickerActiveKey}
+          onSelect={handlePickReactionWithSync}
+          onClose={reactions.closePicker}
+        />
       </View>
     );
   }
@@ -162,25 +242,40 @@ export default function StyledLikeCommentShare({
       )}
 
       <TouchableOpacity
-        onPress={() => toggleLike(item, user)}
-        activeOpacity={1.0}
-        className="flex flex-row items-center space-x-1 rounded-full px-3 py-2 opacity-70"
-        style={{ backgroundColor: theme.surfaceStrong }}
+        ref={reactions.likeButtonRef}
+        onPress={handleReactionTap}
+        onLongPress={reactions.openTopLevelPicker}
+        delayLongPress={220}
+        activeOpacity={0.85}
+        className="flex flex-row items-center space-x-1 rounded-full px-3 py-2"
+        style={{ backgroundColor: theme.surfaceStrong, opacity: 0.85 }}
       >
-        {liked ? <AntDesign name="heart" size={12} color={theme.accentPurple} /> : <AntDesign name="like1" size={12} color={theme.icon} />}
-        <Text className="font-sans text-sm font-medium" style={{ color: liked ? theme.accentPurple : theme.text }}>
-          {liked ? "Liked" : "Like"}
+        {reactions.activeReaction ? (
+          // lineHeight intentionally larger than fontSize — emoji glyphs have rounded
+          // descenders (the bottom of a heart, the chin of a 😢, etc.) that get clipped
+          // when lineHeight ≈ fontSize. 1.3× is the safe ratio across iOS and Android.
+          <Text style={{ fontSize: 13, lineHeight: 17 }}>{reactions.activeReaction.emoji}</Text>
+        ) : liked ? (
+          <AntDesign name="heart" size={12} color={theme.accentPurple} />
+        ) : (
+          <AntDesign name="like1" size={12} color={theme.icon} />
+        )}
+        <Text
+          className="font-sans text-sm font-medium"
+          style={{ color: reactions.activeReaction ? theme.accentPurple : liked ? theme.accentPurple : theme.text }}
+        >
+          {reactions.activeReaction?.label ?? (liked ? "Liked" : "Like")}
         </Text>
       </TouchableOpacity>
 
       {showCommentButton && (
         <TouchableOpacity
           onPress={onCommentPress}
-          activeOpacity={1.0}
+          activeOpacity={0.85}
           className="flex flex-row items-center space-x-1 rounded-full px-3 py-2 opacity-70"
           style={{ backgroundColor: theme.surfaceStrong }}
         >
-          <FontAwesome name="comments" size={12} color={theme.icon} />
+          <Feather name="message-circle" size={12} color={theme.icon} />
           <Text className="font-sans text-sm font-medium" style={{ color: theme.text }}>
             Comment
           </Text>
@@ -188,12 +283,24 @@ export default function StyledLikeCommentShare({
       )}
 
       <TouchableOpacity
-        onPress={handleShare}
-        activeOpacity={1.0}
+        onPress={handleRepost}
+        activeOpacity={0.85}
         className="flex flex-row items-center space-x-1 rounded-full px-3 py-2 opacity-70"
         style={{ backgroundColor: theme.surfaceStrong }}
       >
-        <FontAwesome name="share" size={12} color={theme.icon} />
+        <Feather name="repeat" size={12} color={theme.icon} />
+        <Text className="font-sans text-sm font-medium" style={{ color: theme.text }}>
+          Repost
+        </Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        onPress={handleShare}
+        activeOpacity={0.85}
+        className="flex flex-row items-center space-x-1 rounded-full px-3 py-2 opacity-70"
+        style={{ backgroundColor: theme.surfaceStrong }}
+      >
+        <Feather name="share-2" size={12} color={theme.icon} />
         <Text className="font-sans text-sm font-medium" style={{ color: theme.text }}>
           Share
         </Text>
@@ -213,6 +320,23 @@ export default function StyledLikeCommentShare({
           </Text>
         </TouchableOpacity>
       )}
+
+      <ReactionPicker
+        visible={reactions.pickerVisible}
+        anchor={reactions.pickerAnchor}
+        activeKey={reactions.pickerActiveKey}
+        onSelect={handlePickReactionWithSync}
+        onClose={reactions.closePicker}
+      />
     </View>
   );
 }
+
+const secondaryFeedActionStyle = {
+  flexDirection: "row",
+  alignItems: "center",
+  paddingVertical: 9,
+  paddingHorizontal: 8,
+  borderRadius: 12,
+  marginLeft: 2,
+};

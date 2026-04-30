@@ -1,44 +1,84 @@
 import { router } from "expo-router";
-import { useState } from "react";
-import { Dimensions, Text, TouchableOpacity, View } from "react-native";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { Text, TouchableOpacity, View, useWindowDimensions } from "react-native";
 import FastImage from "react-native-fast-image";
-import LoaderKit from "react-native-loader-kit";
 import useAppTheme from "../hooks/useAppTheme";
 import { useGlobalContext } from "../context/global-provider";
-import FormatNumber from "../lib/format-number";
-import TimeAgo from "../lib/time-ago";
+import FormatNumber from "../lib/utils/format-number";
+import TimeAgo from "../lib/utils/time-ago";
+import { formatDurationCompact, getVideoDurationSeconds } from "../lib/utils/video-duration";
 import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 
 const VideoCardNew = ({ item, customWidth, customHeight, customAvatarSize, customFontSize, hideAvatar = false, ...props }) => {
   const { globalSettings } = useGlobalContext();
   const { theme } = useAppTheme();
-  const { width: SCREEN_WIDTH } = Dimensions.get("window");
-  const [loading, setLoading] = useState(true);
+  // useWindowDimensions stays in sync with rotation and avoids a Dimensions.get
+  // call on every render. Trivial perf win; the bigger one is the useMemo'd
+  // layout block below.
+  const { width: SCREEN_WIDTH } = useWindowDimensions();
+  // Avatar `error` flag stays so the initials placeholder survives a dead URL.
+  // The previous `loading` state + LoaderKit spinner are gone — initials are
+  // now painted statically behind the FastImage so there's nothing to "load
+  // vs not load" on the React side.
   const [error, setError] = useState(false);
+  // Lazy duration — same pattern as VideoCardSmall. Cached + dedup'd in the
+  // shared util so an item that's already had its manifest parsed once doesn't
+  // re-fetch on remount.
+  const [durationSeconds, setDurationSeconds] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!item) return undefined;
+    getVideoDurationSeconds(item).then((seconds) => {
+      if (!cancelled) setDurationSeconds(seconds);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [item?.$id, item?.uri, item?.videoUrl]);
+  const durationLabel = formatDurationCompact(durationSeconds);
   const avatarUri = item?.uploader?.avatar;
-  const cardWidth = customWidth || SCREEN_WIDTH * 0.8;
-  const cardHeight = customHeight || cardWidth * 0.56;
-  const avatarSize = customAvatarSize || 40;
-  const fontSize = customFontSize || 14;
-  const titleLineHeight = Math.round(fontSize * 1.35);
-  const metaFontSize = Math.max(12, Math.round(fontSize * 0.9));
-  const metaLineHeight = Math.round(metaFontSize * 1.35);
-  const textStackGap = 2;
-  const textBlockHeight = titleLineHeight * 2 + metaLineHeight * 2 + textStackGap;
-  const rowHeight = Math.max(avatarSize, textBlockHeight);
 
-  const handlePress = async (view) => {
-    try {
-      router.push({
-        pathname: "video-player",
-        params: {
-          id: item.uri,
-          docId: item.$id,
-          view: view,
-        },
-      });
-    } catch (error) {}
-  };
+  // Layout math is memoized so it's not re-run on every render. Deps are all
+  // primitive numbers so the memo hits its cache immediately for the common
+  // case where the parent passes stable customWidth/customHeight values.
+  const layout = useMemo(() => {
+    const cw = customWidth || SCREEN_WIDTH * 0.8;
+    const ch = customHeight || cw * 0.56;
+    const as = customAvatarSize || 40;
+    const fs = customFontSize || 14;
+    const tlh = Math.round(fs * 1.35);
+    const mfs = Math.max(12, Math.round(fs * 0.9));
+    const mlh = Math.round(mfs * 1.35);
+    const tbh = tlh * 2 + mlh * 2 + 2;
+    return {
+      cardWidth: cw,
+      cardHeight: ch,
+      avatarSize: as,
+      fontSize: fs,
+      titleLineHeight: tlh,
+      metaFontSize: mfs,
+      metaLineHeight: mlh,
+      textBlockHeight: tbh,
+      rowHeight: Math.max(as, tbh),
+    };
+  }, [customWidth, customHeight, customAvatarSize, customFontSize, SCREEN_WIDTH]);
+  const { cardWidth, cardHeight, avatarSize, fontSize, titleLineHeight, metaFontSize, metaLineHeight, textBlockHeight, rowHeight } = layout;
+
+  const handlePress = useCallback(
+    (view) => {
+      try {
+        router.push({
+          pathname: "video-player",
+          params: {
+            id: item.uri,
+            docId: item.$id,
+            view: view,
+          },
+        });
+      } catch (error) {}
+    },
+    [item?.uri, item?.$id],
+  );
 
   const getInitials = (name) => {
     if (!name) return "?";
@@ -53,13 +93,42 @@ const VideoCardNew = ({ item, customWidth, customHeight, customAvatarSize, custo
   return (
     <View style={{ width: cardWidth }} className="mb-4 mr-3 space-y-2" {...props}>
       <TouchableOpacity className="space-y-2" activeOpacity={0.7} onPress={() => handlePress("RECOMMENDED")} accessibilityLabel="Play Video">
-        <FastImage
-          style={{ height: cardHeight, width: cardWidth, borderRadius: 10, backgroundColor: theme.surfaceMuted }}
-          source={{ uri: item.thumbnail, priority: FastImage.priority.high }}
-          resizeMode={FastImage.resizeMode.contain}
-        />
+        <View style={{ height: cardHeight, width: cardWidth, borderRadius: 10, overflow: "hidden", backgroundColor: theme.surfaceStrong }}>
+          {/* `cover` (was `contain`) crops portrait thumbnails to fill the
+              landscape card slot — no more white letterbox bars on light
+              mode that read as empty padding bleeding into the background.
+              Same pattern YouTube/Instagram use for thumbnail rails. */}
+          <FastImage
+            style={{ height: "100%", width: "100%" }}
+            source={{ uri: item.thumbnail, priority: FastImage.priority.normal }}
+            resizeMode={FastImage.resizeMode.cover}
+          />
+          {/* Duration pill bottom-right of the thumbnail — YouTube-style. */}
+          {durationLabel ? (
+            <View
+              style={{
+                position: "absolute",
+                bottom: 6,
+                right: 6,
+                paddingHorizontal: 6,
+                paddingVertical: 2,
+                borderRadius: 4,
+                backgroundColor: "rgba(0,0,0,0.78)",
+              }}
+            >
+              <Text style={{ color: "#ffffff", fontSize: 11, fontWeight: "600", letterSpacing: 0.2 }}>{durationLabel}</Text>
+            </View>
+          ) : null}
+        </View>
         <View className="flex-row items-start space-x-2" style={{ minHeight: rowHeight }}>
           {!hideAvatar && (
+            // Avatar — initials painted as a static placeholder behind the
+            // FastImage. When the image loads it covers the initials; if it
+            // errors or the user has no avatar, the initials stay visible.
+            // The previous LoaderKit spinner ran an animation loop per card
+            // (BallScaleMultiple) which fought scroll on horizontal rails
+            // with 30+ cards. Static placeholder = zero animation cost +
+            // identical visual outcome on the happy path.
             <View
               className="items-center justify-center overflow-hidden rounded-full"
               style={{
@@ -68,34 +137,25 @@ const VideoCardNew = ({ item, customWidth, customHeight, customAvatarSize, custo
                 backgroundColor: theme.surfaceMuted,
               }}
             >
-              {/* Show fallback if no avatar or error */}
-              {(error || !avatarUri) && !loading && (
-                <Text className="text-xs font-bold" style={{ fontFamily: "Poppins-Bold", color: theme.text }}>
-                  {getInitials(item?.uploader?.name)}
-                </Text>
-              )}
-              {/* Show FastImage if valid and not error */}
+              <Text
+                className="font-bold"
+                style={{ fontFamily: "Poppins-Bold", color: theme.textMuted, fontSize: Math.max(10, Math.round(avatarSize * 0.36)) }}
+              >
+                {getInitials(item?.uploader?.name)}
+              </Text>
               {!error && !!avatarUri && (
                 <FastImage
-                  source={{ uri: avatarUri, priority: FastImage.priority.high }}
-                  style={{ height: avatarSize, width: avatarSize }}
+                  source={{ uri: avatarUri, priority: FastImage.priority.normal }}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    height: avatarSize,
+                    width: avatarSize,
+                  }}
                   resizeMode={FastImage.resizeMode.cover}
-                  onLoadStart={() => {
-                    setLoading(true);
-                    setError(false);
-                  }}
-                  onLoad={() => setLoading(false)}
-                  onError={() => {
-                    setLoading(false);
-                    setError(true);
-                  }}
+                  onError={() => setError(true)}
                 />
-              )}
-              {/* Show loading spinner on top */}
-              {loading && (
-                <View className="absolute inset-0 items-center justify-center">
-                  <LoaderKit style={{ width: avatarSize, height: avatarSize, opacity: 0.5 }} name={"BallScaleMultiple"} color={theme.primary} />
-                </View>
               )}
             </View>
           )}
@@ -136,4 +196,7 @@ const VideoCardNew = ({ item, customWidth, customHeight, customAvatarSize, custo
   );
 };
 
-export default VideoCardNew;
+// React.memo with default shallow comparison. Parents pass stable
+// customWidth/customHeight numbers + the same `item` object across renders, so
+// this short-circuits on every parent re-render that doesn't change props.
+export default memo(VideoCardNew);

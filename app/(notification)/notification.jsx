@@ -13,6 +13,20 @@ import useResetOnBlur from "../../hooks/useResetOnBlur";
 import { NotificationService } from "../../lib/notifications";
 import { markNotificationViewed, setNotificationsCache } from "../../store/reducers/notifications";
 
+// Categorize a notification into the All / You / Following tabs.
+// "you" = something happened TO you (someone followed you, commented on
+// your content, replied to your comment, etc.)
+// "following" = someone you follow CREATED something (new video, new clip)
+const categorizeNotification = (notification) => {
+  const type = (notification?.type || "").toLowerCase();
+  if (!type) return "all";
+  if (type === "follow") return "you";
+  if (type.endsWith("-comment") || type.endsWith("-reply")) return "you";
+  if (type.startsWith("inline")) return "you";
+  if (type === "video-upload" || type === "clip") return "following";
+  return "all"; // catch-all — visible only in the All tab
+};
+
 const Notification = () => {
   const { theme } = useAppTheme();
   const notificationService = new NotificationService();
@@ -26,6 +40,8 @@ const Notification = () => {
   const [hasMore, setHasMore] = useState(false);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   const [markingAllViewed, setMarkingAllViewed] = useState(false);
+  // Active filter tab — matches web's [All][You][Following].
+  const [activeTab, setActiveTab] = useState("all");
   useResetOnBlur(setRefreshing, setIsFetchingMore);
   const hasLoadedRef = useRef(false);
   const cacheHydratedRef = useRef(false);
@@ -34,6 +50,11 @@ const Notification = () => {
     () => notifications.reduce((count, notification) => count + (notification?.isViewed === false ? 1 : 0), 0),
     [notifications],
   );
+
+  const filteredNotifications = useMemo(() => {
+    if (activeTab === "all") return notifications;
+    return notifications.filter((notification) => categorizeNotification(notification) === activeTab);
+  }, [notifications, activeTab]);
 
   useEffect(() => {
     cacheHydratedRef.current = false;
@@ -194,19 +215,17 @@ const Notification = () => {
 
   const renderListEmptyComponent = () => {
     return notificationsLoading ? (
-      <View className="mt-2 space-y-3">
+      <View>
         {[...Array(8)].map((_, index) => (
           <View
             key={index}
-            className="flex-row items-center rounded-2xl p-3"
-            style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}
+            style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12 }}
           >
-            <AnimatedSkeleton className="h-12 w-12 rounded-xl" />
-            <View className="ml-3 flex-1">
-              <AnimatedSkeleton className="h-4 rounded-lg" style={{ width: Math.max(getRandomSkeletonWidth() - 40, 140) }} />
-              <AnimatedSkeleton className="mt-2 h-3 rounded-md" style={{ width: Math.max(getRandomSkeletonWidth() - 30, 170) }} />
+            <AnimatedSkeleton className="h-11 w-11 rounded-full" />
+            <View style={{ marginLeft: 12, flex: 1 }}>
+              <AnimatedSkeleton className="h-3.5 rounded-md" style={{ width: Math.max(getRandomSkeletonWidth() - 40, 160) }} />
+              <AnimatedSkeleton className="mt-2 h-3 rounded-md" style={{ width: Math.max(getRandomSkeletonWidth() - 80, 100) }} />
             </View>
-            <AnimatedSkeleton className="h-[54px] w-[76px] rounded-xl" />
           </View>
         ))}
       </View>
@@ -249,8 +268,8 @@ const Notification = () => {
 
   return (
     <SafeAreaView className="flex-1" style={{ backgroundColor: theme.background }}>
-      <View className="flex-1 px-4">
-        <View className="pb-3 pt-2">
+      <View className="flex-1">
+        <View className="px-4 pb-3 pt-2">
           <View className="flex-row items-center justify-between">
             <View className="flex-row items-center">
               <TouchableOpacity
@@ -271,39 +290,83 @@ const Notification = () => {
               <TouchableOpacity
                 onPress={handleMarkAllAsViewed}
                 disabled={markingAllViewed}
-                className="rounded-full px-3 py-2"
-                style={{
-                  borderWidth: 1,
-                  borderColor: markingAllViewed ? theme.borderStrong : theme.primary,
-                  backgroundColor: markingAllViewed ? theme.surfaceMuted : theme.primarySoft,
-                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 {markingAllViewed ? (
                   <ActivityIndicator size="small" color={theme.primary} />
                 ) : (
-                  <Text className="text-xs font-semibold" style={{ color: theme.primary }}>
-                    Mark all viewed
-                  </Text>
+                  <Text style={{ fontSize: 13, fontWeight: "600", color: theme.primary }}>Mark all read</Text>
                 )}
               </TouchableOpacity>
             ) : null}
           </View>
+
+          {/* Filter tabs — All / You / Following (matches web) */}
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              marginTop: 12,
+              paddingBottom: 4,
+            }}
+          >
+            {[
+              { key: "all", label: "All" },
+              { key: "you", label: "You" },
+              { key: "following", label: "Following" },
+            ].map((tab) => {
+              const isActive = activeTab === tab.key;
+              return (
+                <TouchableOpacity
+                  key={tab.key}
+                  onPress={() => setActiveTab(tab.key)}
+                  activeOpacity={0.85}
+                  style={{
+                    paddingVertical: 6,
+                    paddingHorizontal: 14,
+                    borderRadius: 999,
+                    marginRight: 4,
+                    backgroundColor: isActive ? theme.primary : "transparent",
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 13,
+                      fontWeight: isActive ? "700" : "500",
+                      letterSpacing: 0.1,
+                      color: isActive ? theme.primaryContrast ?? "#ffffff" : theme.textMuted ?? theme.text,
+                    }}
+                  >
+                    {tab.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         </View>
         <View className="flex-1">
+          {/* When the list is empty, render the empty component directly inside
+              this flex-1 parent so its own `flex-1 items-center justify-center`
+              actually centers. FlashList sizes its content container to its
+              children, so the previous `flexGrow: 1` workaround on
+              contentContainerStyle did the centering — but FlashList only
+              accepts padding/backgroundColor there and was warning loudly
+              ("FlashList only supports padding related props..."). */}
+          {filteredNotifications.length === 0 ? (
+            renderListEmptyComponent()
+          ) : (
           <FlashList
-            data={notifications}
+            data={filteredNotifications}
             refreshing={refreshing}
-            estimatedItemSize={100}
+            estimatedItemSize={72}
             keyExtractor={(item) => item.$id}
             showsVerticalScrollIndicator={false}
             renderItem={renderItem}
             onRefresh={onRefresh}
             onEndReached={fetchMoreNotification}
-            ListEmptyComponent={renderListEmptyComponent}
             contentContainerStyle={{
               paddingBottom: 24,
               paddingTop: 4,
-              flexGrow: !notificationsLoading && notifications.length === 0 ? 1 : 0,
             }}
             ListFooterComponent={
               isFetchingMore ? (
@@ -323,6 +386,7 @@ const Notification = () => {
               />
             }
           />
+          )}
         </View>
       </View>
     </SafeAreaView>

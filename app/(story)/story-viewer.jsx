@@ -10,7 +10,7 @@ import { CustomAlertModal, StoryBottomBar, StoryCubeFaces, StoryHeader, StyledSa
 import { useGlobalContext } from "../../context/global-provider";
 import storyEvents from "../../lib/story-events";
 import { StoryService } from "../../lib/story-service";
-import { useModalMessage } from "../../lib/useModalMessage";
+import { useModalMessage } from "../../hooks/useModalMessage";
 import { isViewerStoryCacheFresh, selectViewerStoryCacheEntry, setViewerStories } from "../../store/reducers/story";
 
 // --------------------------------------------------

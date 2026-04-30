@@ -5,8 +5,8 @@ import FastImage from "react-native-fast-image";
 import LoaderKit from "react-native-loader-kit";
 import useAppTheme from "../hooks/useAppTheme";
 import { useGlobalContext } from "../context/global-provider";
-import FormatNumber from "../lib/format-number";
-import TimeAgo from "../lib/time-ago";
+import FormatNumber from "../lib/utils/format-number";
+import TimeAgo from "../lib/utils/time-ago";
 import StyledLikeCommentShare from "./StyledLikeCommentShare";
 
 const VideoCard = ({ item, ...props }) => {
@@ -43,7 +43,7 @@ const VideoCard = ({ item, ...props }) => {
     <View className="mx-2 mb-7 space-y-2" {...props}>
       <TouchableOpacity className="space-y-2" activeOpacity={0.7} onPress={() => handlePress("RECOMMENDED")} accessibilityLabel="Play Video">
         <FastImage
-          source={{ uri: item.thumbnail, priority: FastImage.priority.high }}
+          source={{ uri: item.thumbnail, priority: FastImage.priority.normal }}
           className="aspect-video rounded-lg"
           style={{ backgroundColor: theme.surfaceMuted }}
           resizeMode={FastImage.resizeMode.contain}
@@ -59,7 +59,7 @@ const VideoCard = ({ item, ...props }) => {
             {/* Show FastImage if valid and not error */}
             {!error && !!avatarUri && (
               <FastImage
-                source={{ uri: avatarUri, priority: FastImage.priority.high }}
+                source={{ uri: avatarUri, priority: FastImage.priority.normal }}
                 style={{ height: 40, width: 40 }}
                 resizeMode={FastImage.resizeMode.cover}
                 onLoadStart={() => {

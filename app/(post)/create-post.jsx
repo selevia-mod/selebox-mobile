@@ -1,4 +1,4 @@
-import { FontAwesome, MaterialIcons } from "@expo/vector-icons";
+import { FontAwesome, Ionicons, MaterialIcons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useState } from "react";
@@ -7,11 +7,11 @@ import FastImage from "react-native-fast-image";
 import LoaderKit from "react-native-loader-kit";
 import Modal from "react-native-modal";
 import { useDispatch } from "react-redux";
-import { CustomAlertModal, LinkPreviewCard, StyledSafeAreaView, StyledTitle } from "../../components";
+import { CustomAlertModal, LinkPreviewCard, SectionDot, StyledSafeAreaView, StyledTitle } from "../../components";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import { createNewPost, initialPostForm, updatePost, uploadImageToStorage } from "../../lib/posts";
-import { useModalMessage } from "../../lib/useModalMessage";
+import { useModalMessage } from "../../hooks/useModalMessage";
 import { addPendingPost, removePendingPost, resolvePendingPost } from "../../store/reducers/post";
 
 const CreatePost = () => {
@@ -268,6 +268,20 @@ const CreatePost = () => {
     );
   };
 
+  // Type chooser — current screen is "post"; tapping Video/Book navigates
+  // to the existing creation flows, mirroring the BottomNavPopup routes.
+  // router.replace is used so the user fully switches creation type rather
+  // than stacking a new screen on top of the post composer.
+  const isEditing = Boolean(postForm?.id);
+  const handleSwitchToVideo = () => {
+    if (isEditing) return;
+    router.replace({ pathname: "/studio", params: { type: "video" } });
+  };
+  const handleSwitchToBook = () => {
+    if (isEditing) return;
+    router.replace("/book-editor");
+  };
+
   return (
     <StyledSafeAreaView>
       <View className="h-full w-full" style={{ backgroundColor: theme.background }}>
@@ -283,14 +297,93 @@ const CreatePost = () => {
         </View>
         <ScrollView automaticallyAdjustKeyboardInsets keyboardShouldPersistTaps="handled">
           <View className="px-4 pb-8">
-            <View className="mt-3 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
+            {/* Hero — premium violet-tinted intro card. Same shape as
+                UploadVideo / book-editor heroes so the three creation
+                flows read as one family. Hidden in edit mode where the
+                user already knows what they're doing. */}
+            {!isEditing && (
+              <View className="mt-3 flex-row items-center">
+                <View
+                  className="mr-3 h-10 w-10 items-center justify-center rounded-xl"
+                  style={{
+                    backgroundColor: theme.primarySoft,
+                    borderWidth: 1,
+                    borderColor: theme.primary,
+                  }}
+                >
+                  <Ionicons name="create-outline" size={20} color={theme.primary} />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-lg font-bold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+                    Share something
+                  </Text>
+                  <Text className="mt-0.5 text-xs" style={{ color: theme.textSoft }}>
+                    Post a thought, upload a video, or start a new book.
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Type chooser — Post / Video / Book. Active = Post (this
+                screen). Tapping Video or Book replaces the current route
+                with the corresponding creation flow. Suppressed in edit
+                mode since switching types mid-edit doesn't make sense. */}
+            {!isEditing && (
+              <View className="mt-4 flex-row" style={{ gap: 8 }}>
+                {[
+                  { key: "post", label: "Post", icon: "chatbubble-ellipses", active: true, onPress: () => {} },
+                  { key: "video", label: "Video", icon: "videocam", active: false, onPress: handleSwitchToVideo },
+                  { key: "book", label: "Book", icon: "book", active: false, onPress: handleSwitchToBook },
+                ].map((tab) => (
+                  <TouchableOpacity
+                    key={tab.key}
+                    onPress={tab.onPress}
+                    activeOpacity={0.85}
+                    accessibilityLabel={`Switch to create ${tab.label.toLowerCase()}`}
+                    className="flex-1 flex-row items-center justify-center rounded-full"
+                    style={{
+                      paddingVertical: 9,
+                      paddingHorizontal: 8,
+                      backgroundColor: tab.active ? theme.primary : theme.surfaceMuted,
+                      borderWidth: tab.active ? 0 : 1,
+                      borderColor: tab.active ? "transparent" : theme.border,
+                      shadowColor: theme.primary,
+                      shadowOffset: { width: 0, height: 4 },
+                      shadowOpacity: tab.active ? 0.28 : 0,
+                      shadowRadius: 10,
+                      elevation: tab.active ? 4 : 0,
+                    }}
+                  >
+                    <Ionicons
+                      name={tab.icon}
+                      size={14}
+                      color={tab.active ? theme.primaryContrast : theme.iconMuted}
+                      style={{ marginRight: 6 }}
+                    />
+                    <Text
+                      className="font-sans"
+                      style={{
+                        fontSize: 13,
+                        fontWeight: tab.active ? "700" : "600",
+                        letterSpacing: 0.3,
+                        color: tab.active ? theme.primaryContrast : theme.textMuted,
+                      }}
+                    >
+                      {tab.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            <View className="mt-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
               <View className="flex-row items-center">
                 <FastImage source={{ uri: user?.avatar }} style={{ height: 46, width: 46, borderRadius: 23 }} />
-                <View className="ml-3">
-                  <Text className="text-base font-semibold" style={{ color: theme.text }}>
+                <View className="ml-3 flex-1">
+                  <Text className="text-base font-bold" style={{ color: theme.text, letterSpacing: 0.2 }} numberOfLines={1}>
                     {user?.username}
                   </Text>
-                  <Text className="text-xs" style={{ color: theme.textSoft }}>
+                  <Text className="text-xs" style={{ color: theme.textSoft, letterSpacing: 0.1 }}>
                     Share something with your audience
                   </Text>
                 </View>
@@ -298,9 +391,12 @@ const CreatePost = () => {
 
               <View className="mt-4">
                 <View className="flex-row items-center justify-between">
-                  <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
-                    Post
-                  </Text>
+                  <View className="flex-row items-center">
+                    <SectionDot color={theme.primary} />
+                    <Text className="text-sm font-semibold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+                      Post
+                    </Text>
+                  </View>
                   <Text
                     className="text-[10px] font-medium"
                     style={{ color: theme.textSoft }}
@@ -332,9 +428,12 @@ const CreatePost = () => {
 
               <View className="mt-4">
                 <View className="flex-row items-center justify-between">
-                  <Text className="text-sm font-semibold" style={{ color: theme.textMuted }}>
-                    Attachments
-                  </Text>
+                  <View className="flex-row items-center">
+                    <SectionDot color={theme.primary} />
+                    <Text className="text-sm font-semibold" style={{ color: theme.text, letterSpacing: 0.2 }}>
+                      Attachments
+                    </Text>
+                  </View>
                   <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitPostAttachments}`}</Text>
                 </View>
                 <FlatList
@@ -347,24 +446,37 @@ const CreatePost = () => {
                 />
               </View>
 
-              <View className="mt-4 flex-row gap-3">
+              <View className="mt-4 flex-row" style={{ gap: 10 }}>
                 <TouchableOpacity
                   onPress={handleAttachImage}
+                  activeOpacity={0.85}
                   className="flex-1 flex-row items-center justify-center rounded-full px-4 py-3"
                   style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.surfaceMuted }}
                 >
-                  <FontAwesome name="image" size={18} color={theme.icon} />
-                  <Text className="ml-2 text-[14px] font-semibold" style={{ color: theme.text }}>
+                  <Ionicons name="image-outline" size={17} color={theme.iconMuted} />
+                  <Text className="ml-2 text-[13px] font-bold" style={{ color: theme.text, letterSpacing: 0.2 }}>
                     Attach
                   </Text>
                 </TouchableOpacity>
+                {/* Primary CTA — violet pill with the strongest shadow lift
+                    on the page. Replaces the previous green pill so this
+                    flow shares the language used by Save Book / Publish
+                    Video. */}
                 <TouchableOpacity
                   onPress={handlePost}
-                  className="flex-1 flex-row items-center justify-center rounded-full px-4 py-3"
-                  style={{ backgroundColor: theme.accentGreen }}
+                  activeOpacity={0.9}
+                  className="flex-1 flex-row items-center justify-center rounded-full px-4 py-3.5"
+                  style={{
+                    backgroundColor: theme.primary,
+                    shadowColor: theme.primary,
+                    shadowOffset: { width: 0, height: 6 },
+                    shadowOpacity: 0.32,
+                    shadowRadius: 14,
+                    elevation: 6,
+                  }}
                 >
-                  <FontAwesome name="pencil" size={18} color={theme.primaryContrast} />
-                  <Text className="ml-2 text-[14px] font-semibold" style={{ color: theme.primaryContrast }}>
+                  <Ionicons name={postForm?.id ? "save-outline" : "send"} size={16} color={theme.primaryContrast} />
+                  <Text className="ml-2 text-[13px] font-bold" style={{ color: theme.primaryContrast, letterSpacing: 0.3 }}>
                     {postForm?.id ? "Update" : "Post"}
                   </Text>
                 </TouchableOpacity>
@@ -393,8 +505,18 @@ const CreatePost = () => {
             <Text className="my-2 text-lg font-semibold" style={{ color: theme.text }}>
               {postForm?.id ? "Updating Post" : "Publishing Post"}
             </Text>
-            <View className="h-2 w-full rounded-full" style={{ backgroundColor: theme.surfaceMuted }}>
-              <View className="h-full rounded-full" style={{ width: `${progress}%`, backgroundColor: theme.accentGreen }} />
+            <View className="h-2 w-full overflow-hidden rounded-full" style={{ backgroundColor: theme.surfaceStrong }}>
+              <View
+                className="h-full rounded-full"
+                style={{
+                  width: `${progress}%`,
+                  backgroundColor: theme.primary,
+                  shadowColor: theme.primary,
+                  shadowOffset: { width: 0, height: 0 },
+                  shadowOpacity: 0.4,
+                  shadowRadius: 4,
+                }}
+              />
             </View>
           </View>
         </View>

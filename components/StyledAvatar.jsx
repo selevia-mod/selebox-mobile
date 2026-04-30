@@ -17,7 +17,7 @@ function StyledAvatar({ onPress = null, ...props }) {
       {...props}
     >
       <FastImage
-        source={{ uri: avatar, priority: FastImage.priority.high }}
+        source={{ uri: avatar, priority: FastImage.priority.normal }}
         className="h-full w-full rounded-md"
         resizeMode={FastImage.resizeMode.cover}
       />

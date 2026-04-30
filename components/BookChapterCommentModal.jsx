@@ -877,7 +877,7 @@ const BookChapterCommentModal = ({ chapter, isVisible, onClose, onCommentPosted,
   );
 
   const handleReplyPress = useCallback(
-    (comment) => {
+    (comment, mentionUser) => {
       if (!comment?.$id) return;
       setReplyTarget({
         id: comment.$id,
@@ -886,6 +886,12 @@ const BookChapterCommentModal = ({ chapter, isVisible, onClose, onCommentPosted,
       });
       committedMentionRangeRef.current = null;
       clearMentionSuggestions();
+      // Reply-on-reply: prefill the composer with @username so the reply
+      // visually addresses the original reply author, while threading to the
+      // top-level parent (matches web's flat-thread model).
+      if (mentionUser?.username) {
+        setCommentText(`@${mentionUser.username} `);
+      }
       setTimeout(() => inputRef.current?.focus(), 100);
     },
     [clearMentionSuggestions],
@@ -1365,6 +1371,11 @@ const BookChapterCommentModal = ({ chapter, isVisible, onClose, onCommentPosted,
               contentContainerStyle={commentListContentContainerStyle}
               showsVerticalScrollIndicator={false}
               renderItem={renderCommentItem}
+              // Virtualization tuning — see PostCommentModal for rationale.
+              initialNumToRender={8}
+              maxToRenderPerBatch={6}
+              windowSize={10}
+              updateCellsBatchingPeriod={50}
               onEndReached={() => fetchComments(true)}
               onScrollToIndexFailed={handleScrollToIndexFailed}
               nestedScrollEnabled

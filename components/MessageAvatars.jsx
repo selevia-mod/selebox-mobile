@@ -60,12 +60,12 @@ const MessageAvatars = ({ users = [], isGroup = false, style, size = 48 }) => {
           );
         }
 
-        return <FastImage key={user.$id} source={{ uri: user.avatar, priority: FastImage.priority.high }} style={avatarStyle} />;
+        return <FastImage key={user.$id} source={{ uri: user.avatar, priority: FastImage.priority.normal }} style={avatarStyle} />;
       })}
     </View>
   ) : (
     <FastImage
-      source={{ uri: users[0]?.avatar, priority: FastImage.priority.high }}
+      source={{ uri: users[0]?.avatar, priority: FastImage.priority.normal }}
       style={[
         {
           width: size,

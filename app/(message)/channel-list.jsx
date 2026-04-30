@@ -10,7 +10,7 @@ import { MaintenanceModules, Modules } from "../../constants/app";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import { streamClient } from "../../lib/stream";
-import { useModalMessage } from "../../lib/useModalMessage";
+import { useModalMessage } from "../../hooks/useModalMessage";
 
 const ChannelListScreen = () => {
   const { theme } = useAppTheme();

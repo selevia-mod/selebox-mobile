@@ -14,6 +14,13 @@ const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 const BOOK_ID_REGEX = /\/books\/([\w-]+)/i;
 const VIDEO_ID_REGEX = /\/videos\/([\w-]+)/i;
 
+// Module-level synchronous caches — survive component remounts during a
+// session, so switching home-feed tabs (or scrolling cards in/out of view)
+// doesn't flash the loading state when the preview is already known.
+// AsyncStorage stays as the persistent cache for next sessions.
+const PREVIEW_MEMORY_CACHE = new Map(); // cacheKey -> preview data
+const BOOK_META_MEMORY_CACHE = new Map(); // bookId -> bookDoc
+
 const getBookIdFromUrl = (link) => {
   if (!link || typeof link !== "string") return null;
   const match = link.match(BOOK_ID_REGEX);
@@ -69,16 +76,22 @@ const buildVideoPreview = (video, videoId) => {
 
 const LinkPreviewCard = ({ url, imageOnly = false }) => {
   const { theme } = useAppTheme();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-  const [coverAspectRatio, setCoverAspectRatio] = useState(2 / 3);
-  const [bookMeta, setBookMeta] = useState(null);
   const bookService = useRef(new BookService()).current;
   const videosService = useRef(new VideosService()).current;
   const bookId = getBookIdFromUrl(url);
   const videoId = getVideoIdFromUrl(url);
   const cacheKey = videoId ? `preview:video:${url}` : `preview:${url}`;
+
+  // Synchronous hydration from in-memory cache — no flash if we've already
+  // resolved this preview during the session.
+  const initialPreview = PREVIEW_MEMORY_CACHE.get(cacheKey) || null;
+  const initialBookMeta = bookId ? BOOK_META_MEMORY_CACHE.get(bookId) || null : null;
+
+  const [data, setData] = useState(initialPreview);
+  const [loading, setLoading] = useState(initialPreview ? false : true);
+  const [error, setError] = useState(false);
+  const [coverAspectRatio, setCoverAspectRatio] = useState(2 / 3);
+  const [bookMeta, setBookMeta] = useState(initialBookMeta);
   const statusValue = (bookMeta?.status || "").toLowerCase();
   const statusColor = statusValue === "ongoing" ? theme.accentAmber : statusValue === "completed" ? theme.accentGreen : theme.textMuted;
 
@@ -110,17 +123,28 @@ const LinkPreviewCard = ({ url, imageOnly = false }) => {
   };
 
   const fetchPreview = async () => {
+    // Synchronous in-memory cache check — no flash on remount.
+    const memCached = PREVIEW_MEMORY_CACHE.get(cacheKey);
+    if (memCached) {
+      setData(memCached);
+      setLoading(false);
+      setError(false);
+      return;
+    }
+
     setLoading(true);
     setError(false);
     try {
       const cachedData = await getCachedPreview();
       if (cachedData) {
+        PREVIEW_MEMORY_CACHE.set(cacheKey, cachedData);
         setData(cachedData);
         setLoading(false);
         return;
       }
 
       const preview = (await fetchVideoPreview()) || (await getLinkPreview(url));
+      if (preview) PREVIEW_MEMORY_CACHE.set(cacheKey, preview);
       setData(preview);
       await AsyncStorage.setItem(cacheKey, JSON.stringify({ data: preview, timestamp: Date.now() }));
     } catch (err) {
@@ -145,11 +169,22 @@ const LinkPreviewCard = ({ url, imageOnly = false }) => {
       };
     }
 
+    // Synchronous in-memory cache hit — no flash on remount.
+    const cachedBook = BOOK_META_MEMORY_CACHE.get(bookId);
+    if (cachedBook) {
+      setBookMeta(cachedBook);
+      return () => {
+        isActive = false;
+      };
+    }
+
     const fetchBookMeta = async () => {
-      setBookMeta(null);
+      // Don't clear bookMeta here — initial state already reflects cache state
+      // and clearing causes a flash when this is a fresh prop change.
       try {
         const bookDoc = await bookService.fetchBook({ bookId });
         if (!isActive) return;
+        if (bookDoc) BOOK_META_MEMORY_CACHE.set(bookId, bookDoc);
         setBookMeta(bookDoc);
       } catch (err) {
         console.log("Failed to fetch book meta:", err);

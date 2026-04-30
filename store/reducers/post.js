@@ -1,10 +1,31 @@
 import { createSlice } from "@reduxjs/toolkit";
+import { createTransform } from "redux-persist";
 import reduxStorage from "../storage";
+
+// Cap persisted posts so cold-start hydration stays small. Live runtime state
+// keeps the full feed; only what's written to MMKV is capped. Without this,
+// scrolling 200+ posts means every subsequent dispatch re-serializes the full
+// 200-item array. 50 is enough for an instant "above the fold" on relaunch;
+// home.jsx will refetch fresher data in the background anyway.
+const PERSISTED_POST_CAP = 50;
+const cappedPostsTransform = createTransform(
+  (inboundState) => {
+    if (!inboundState || !Array.isArray(inboundState.posts)) return inboundState;
+    if (inboundState.posts.length <= PERSISTED_POST_CAP) return inboundState;
+    return { ...inboundState, posts: inboundState.posts.slice(0, PERSISTED_POST_CAP) };
+  },
+  (outboundState) => outboundState,
+  { whitelist: ["post"] },
+);
 
 export const postPersistConfig = {
   key: "post",
   storage: reduxStorage,
   whitelist: ["posts", "lastId", "hasMore", "feedUserId", "cachedAt"],
+  // 1s write coalescing — like/comment count updates fire fast; without this
+  // every reducer call triggers a full slice serialize.
+  throttle: 1000,
+  transforms: [cappedPostsTransform],
 };
 
 const initialState = {

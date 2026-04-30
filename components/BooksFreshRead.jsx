@@ -1,19 +1,22 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { memo, useCallback } from "react";
-import { Dimensions, FlatList, Text, View } from "react-native";
+import { FlatList, Text, View, useWindowDimensions } from "react-native";
 import { useSelector } from "react-redux";
 import useAppTheme from "../hooks/useAppTheme";
 import BookCard from "./BookCard";
 import BooksSectionTitle from "./BooksSectionTitle";
 
+const selectFreshRead = (state) => state.books.freshRead;
+
 const BooksFreshRead = () => {
   const { theme } = useAppTheme();
-  const { freshRead } = useSelector((state) => state.books);
-  const { width } = Dimensions.get("window");
+  const freshRead = useSelector(selectFreshRead);
+  const { width } = useWindowDimensions();
 
   const renderItem = useCallback(({ item }) => {
-    return <BookCard key={item.uri} item={item} />;
+    return <BookCard item={item} />;
   }, []);
+  const keyExtractor = useCallback((item, index) => item?.$id || `fresh-${index}`, []);
 
   return (
     <View className="space-y-2">
@@ -22,7 +25,7 @@ const BooksFreshRead = () => {
         removeClippedSubviews={false}
         horizontal
         showsHorizontalScrollIndicator={false}
-        keyExtractor={(item, index) => item?.$id || `${item.type}-${index}`}
+        keyExtractor={keyExtractor}
         data={freshRead}
         renderItem={renderItem}
         initialNumToRender={6}

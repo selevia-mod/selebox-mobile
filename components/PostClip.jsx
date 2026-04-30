@@ -10,6 +10,7 @@ import Share from "react-native-share";
 import { useClipsStats } from "../context/clip-stats-provider";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
+import playbackEvents from "../lib/playback-events";
 import secrets from "../private/secrets";
 import AnimatedSkeleton from "./AnimatedSkeleton";
 import ClipCommentModal from "./ClipCommentModal";
@@ -48,6 +49,25 @@ const PostClip = forwardRef(({ item, onOpenSafetySheet }, ref) => {
       playerRef.current?.pause?.();
     } catch (_) {}
   }, []);
+
+  /** PAUSE WHEN A FOREGROUND-FOCUS MODAL OPENS
+   *
+   *  Mirrors PostVideo: subscribes to the global playbackEvents bus and
+   *  pauses when a "pause-all" signal is broadcast. Without this, the
+   *  Share Profile sheet and similar foreground-focus modals can be
+   *  force-closed by the system because the autoplaying clip is competing
+   *  for playback ownership. */
+  useEffect(() => {
+    const handlePauseAll = () => {
+      try {
+        safePause();
+      } catch (_) {}
+    };
+    playbackEvents.on("pause-all", handlePauseAll);
+    return () => {
+      playbackEvents.off("pause-all", handlePauseAll);
+    };
+  }, [safePause]);
 
   /** LOAD CLIP */
   useEffect(() => {
@@ -207,7 +227,7 @@ const PostClip = forwardRef(({ item, onOpenSafetySheet }, ref) => {
         <View className="flex flex-row items-center">
           <TouchableOpacity onPress={handleProfilePress} activeOpacity={0.7}>
             <FastImage
-              source={{ uri: clip.uploader?.avatar, priority: FastImage.priority.high }}
+              source={{ uri: clip.uploader?.avatar, priority: FastImage.priority.normal }}
               style={{ height: 35, width: 35, borderRadius: 5, marginRight: 10, backgroundColor: theme.surfaceStrong }}
             />
           </TouchableOpacity>

@@ -2,7 +2,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { ActivityIndicator, Modal, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
-import { calculateAmountToReceive } from "../lib/calculateWithdrawal";
+import { calculateAmountToReceive } from "../lib/utils/calculateWithdrawal";
 
 const WithdrawModal = ({ visible, onClose, onConfirm, amount, setAmount, remainingBalance, loading }) => {
   const { globalSettings } = useGlobalContext();

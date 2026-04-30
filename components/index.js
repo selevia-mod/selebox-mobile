@@ -21,6 +21,7 @@ import BooksFreshRead from "./BooksFreshRead";
 import BooksLibrary from "./BooksLibrary";
 import BooksPerCategory from "./BooksPerCategory";
 import BooksRanking from "./BooksRanking";
+import BooksReadingList from "./BooksReadingList";
 import BooksRecentlyUploaded from "./BooksRecentlyUploaded";
 import BooksSavePromptModal from "./BooksSavePromptModal";
 import BooksSectionTitle from "./BooksSectionTitle";
@@ -69,11 +70,11 @@ import Profile from "./Profile";
 import ProfileAboutTab from "./ProfileAboutTab";
 import ProfileBooksTab from "./ProfileBooksTab";
 import ProfileClipsTab from "./ProfileClipsTab";
-import ProfileHomeTab from "./ProfileHomeTab";
-import ProfilePlaylistTab from "./ProfilePlaylistTab";
 import ProfilePostTab from "./ProfilePostTab";
 import ProfileVideosTab from "./ProfileVideosTab";
 import ReportModal from "./ReportModal";
+import ScrollFadeOverlay from "./ScrollFadeOverlay";
+import SectionDot from "./SectionDot";
 import SelectedMusicBadge from "./SelectedMusicBadge";
 import StarIcon from "./StarIcon";
 import StoryBar from "./StoryBar";
@@ -104,6 +105,7 @@ import VideoCard from "./VideoCard";
 import VideoCardNew from "./VideoCardNew";
 import VideoCardSmall from "./VideoCardSmall";
 import VideoCommentModal from "./VideoCommentModal";
+import VideoUnlockChoiceModal from "./VideoUnlockChoiceModal";
 import VideosContinueWatching from "./VideosContinueWatching";
 import VideosDownloadQualityModal from "./VideosDownloadQualityModal";
 import VideosFromFollowing from "./VideosFromFollowing";
@@ -111,6 +113,7 @@ import VideosLatest from "./VideosLatest";
 import VideosMostPeopleWant from "./VideosMostPeopleWant";
 import VideosPerCategory from "./VideosPerCategory";
 import VideosPopularInYourArea from "./VideosPopularInYourArea";
+import VideosSectionsSkeleton from "./VideosSectionSkeleton";
 import VideosSectionTitle from "./VideosSectionTitle";
 import VideosSuggestedForYou from "./VideosSuggestedForYou";
 import VideosTrendingWeek from "./VideosTrendingWeek";
@@ -142,6 +145,7 @@ export {
   BooksLibrary,
   BooksPerCategory,
   BooksRanking,
+  BooksReadingList,
   BooksRecentlyUploaded,
   BooksSavePromptModal,
   BooksSectionTitle,
@@ -190,11 +194,11 @@ export {
   ProfileAboutTab,
   ProfileBooksTab,
   ProfileClipsTab,
-  ProfileHomeTab,
-  ProfilePlaylistTab,
   ProfilePostTab,
   ProfileVideosTab,
   ReportModal,
+  ScrollFadeOverlay,
+  SectionDot,
   SelectedMusicBadge,
   StarIcon,
   StoryBar,
@@ -225,6 +229,7 @@ export {
   VideoCardNew,
   VideoCardSmall,
   VideoCommentModal,
+  VideoUnlockChoiceModal,
   VideosContinueWatching,
   VideosDownloadQualityModal,
   VideosFromFollowing,
@@ -232,6 +237,7 @@ export {
   VideosMostPeopleWant,
   VideosPerCategory,
   VideosPopularInYourArea,
+  VideosSectionsSkeleton,
   VideosSectionTitle,
   VideosSuggestedForYou,
   VideosTrendingWeek,

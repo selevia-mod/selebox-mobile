@@ -2,7 +2,7 @@ import { FontAwesome, Ionicons, MaterialIcons } from "@expo/vector-icons";
 import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { router, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   InteractionManager,
@@ -35,9 +35,9 @@ import {
   isIntroductionChapter,
   sortBookChaptersByOrder,
 } from "../../lib/books";
-import { cleanupTempFile, convertToWebP, persistImagePickerAsset } from "../../lib/image-utils";
+import { cleanupTempFile, convertToWebP, persistImagePickerAsset } from "../../lib/utils/image-utils";
 import { NotificationService } from "../../lib/notifications";
-import { useModalMessage } from "../../lib/useModalMessage";
+import { useModalMessage } from "../../hooks/useModalMessage";
 import { removeLocalDraft, upsertLocalDraft } from "../../store/reducers/books";
 
 const sanitizeImageTag = (tag = "") => {
@@ -107,6 +107,21 @@ const escapeHtmlAttribute = (value = "") => String(value).replace(/&/g, "&amp;")
 
 const INLINE_IMAGE_BASE_STYLE = "max-width:100%; height:auto; display:block; margin:12px auto; border-radius:12px; object-fit:cover;";
 const INLINE_IMAGE_PENDING_STYLE = `${INLINE_IMAGE_BASE_STYLE} filter: blur(8px); opacity: 0.6;`;
+
+// Removes any inline <img> tag that's still in the "pending upload" state —
+// either it carries a `data-upload-id` attribute (the editor is waiting for
+// the upload to resolve) or its `src` is a base64 `data:` URI we used as a
+// placeholder while uploading. Base64 blobs can run several megabytes and,
+// when persisted (Redux + MMKV stringify, Appwrite POST body), can freeze
+// the JS thread or hang the upload, which has been observed to crash or
+// soft-lock the app during save / publish. Stripping these tags before
+// persistence guarantees a save never carries a multi-MB inline payload.
+const stripPendingInlineImages = (html = "") => {
+  if (!html) return html;
+  return html
+    .replace(/<img\b[^>]*data-upload-id=[^>]*>/gi, "")
+    .replace(/<img\b[^>]*\ssrc=(["'])data:[^>]*?\1[^>]*>/gi, "");
+};
 
 const resolveLocalChapterId = ({ chapterForm, chapter }) => {
   if (chapterForm?.localId) return chapterForm.localId;
@@ -208,7 +223,7 @@ const ChapterEditor = () => {
     }
   };
 
-  const getSanitizedChapterContent = (content = "") => stripBackgroundStyles(normalizeBookContentToHtml(content));
+  const getSanitizedChapterContent = (content = "") => stripPendingInlineImages(stripBackgroundStyles(normalizeBookContentToHtml(content)));
   const hasFilledEntry = useCallback(
     (entry) => {
       const title = String(entry?.title || "").trim();
@@ -362,6 +377,15 @@ const ChapterEditor = () => {
     }
   };
 
+  // Removes the local draft entry for the chapter we just saved online.
+  // Matches by localId first (the explicit case), then falls back to a
+  // (title, order) shadow match so a chapter the user is publishing for the
+  // first time — which has a freshly minted localId that won't exist in any
+  // older draft entry — still clears the stale draft sitting under the same
+  // (title, order) slot. Without the shadow match, the same logical chapter
+  // could appear twice in the table of contents (once from the new server
+  // entry, once from the orphaned local draft) and "delete one delete all"
+  // because the duplicates all point at the same server $id once tapped.
   const clearSavedLocalDraftChapter = () => {
     const localDraftKey = activeLocalDraftKey || draftKeyParam;
     if (!localDraftKey) return;
@@ -373,13 +397,23 @@ const ChapterEditor = () => {
         ? [existingDraft.chapterForm]
         : [];
     const chapterLocalId = resolveLocalChapterId({ chapterForm, chapter });
+    const chapterTitle = String(chapterForm?.title || "").trim();
+    const chapterOrder = Number(resolvedChapterTotal);
 
-    if (!existingDraft || !chapterLocalId) {
+    if (!existingDraft) {
       dispatch(removeLocalDraft(localDraftKey));
       return;
     }
 
-    const remainingChapters = existingChapters.filter((item) => item?.localId !== chapterLocalId);
+    const remainingChapters = existingChapters.filter((item) => {
+      if (item?.localId && chapterLocalId && item.localId === chapterLocalId) return false;
+      const itemTitle = String(item?.title || "").trim();
+      const itemOrder = Number(getBookChapterOrder(item));
+      const titleMatches = chapterTitle && itemTitle === chapterTitle;
+      const orderMatches = Number.isFinite(chapterOrder) && itemOrder === chapterOrder;
+      if (titleMatches && orderMatches) return false;
+      return true;
+    });
     if (!remainingChapters.length) {
       dispatch(removeLocalDraft(localDraftKey));
       return;
@@ -905,7 +939,25 @@ const ChapterEditor = () => {
     span: { color: theme.textMuted },
     img: { marginTop: 8, marginBottom: 14, borderRadius: 12 },
   };
-  const editorCssText = `body { font-size: 14px; color: ${theme.inputText}; } * { background-color: transparent !important; }`;
+  // Memoized so the RichEditor receives a stable `editorStyle` reference
+  // across keystrokes. Previously these were re-created on every render —
+  // every keystroke triggered setChapterForm → re-render → fresh editorStyle
+  // object → react-native-pell-rich-editor re-injected CSS into the WebView,
+  // which manifested as cursor jumps, dropped characters, and wobbly font
+  // sizing while typing.
+  const editorCssText = useMemo(
+    () => `body { font-size: 14px; color: ${theme.inputText}; } * { background-color: transparent !important; }`,
+    [theme.inputText],
+  );
+  const editorStyleProp = useMemo(
+    () => ({
+      backgroundColor: "transparent",
+      color: theme.inputText,
+      placeholderColor: theme.placeholder,
+      contentCSSText: editorCssText,
+    }),
+    [editorCssText, theme.inputText, theme.placeholder],
+  );
 
   const clearEditorHeightSyncTimeouts = () => {
     imageHeightSyncTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
@@ -1115,12 +1167,7 @@ const ChapterEditor = () => {
                         scheduleEditorHeightSync();
                       }}
                       placeholder="Write your part..."
-                      editorStyle={{
-                        backgroundColor: "transparent",
-                        color: theme.inputText,
-                        placeholderColor: theme.placeholder,
-                        contentCSSText: editorCssText,
-                      }}
+                      editorStyle={editorStyleProp}
                       style={{ minHeight: 260 }}
                       onChange={handleContentChange}
                     />

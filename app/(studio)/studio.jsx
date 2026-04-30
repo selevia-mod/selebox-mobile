@@ -4,7 +4,7 @@ import { ScrollView, TouchableOpacity, View } from "react-native";
 import { ClipsIcon } from "../../assets/svgs";
 import { CustomAlertModal, StyledKeyboardAvoidingView, StyledSafeAreaView, StyledTitle, UploadClip, UploadVideo } from "../../components";
 import useAppTheme from "../../hooks/useAppTheme";
-import { useModalMessage } from "../../lib/useModalMessage";
+import { useModalMessage } from "../../hooks/useModalMessage";
 
 const Studio = () => {
   const { theme } = useAppTheme();

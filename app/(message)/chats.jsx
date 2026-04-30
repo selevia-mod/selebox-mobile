@@ -11,6 +11,7 @@ import { client } from "../../lib/appwrite";
 import { MessagesService } from "../../lib/messages";
 import secrets from "../../private/secrets";
 import useResetOnBlur from "../../hooks/useResetOnBlur";
+import logger from "../../lib/utils/logger";
 import { formatTime } from "../../utils/formatTime";
 import { waitForAppwriteWebSocketReady } from "../../utils/waitUntilRealtimeIsReady";
 
@@ -31,23 +32,36 @@ const Chats = () => {
   );
 
   useEffect(() => {
+    // Race-safe realtime subscription. Without `isCancelled`, an unmount that
+    // happens while `waitForAppwriteWebSocketReady` is still pending would let
+    // the subsequent `client.subscribe` register AFTER cleanup ran, leaking
+    // an orphan subscription that fires for the rest of the app session.
     let unsubscribe = null;
+    let isCancelled = false;
 
     const setupRealtimeListeners = async () => {
       try {
         await waitForAppwriteWebSocketReady(secrets.appwriteConfig.projectId, client?.config?.endpoint);
+        if (isCancelled) return;
         unsubscribe = client.subscribe(
           `databases.${secrets.appwriteConfig.databaseId}.collections.${secrets.appwriteConfig.chatsCollectionId}.documents`,
           (response) => handleRealTimeChatsEvents(response),
         );
+        // Belt-and-suspenders: if cleanup ran between the await and the
+        // assignment, immediately unsubscribe what we just registered.
+        if (isCancelled && unsubscribe) {
+          unsubscribe();
+          unsubscribe = null;
+        }
       } catch (err) {
-        console.error("Realtime not ready or subscription failed:", err);
+        logger.error("Chats", "Realtime subscription failed", err);
       }
     };
 
     setupRealtimeListeners();
 
     return () => {
+      isCancelled = true;
       if (unsubscribe) unsubscribe();
     };
   }, []);

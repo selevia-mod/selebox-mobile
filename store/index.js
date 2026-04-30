@@ -22,11 +22,31 @@ const store = configureStore({
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({
+      // Both checks below are dev-only (Redux Toolkit disables them in
+      // production), so this config affects developer experience only.
+      //
+      // The state shape is large: books.* and videos.* each carry 11+ arrays
+      // of Appwrite documents, plus posts, notifications, creatorVideos, and
+      // storyCache. The default ImmutableStateInvariantMiddleware deep-walks
+      // every reducer's state on every dispatch to detect mutations — and
+      // that walk was hitting 530ms+ on dispatch, which is exactly the
+      // freeze Sele saw on the Books tab. Same story for serializableCheck.
+      //
+      // Mitigation: ignore the heavy paths. Every slice uses createSlice,
+      // which uses Immer internally — mutation is literally impossible
+      // through our reducers, so the immutable check on those paths is
+      // redundant. We keep the check active on auth and app (smaller
+      // slices) so genuine mutation bugs in non-Immer code (e.g. a setUser
+      // helper that forgets to spread) still get caught.
       serializableCheck: {
         warnAfter: 512,
         ignoredActions: [FLUSH, REHYDRATE, PAUSE, PERSIST, PURGE, REGISTER],
+        ignoredPaths: ["books", "videos", "post", "notifications", "creatorVideos", "storyCache"],
       },
-      immutableCheck: { warnAfter: 512 },
+      immutableCheck: {
+        warnAfter: 512,
+        ignoredPaths: ["books", "videos", "post", "notifications", "creatorVideos", "storyCache"],
+      },
     }),
 });
 

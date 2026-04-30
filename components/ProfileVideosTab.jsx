@@ -18,6 +18,7 @@ const ProfileVideosTab = ({
   onScroll,
   onLoadingChange,
   suppressEmptyState = false,
+  headerComponent = null,
 }) => {
   const { user, allVideos, setAllVideos } = useGlobalContext();
   const { theme } = useAppTheme();
@@ -61,6 +62,7 @@ const ProfileVideosTab = ({
 
   const renderListHeader = () => (
     <View style={{ paddingTop: contentPaddingTop }}>
+      {headerComponent}
       {sectionTitle ? (
         <Text className="mb-2 text-xl font-bold" style={{ color: theme.text }}>
           {sectionTitle}

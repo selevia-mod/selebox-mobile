@@ -1,9 +1,7 @@
-import { MaterialIcons } from "@expo/vector-icons";
 import { FlashList } from "@shopify/flash-list";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, PanResponder, RefreshControl, Text, TouchableOpacity, View, useWindowDimensions } from "react-native";
-import LoaderKit from "react-native-loader-kit";
+import { InteractionManager, PanResponder, RefreshControl, Text, TouchableOpacity, View, useWindowDimensions } from "react-native";
 import PagerView from "react-native-pager-view";
 import { useDispatch, useSelector } from "react-redux";
 import {
@@ -14,15 +12,16 @@ import {
   BooksLibrary,
   BooksPerCategory,
   BooksRanking,
+  BooksReadingList,
   BooksRecentlyUploaded,
   BooksWeeklyFeatured,
   MainScreensHeader,
   StyledSafeAreaView,
 } from "../../components";
-import BookSearchCard from "../../components/BookSearchCard";
 import useAppTheme from "../../hooks/useAppTheme";
 import useResetOnBlur from "../../hooks/useResetOnBlur";
 import { BookService, fetchRandomBook } from "../../lib/books";
+import { BooksRankingService } from "../../lib/books-rankings";
 import tabNavigationEvents from "../../lib/tab-navigation-events";
 import {
   setCategoryBooks,
@@ -74,21 +73,38 @@ const parseBookCategories = (rawBookCategories) => {
   }
 };
 
-const TAB_TITLES = ["For You", "Discover", "Ranking", "Library"];
+const TAB_TITLES = ["For You", "Discover", "Ranking", "Library", "Reading List"];
 const SWIPE_DISTANCE_MIN = 120;
 const SWIPE_DISTANCE_FRACTION = 0.3;
 const SWIPE_DIRECTION_RATIO = 2;
 
+// Section height estimate for the For You FlashList. Each section is a horizontal
+// rail (title ~32 px + BookCard ~280 px + spacing ~8 px ≈ 320 px). Wrong estimates
+// here are the classic cause of "blank cells while scrolling fast" on FlashList,
+// but for the Books cold-open lag the bigger win is just that virtualization
+// means only ~1–2 visible sections mount on first paint instead of all 5+N.
+const BOOKS_SECTION_ESTIMATED_HEIGHT = 320;
+const BooksSectionSeparator = () => <View style={{ height: 8 }} />;
+
+// Renders its children only once the user has activated this PagerView page at
+// least once. Cuts the first-tap-to-Books cost: previously all 5 tab content
+// components mounted eagerly (each runs useSelector, useEffect, useResetOnBlur
+// etc.). Now only For You mounts up front; the others come online lazily as
+// the user swipes/taps to them and stay mounted afterward (so re-visits feel
+// instant and we don't lose any in-tab state). The placeholder keeps PagerView's
+// child count stable so swipe gestures still work on first render.
+const LazyPagerChild = ({ isActive, children }) => {
+  const [hasActivated, setHasActivated] = useState(isActive);
+  useEffect(() => {
+    if (isActive && !hasActivated) setHasActivated(true);
+  }, [isActive, hasActivated]);
+  return <View className="h-full flex-1">{hasActivated ? children : null}</View>;
+};
+
 const Books = () => {
   const { theme } = useAppTheme();
   const [activePage, setActivePage] = useState(0);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [isSearching, setIsSearching] = useState(false);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [searchHasMore, setSearchHasMore] = useState(false);
-  const [searchLastId, setSearchLastId] = useState(null);
-  const [filteredBooks, setFilteredBooks] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   useResetOnBlur(setRefreshing, setIsFetchingMore);
   const { width: windowWidth } = useWindowDimensions();
@@ -115,9 +131,14 @@ const Books = () => {
     sections.push({ type: "CompletedAndExcellentWorks" });
     sections.push({ type: "ContinueReading" });
 
+    const hasBooks = (categoryName) => (booksState.categories?.[categoryName]?.length ?? 0) > 0;
+
     const pushNextCategories = (count) => {
       for (let i = 0; i < count && categoryIndex < bookCategories.length; i += 1) {
-        sections.push({ type: "Category", category: bookCategories[categoryIndex] });
+        const categoryName = bookCategories[categoryIndex];
+        if (hasBooks(categoryName)) {
+          sections.push({ type: "Category", category: categoryName });
+        }
         categoryIndex += 1;
       }
     };
@@ -129,12 +150,15 @@ const Books = () => {
     pushNextCategories(2);
 
     while (categoryIndex < bookCategories.length) {
-      sections.push({ type: "Category", category: bookCategories[categoryIndex] });
+      const categoryName = bookCategories[categoryIndex];
+      if (hasBooks(categoryName)) {
+        sections.push({ type: "Category", category: categoryName });
+      }
       categoryIndex += 1;
     }
 
     return sections;
-  }, [bookCategories]);
+  }, [bookCategories, booksState.categories]);
 
   const pagerPanResponder = useMemo(
     () =>
@@ -176,39 +200,35 @@ const Books = () => {
 
     const isStale = !booksState.lastFetchedAt || now - booksState.lastFetchedAt > TWELVE_HOURS;
 
-    if (isEmpty) {
-      console.log("📚 First visit — fetching books…");
-      refreshBooks();
-    } else if (isStale) {
-      console.log("📚 Cache stale — refreshing books in background…");
-      refreshBooks({ silent: true });
-    } else {
-      console.log("📚 Loaded instantly from MMKV cache");
-    }
+    // Defer the cold-load fetch until after the first paint settles. Without
+    // this, refreshBooks fires synchronously inside the mount effect and the
+    // dispatch fanout (5 setX actions across 6 sub-section subscribers) runs
+    // on the same tick as the tab-tap animation — that's where the tap-to-Books
+    // lag came from. runAfterInteractions yields to the JS thread until any
+    // active gesture / animation has finished, so the tab paints first, then
+    // the network kicks off.
+    const runFetch = () => {
+      if (isEmpty) {
+        refreshBooks();
+      } else if (isStale) {
+        refreshBooks({ silent: true });
+      }
+    };
+
+    const handle = InteractionManager.runAfterInteractions(runFetch);
+    return () => handle?.cancel?.();
   }, []);
 
+  // Pre-warm the rankings pool after the For You feed has had time to paint, so
+  // the Ranking sub-tab is instant the first time the user navigates to it.
+  // Was a fixed 2s setTimeout — InteractionManager is more honest because it
+  // yields to whatever's actually on the JS thread (animations, list mounts).
   useEffect(() => {
-    const delaySearch = setTimeout(async () => {
-      if (!searchQuery.trim()) {
-        setFilteredBooks([]);
-        setIsSearching(false);
-        setSearchHasMore(false);
-        setSearchLastId(null);
-        return;
-      }
-
-      setSearchLoading(true);
-      setIsSearching(true);
-
-      const { documents, hasMore } = await bookService.searchBooks({ searchQuery, limit: 20 });
-      setFilteredBooks(documents);
-      setSearchLastId(documents[documents.length - 1]?.$id || null);
-      setSearchHasMore(hasMore);
-      setSearchLoading(false);
-    }, 1000);
-
-    return () => clearTimeout(delaySearch);
-  }, [searchQuery]);
+    const handle = InteractionManager.runAfterInteractions(() => {
+      BooksRankingService.fetchRankingsPool().catch(() => {});
+    });
+    return () => handle?.cancel?.();
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -226,7 +246,7 @@ const Books = () => {
       if (tab !== "books") return;
       if (activePageRef.current !== 0) return;
       lastScrollY.current = 0;
-      flatListRef.current?.scrollToOffset?.({ offset: 0, animated: true });
+      flatListRef.current?.scrollTo?.({ y: 0, animated: true }) ?? flatListRef.current?.scrollToOffset?.({ offset: 0, animated: true });
       if (navHiddenRef.current) {
         navHiddenRef.current = false;
         tabNavigationEvents.emit("tabBarVisibility", { visible: true });
@@ -247,29 +267,6 @@ const Books = () => {
     }
   }, [activePage]);
 
-  const fetchMoreSearchResults = async () => {
-    if (!searchHasMore || searchLoading || !searchLastId) return;
-
-    setSearchLoading(true);
-    setIsFetchingMore(true);
-    try {
-      const { documents, hasMore } = await bookService.searchBooks({
-        searchQuery,
-        cursorId: searchLastId,
-        limit: 20,
-      });
-
-      setFilteredBooks((prev) => [...prev, ...documents]);
-      setSearchLastId(documents[documents.length - 1]?.$id || null);
-      setSearchHasMore(hasMore);
-    } catch (error) {
-      console.log("fetchMoreSearchResults: error", error);
-    } finally {
-      setSearchLoading(false);
-      setIsFetchingMore(false);
-    }
-  };
-
   const refreshBooks = useCallback(
     async ({ silent = false } = {}) => {
       let shouldStopRefreshing = !silent;
@@ -279,23 +276,30 @@ const Books = () => {
           setRefreshing(true);
         }
 
+        // Fire EVERYTHING in parallel from the very first tick. Previously fresh
+        // had a server-side excludes filter against weekly's $ids, which forced
+        // a serial weekly → fresh chain (~+200–400ms on cold load). We instead
+        // overfetch fresh by 2× and dedup client-side — same surface result,
+        // one fewer round-trip on the critical path.
+        // Categories also fire alongside everything else now (was sequential
+        // after the For-You dispatch round); the dedup against the For-You set
+        // happens once both arrive.
         const weeklyPromise = fetchRandomBook({ limit: 30 });
-        const completedPromise = fetchRandomBook({
-          limit: 30,
-          status: "Completed",
-        });
+        const freshPromise = fetchRandomBook({ limit: 60 });
+        const completedPromise = fetchRandomBook({ limit: 30, status: "Completed" });
         const continueReadingPromise = bookService.fetchContinueReadingBooks({ userId: user?.$id });
         const recentlyUploadedPromise = bookService.fetchPublishedBooks({ limit: 120 });
+        const categoryPromise = Promise.allSettled(
+          bookCategories.map((categoryName) => bookService.fetchPublishedBooks({ limit: 60, category: categoryName })),
+        );
 
-        const weekly = await weeklyPromise;
-        const excludedBookIds = new Set((weekly.documents || []).map((book) => book?.$id).filter(Boolean));
-
-        const fresh = await fetchRandomBook({ limit: 30, excludeIds: Array.from(excludedBookIds) });
-        (fresh.documents || []).forEach((book) => {
-          if (book?.$id) excludedBookIds.add(book.$id);
-        });
-
-        const [completed, continueRead, recently] = await Promise.all([completedPromise, continueReadingPromise, recentlyUploadedPromise]);
+        const [weekly, fresh, completed, continueRead, recently] = await Promise.all([
+          weeklyPromise,
+          freshPromise,
+          completedPromise,
+          continueReadingPromise,
+          recentlyUploadedPromise,
+        ]);
 
         const seenBookIds = new Set();
         const dedupedWeekly = takeUniqueBooks({ books: weekly.documents || [], seenBookIds, limit: 30 });
@@ -320,10 +324,8 @@ const Books = () => {
           setRefreshing(false);
         }
 
-        const categoryResponses = await Promise.allSettled(
-          bookCategories.map((categoryName) => bookService.fetchPublishedBooks({ limit: 60, category: categoryName })),
-        );
-
+        // Categories were already in flight above — just await the results now.
+        const categoryResponses = await categoryPromise;
         bookCategories.forEach((categoryName, index) => {
           const categoryResult = categoryResponses[index];
           if (categoryResult?.status === "rejected") {
@@ -340,8 +342,7 @@ const Books = () => {
           dispatch(setCategoryBooks({ category: categoryName, books: dedupedCategoryBooks }));
         });
       } catch (err) {
-        console.log(err);
-        console.log("Offline – using cached books data");
+        console.log("refreshBooks error", err?.message || err);
       } finally {
         if (shouldStopRefreshing) {
           setRefreshing(false);
@@ -395,9 +396,14 @@ const Books = () => {
       case "Category":
         return <BooksPerCategory category={item.category} />;
       default:
-        return <BookSearchCard item={item} />;
+        return null;
     }
   }, []);
+
+  // Tells FlashList to recycle each section type into its own pool. Without
+  // this, recycler may try to reuse a Category cell for a Weekly cell and
+  // briefly flash the wrong content during scroll.
+  const getItemType = useCallback((item) => item.type, []);
 
   const handleTabPress = (index) => {
     pagerRef.current?.setPage(index);
@@ -410,52 +416,80 @@ const Books = () => {
     setActivePage(position);
   };
 
-  const keyExtractor = useCallback((item, index) => item?.$id || `${item.type}-${item.category ?? index}`, []);
+  const sectionKeyExtractor = useCallback((item, index) => `${item.type}-${item.category ?? index}`, []);
 
   return (
     <StyledSafeAreaView edges={["top"]} style={{ backgroundColor: theme.background }}>
       <View className="w-full flex-1">
         <View className="px-4 pb-2 pt-1.5">
-          <MainScreensHeader title={"books"} searchPlaceholder={"Search Books."} searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
+          <MainScreensHeader title={"books"} />
         </View>
         <View className="flex-1">
-          <View
-            className="my-2 flex flex-row justify-between overflow-hidden rounded-lg"
-            style={{ backgroundColor: theme.surfaceMuted, borderWidth: 1, borderColor: theme.border }}
-          >
-            {TAB_TITLES.map((title, index) => (
-              <TouchableOpacity
-                className="flex-1 flex-row justify-center p-1.5"
-                key={index}
-                onPress={() => handleTabPress(index)}
-                style={{ backgroundColor: activePage === index ? theme.surfaceElevated : "transparent" }}
-              >
-                <Text
-                  className={`text-center text-sm ${activePage === index ? "font-bold" : ""}`}
-                  style={{ color: activePage === index ? theme.text : theme.textSoft }}
+          {/* Premium violet pill tabs — matches the home feed and Videos tab language.
+              Each pill uses `flex: 1` so the 5 tabs always divide the screen width
+              equally and no horizontal scroll is needed on any iPhone size. Labels
+              center inside their slot; numberOfLines + ellipsizeMode protects the
+              longest label ("Reading List") from overflowing on the smallest phones. */}
+          <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 6, paddingTop: 6, paddingBottom: 8 }}>
+            {TAB_TITLES.map((title, index) => {
+              const isActive = activePage === index;
+              const isLast = index === TAB_TITLES.length - 1;
+              return (
+                <TouchableOpacity
+                  key={index}
+                  onPress={() => handleTabPress(index)}
+                  activeOpacity={0.85}
+                  style={{
+                    flex: 1,
+                    alignItems: "center",
+                    paddingVertical: 7,
+                    paddingHorizontal: 4,
+                    borderRadius: 999,
+                    marginRight: isLast ? 0 : 4,
+                    backgroundColor: isActive ? theme.primary : "transparent",
+                    shadowColor: theme.primary,
+                    shadowOffset: { width: 0, height: 4 },
+                    shadowOpacity: isActive ? 0.22 : 0,
+                    shadowRadius: 8,
+                    elevation: isActive ? 3 : 0,
+                  }}
                 >
-                  {title}
-                </Text>
-              </TouchableOpacity>
-            ))}
+                  <Text
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                    style={{
+                      fontSize: 12,
+                      fontWeight: isActive ? "700" : "500",
+                      letterSpacing: 0.1,
+                      color: isActive ? theme.primaryContrast ?? "#ffffff" : theme.textMuted ?? theme.text,
+                    }}
+                  >
+                    {title}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
           <View className="flex-1" {...pagerPanResponder.panHandlers}>
             <PagerView className="flex-1" initialPage={0} ref={pagerRef} onPageSelected={handlePageSelected} scrollEnabled={false}>
               <View className="h-full flex-1">
+                {/* For You list — virtualized via FlashList. Was a ScrollView with
+                    .map(), which mounted ALL 5+N sections (~30–60+ BookCards) on
+                    cold open and was the actual cause of the 1–2s tap-to-Books
+                    lag. Mirrors the Videos tab's FlashList-of-sections approach
+                    so only ~1–2 visible sections mount on first paint. */}
                 <FlashList
-                  data={isSearching ? filteredBooks : booksSections}
+                  ref={flatListRef}
+                  data={booksSections}
                   renderItem={renderSection}
-                  keyExtractor={keyExtractor}
-                  estimatedItemSize={300}
-                  removeClippedSubviews={false}
-                  contentContainerStyle={{ paddingBottom: 50 }}
+                  keyExtractor={sectionKeyExtractor}
+                  getItemType={getItemType}
+                  estimatedItemSize={BOOKS_SECTION_ESTIMATED_HEIGHT}
+                  ItemSeparatorComponent={BooksSectionSeparator}
+                  contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 50 }}
                   showsVerticalScrollIndicator={false}
-                  onRefresh={refreshBooks}
                   onScroll={handleScroll}
                   scrollEventThrottle={16}
-                  onEndReached={isSearching ? fetchMoreSearchResults : undefined}
-                  ref={flatListRef}
-                  refreshing={refreshing}
                   refreshControl={
                     <RefreshControl
                       tintColor={theme.primary}
@@ -465,38 +499,23 @@ const Books = () => {
                       onRefresh={refreshBooks}
                     />
                   }
-                  ListFooterComponent={
-                    isFetchingMore ? (
-                      <View className="items-center py-4">
-                        <ActivityIndicator size="small" color={theme.primary} />
-                      </View>
-                    ) : null
-                  }
-                  ListEmptyComponent={
-                    searchLoading ? (
-                      <View className="items-center justify-center px-4 py-12">
-                        <LoaderKit style={{ width: 50, height: 50 }} name="LineScalePulseOutRapid" color={theme.primary} />
-                        <Text className="mt-4 text-lg font-semibold" style={{ color: theme.text }}>
-                          Searching
-                        </Text>
-                      </View>
-                    ) : (
-                      <View className="items-center justify-center px-4 py-12">
-                        <MaterialIcons name="search-off" size={64} color={theme.textSubtle} />
-                        <Text className="mt-4 text-lg font-semibold" style={{ color: theme.text }}>
-                          No Results Found
-                        </Text>
-                        <Text className="mt-2 text-center text-base" style={{ color: theme.textSoft }}>
-                          We couldn’t find anything matching your search.{"\n"}Try different keywords.
-                        </Text>
-                      </View>
-                    )
-                  }
                 />
               </View>
-              <BooksDiscover isActive={activePage === 1} onRefresh={refreshBooks} refreshing={refreshing} />
-              <BooksRanking isActive={activePage === 2} />
-              <BooksLibrary isActive={activePage === 3} />
+              {/* Lazy-mounted: each non-For-You tab waits for its first activation
+                  before instantiating, so the cost of opening Books is just the
+                  For You feed plus four trivial placeholders. */}
+              <LazyPagerChild isActive={activePage === 1}>
+                <BooksDiscover isActive={activePage === 1} onRefresh={refreshBooks} refreshing={refreshing} />
+              </LazyPagerChild>
+              <LazyPagerChild isActive={activePage === 2}>
+                <BooksRanking isActive={activePage === 2} />
+              </LazyPagerChild>
+              <LazyPagerChild isActive={activePage === 3}>
+                <BooksLibrary isActive={activePage === 3} />
+              </LazyPagerChild>
+              <LazyPagerChild isActive={activePage === 4}>
+                <BooksReadingList isActive={activePage === 4} />
+              </LazyPagerChild>
             </PagerView>
           </View>
         </View>

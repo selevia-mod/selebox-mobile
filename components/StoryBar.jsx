@@ -172,6 +172,15 @@ const StoryBar = ({ user, forceUpdate }) => {
 
   const loadStories = useCallback(
     async (reset = false) => {
+      // Bail if we don't have a user yet. This effect can fire on focus/refresh during
+      // sign-out, pre-bootstrap hydration, or mid-session expiry, when `user` is null.
+      // Without this guard, `user.$id` below throws "Cannot read property '$id' of null".
+      if (!user?.$id) {
+        setLoading(false);
+        setLoadingMore(false);
+        return;
+      }
+
       try {
         if (reset) {
           setLoading(true);

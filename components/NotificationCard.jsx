@@ -1,4 +1,5 @@
 import { router } from "expo-router";
+import { memo } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import useAppTheme from "../hooks/useAppTheme";
@@ -10,7 +11,7 @@ import {
   buildPostNotificationNavigationParams,
   buildVideoNotificationNavigationParams,
 } from "../lib/notifications";
-import TimeAgo from "../lib/time-ago";
+import TimeAgo from "../lib/utils/time-ago";
 import { stripMentionMarkup } from "../lib/user-mentions";
 import UserAvatar from "./UserAvatar";
 
@@ -29,9 +30,11 @@ const appendSnippet = (baseText, snippet, maxLength) => {
   return `${baseText}: "${snippetText}"`;
 };
 
+// Module-level singleton — was being instantiated per render before.
+const notificationService = new NotificationService();
+
 const NotificationCard = ({ item, onViewed }) => {
   const { theme } = useAppTheme();
-  const notificationService = new NotificationService();
   const notificationType = typeof item?.type === "string" ? item.type.toLowerCase() : "";
   const focusResourceType = item?.focusResourceType || null;
   let avatarUri = item?.sender?.avatar;
@@ -209,53 +212,70 @@ const NotificationCard = ({ item, onViewed }) => {
   return (
     <TouchableOpacity
       onPress={handleNotificationPress}
-      activeOpacity={0.85}
+      activeOpacity={0.7}
       accessibilityRole="button"
       accessibilityLabel={`Notification from ${senderName}`}
-      className="mb-3 flex-row items-center rounded-2xl p-3"
       style={{
-        borderWidth: 1,
-        borderColor: isUnread ? theme.primary : theme.border,
-        backgroundColor: isUnread ? theme.primarySoft : theme.card,
+        flexDirection: "row",
+        alignItems: "center",
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        backgroundColor: isUnread ? (theme.isDark ? "rgba(139, 92, 246, 0.10)" : "rgba(139, 92, 246, 0.06)") : "transparent",
       }}
     >
-      <View className="relative">
+      <View style={{ position: "relative" }}>
         <UserAvatar
           name={senderName}
           avatarUri={avatarUri}
-          size={48}
-          borderRadius={12}
-          borderColor={isUnread ? theme.primary : theme.border}
+          size={44}
+          borderRadius={22}
         />
         {isUnread && (
           <View
-            className="absolute -right-1 -top-1 h-3 w-3 rounded-full border"
-            style={{ borderColor: theme.background, backgroundColor: theme.primary }}
+            style={{
+              position: "absolute",
+              right: -2,
+              top: -2,
+              height: 10,
+              width: 10,
+              borderRadius: 5,
+              borderWidth: 2,
+              borderColor: theme.background,
+              backgroundColor: theme.primary,
+            }}
           />
         )}
       </View>
 
-      <View className={`ml-3 flex-1 ${hasThumbnail ? "mr-2" : ""}`}>
-        <View className="flex-row items-center justify-between">
-          <Text className="flex-1 text-sm font-semibold" style={{ color: theme.text }} numberOfLines={1}>
-            {senderName}
-          </Text>
-          {createdAtLabel ? (
-            <Text className="ml-2 text-[11px]" style={{ color: theme.textSubtle }}>
-              {createdAtLabel}
-            </Text>
-          ) : null}
-        </View>
-        <Text className={`mt-1 text-[13px] ${isUnread ? "font-medium" : ""}`} style={{ color: isUnread ? theme.text : theme.textMuted }} numberOfLines={3}>
-          {messageText}
+      <View style={{ flex: 1, marginLeft: 12, marginRight: hasThumbnail ? 8 : 0 }}>
+        <Text
+          style={{ fontSize: 14, lineHeight: 19, color: isUnread ? theme.text : theme.textMuted }}
+          numberOfLines={3}
+        >
+          <Text style={{ fontWeight: "700", color: theme.text }}>{senderName}</Text>
+          <Text> </Text>
+          <Text style={{ fontWeight: isUnread ? "500" : "400" }}>{messageText}</Text>
         </Text>
+        {createdAtLabel ? (
+          <Text style={{ marginTop: 2, fontSize: 11, color: theme.textSubtle }}>
+            {createdAtLabel}
+          </Text>
+        ) : null}
       </View>
 
       {hasThumbnail && (
-        <View className="h-[54px] w-[76px] overflow-hidden rounded-xl" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.surfaceMuted }}>
+        <View
+          style={{
+            height: 48,
+            width: 48,
+            overflow: "hidden",
+            borderRadius: 8,
+            backgroundColor: theme.surfaceMuted,
+          }}
+        >
           <FastImage
-            source={{ uri: thumbnailUri, priority: FastImage.priority.high }}
-            className="h-full w-full"
+            source={{ uri: thumbnailUri, priority: FastImage.priority.normal }}
+            style={{ height: "100%", width: "100%" }}
             resizeMode={notificationType === "clip" ? FastImage.resizeMode.contain : FastImage.resizeMode.cover}
             accessibilityLabel="Message Thumbnail"
           />
@@ -265,4 +285,4 @@ const NotificationCard = ({ item, onViewed }) => {
   );
 };
 
-export default NotificationCard;
+export default memo(NotificationCard);

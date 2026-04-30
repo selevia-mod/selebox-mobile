@@ -6,7 +6,7 @@ import FastImage from "react-native-fast-image";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { deletePost } from "../lib/posts";
-import TimeAgo from "../lib/time-ago";
+import TimeAgo from "../lib/utils/time-ago";
 import { handleAppLink } from "../utils/appLinks";
 import LinkPreviewCard from "./LinkPreviewCard";
 import PostInformation from "./PostInformation";
@@ -15,6 +15,25 @@ import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 
 const { width: screenWidth } = Dimensions.get("window");
 const DEFAULT_IMAGE_ASPECT_RATIO = 1;
+
+// Module-level cache of measured image aspect ratios, keyed by URI. Survives
+// remount within an app session (e.g., feed tab switch with cache rehydrate),
+// so PostCard re-renders use the correct dimensions on first paint instead
+// of flashing through DEFAULT_IMAGE_ASPECT_RATIO until onLoad fires again.
+// Same pattern as LinkPreviewCard's PREVIEW_MEMORY_CACHE.
+const IMAGE_ASPECT_RATIO_CACHE = new Map();
+
+const buildInitialAspectMap = (urls = []) => {
+  const initial = {};
+  for (const url of urls) {
+    if (typeof url !== "string" || !url) continue;
+    const cached = IMAGE_ASPECT_RATIO_CACHE.get(url);
+    if (typeof cached === "number") {
+      initial[url] = cached;
+    }
+  }
+  return initial;
+};
 
 const PostCard = ({
   item,
@@ -42,7 +61,13 @@ const PostCard = ({
   const { theme } = useAppTheme();
   const isLoggedInUser = user?.$id === item?.postOwner?.$id;
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [imageAspectRatios, setImageAspectRatios] = useState({});
+  // Lazy initializer pulls measured aspect ratios out of the module cache so
+  // the first render uses real dimensions instead of DEFAULT_IMAGE_ASPECT_RATIO.
+  // Without this, switching feed tabs flashed every post through a square
+  // placeholder before onLoad re-measured.
+  const [imageAspectRatios, setImageAspectRatios] = useState(() =>
+    buildInitialAspectMap(Array.isArray(item?.postUrls) ? item.postUrls : []),
+  );
   const [imageErrors, setImageErrors] = useState({});
 
   const flatListImageRef = useRef(null);
@@ -95,7 +120,7 @@ const PostCard = ({
 
   const toggleDropdown = () => {
     if (!isLoggedInUser) {
-      onOpenSafetySheet?.();
+      onOpenSafetySheet?.(item);
       return;
     }
     onToggleExpandMenu(index);
@@ -163,10 +188,15 @@ const PostCard = ({
 
   const resolvePostUrl = (value) => {
     if (!value) return null;
-    if (typeof value === "string") return value;
-    if (value?.uri) return value.uri;
-    if (value?.href) return value.href;
-    if (typeof value?.toString === "function") return value.toString();
+    // Only accept strings that look like an actual URL or data URI. The old
+    // `toString()` fallback produced "[object Object]" for malformed entries
+    // (objects without uri/href), which then surfaced as broken images in
+    // the feed — same visual outcome as a dead URL but caused by data, not
+    // network.
+    const looksLikeUrl = (s) => typeof s === "string" && /^(https?:|data:|file:|content:)/i.test(s.trim());
+    if (looksLikeUrl(value)) return value.trim();
+    if (looksLikeUrl(value?.uri)) return value.uri.trim();
+    if (looksLikeUrl(value?.href)) return value.href.trim();
     return null;
   };
 
@@ -187,7 +217,9 @@ const PostCard = ({
     setShowImageViewer?.(true);
   };
 
-  const renderPostUrls = ({ item: imageUrl, index: imageIndex }) => {
+  // Single tile renderer — handles tap/long-press, aspect ratio caching,
+  // and error fallback. Used by the Facebook-style grid below.
+  const renderImageGridSlot = (imageUrl, imageIndex, slotStyle, resizeMode = "cover", overlay = null) => {
     const handleImagePress = () => {
       if (firstUrl) {
         handleAppLink(firstUrl);
@@ -195,52 +227,209 @@ const PostCard = ({
       }
       openImageViewer(imageIndex);
     };
-
-    const handleImageLongPress = () => {
-      // Keep the full-screen viewer available even when the image opens a link on tap
-      openImageViewer(imageIndex);
-    };
-
-    const aspectRatio = imageAspectRatios[imageUrl] || DEFAULT_IMAGE_ASPECT_RATIO;
+    const handleImageLongPress = () => openImageViewer(imageIndex);
     const hasError = imageErrors[imageUrl];
     const onImageLoad = (event) => {
       const { width, height } = event.nativeEvent?.source || event.nativeEvent || {};
       if (!width || !height) return;
       const nextRatio = width / height;
+      // Persist to the module cache so future remounts of any PostCard with
+      // this image URI start with the correct ratio.
+      IMAGE_ASPECT_RATIO_CACHE.set(imageUrl, nextRatio);
       setImageAspectRatios((prev) => {
         if (prev[imageUrl] === nextRatio) return prev;
         return { ...prev, [imageUrl]: nextRatio };
       });
     };
-    return (
-      <View style={{ width: screenWidth }}>
-        <TouchableOpacity disabled={hasError} activeOpacity={0.7} onPress={handleImagePress} onLongPress={handleImageLongPress}>
-          {!hasError ? (
-            <FastImage
-              source={{ uri: imageUrl, priority: FastImage.priority.high }}
-              style={{ width: "100%", aspectRatio, backgroundColor: theme.mediaBackground }}
-              resizeMode={FastImage.resizeMode.contain}
-              onLoad={onImageLoad}
-              onError={() => setImageErrors((prev) => ({ ...prev, [imageUrl]: true }))}
-            />
-          ) : (
+
+    // Tap-to-retry — clears the error flag so FastImage tries again. Cheap
+    // and effective for transient CDN / network blips that can happen when
+    // a feed item scrolls back into view long after first failure.
+    const handleRetry = () => {
+      setImageErrors((prev) => {
+        if (!prev[imageUrl]) return prev;
+        const next = { ...prev };
+        delete next[imageUrl];
+        return next;
+      });
+    };
+
+    // When an image fails to load, collapse the slot to a fixed 160 px tall
+    // card instead of inheriting the slot's (often portrait) aspectRatio —
+    // which used to leave 700+ px of empty space with a tiny icon centered
+    // in it. We strip aspectRatio + height so the error pill is compact.
+    const errorSlotStyle = {
+      ...slotStyle,
+      aspectRatio: undefined,
+      height: 160,
+    };
+
+    if (hasError) {
+      return (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={handleRetry}
+          accessibilityLabel="Image failed to load. Tap to retry."
+          style={errorSlotStyle}
+        >
+          <View
+            style={{
+              width: "100%",
+              height: "100%",
+              justifyContent: "center",
+              alignItems: "center",
+              backgroundColor: theme.primarySoft,
+              borderWidth: 1,
+              borderColor: theme.primary,
+              borderStyle: "dashed",
+            }}
+          >
             <View
               style={{
-                width: "100%",
-                aspectRatio,
-                borderRadius: 8,
-                justifyContent: "center",
+                width: 44,
+                height: 44,
+                borderRadius: 22,
                 alignItems: "center",
-                backgroundColor: theme.surfaceMuted,
+                justifyContent: "center",
+                backgroundColor: `${theme.primary}33`,
+                marginBottom: 8,
               }}
             >
-              <MaterialIcons name="image-not-supported" size={85} color={theme.iconMuted} />
-              <Text className="text-lg font-medium" style={{ color: theme.textMuted }}>
-                Failed to load image
+              <MaterialIcons name="image-not-supported" size={22} color={theme.primary} />
+            </View>
+            <Text
+              style={{
+                color: theme.text,
+                fontSize: 13,
+                fontWeight: "700",
+                letterSpacing: 0.2,
+              }}
+            >
+              Image unavailable
+            </Text>
+            <View className="mt-1.5 flex-row items-center" style={{ gap: 4 }}>
+              <MaterialIcons name="refresh" size={11} color={theme.textSoft} />
+              <Text
+                style={{
+                  color: theme.textSoft,
+                  fontSize: 10,
+                  fontWeight: "600",
+                  letterSpacing: 0.3,
+                  textTransform: "uppercase",
+                }}
+              >
+                Tap to retry
               </Text>
             </View>
-          )}
+          </View>
+          {overlay}
         </TouchableOpacity>
+      );
+    }
+
+    return (
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onPress={handleImagePress}
+        onLongPress={handleImageLongPress}
+        style={slotStyle}
+      >
+        <FastImage
+          source={{ uri: imageUrl, priority: FastImage.priority.high }}
+          style={{ width: "100%", height: "100%", backgroundColor: theme.mediaBackground }}
+          resizeMode={FastImage.resizeMode[resizeMode] || FastImage.resizeMode.cover}
+          onLoad={onImageLoad}
+          onError={() => setImageErrors((prev) => ({ ...prev, [imageUrl]: true }))}
+        />
+        {overlay}
+      </TouchableOpacity>
+    );
+  };
+
+  // Facebook-style image grid:
+  //   1 image  → full width, natural aspect (portrait or landscape)
+  //   2 images → side-by-side squares
+  //   3 images → 1 large left + 2 stacked squares right
+  //   4 images → 2×2 grid of squares
+  //   5+       → 2×2 grid with "+N more" overlay on the 4th tile
+  const renderImageGrid = () => {
+    const urls = resolvedPostUrls;
+    const count = urls.length;
+    if (count === 0) return null;
+
+    const containerWidth = screenWidth;
+    const gap = 2;
+
+    if (count === 1) {
+      const aspect = imageAspectRatios[urls[0]] || DEFAULT_IMAGE_ASPECT_RATIO;
+      return (
+        <View style={{ width: containerWidth }}>
+          {renderImageGridSlot(urls[0], 0, { width: "100%", aspectRatio: aspect }, "contain")}
+        </View>
+      );
+    }
+
+    const halfWidth = (containerWidth - gap) / 2;
+
+    if (count === 2) {
+      return (
+        <View style={{ flexDirection: "row", width: containerWidth }}>
+          {renderImageGridSlot(urls[0], 0, { width: halfWidth, aspectRatio: 1 })}
+          <View style={{ width: gap }} />
+          {renderImageGridSlot(urls[1], 1, { width: halfWidth, aspectRatio: 1 })}
+        </View>
+      );
+    }
+
+    if (count === 3) {
+      const rowHeight = halfWidth * 2 + gap;
+      return (
+        <View style={{ flexDirection: "row", width: containerWidth, height: rowHeight }}>
+          {renderImageGridSlot(urls[0], 0, { width: halfWidth, height: rowHeight })}
+          <View style={{ width: gap }} />
+          <View style={{ width: halfWidth }}>
+            {renderImageGridSlot(urls[1], 1, { width: halfWidth, height: halfWidth })}
+            <View style={{ height: gap }} />
+            {renderImageGridSlot(urls[2], 2, { width: halfWidth, height: halfWidth })}
+          </View>
+        </View>
+      );
+    }
+
+    // 4 or more
+    const visible = urls.slice(0, 4);
+    const remaining = Math.max(0, count - 4);
+    const moreOverlay =
+      remaining > 0 ? (
+        <View
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.55)",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Text style={{ color: "#ffffff", fontSize: 32, fontWeight: "700" }}>+{remaining}</Text>
+        </View>
+      ) : null;
+
+    return (
+      <View style={{ width: containerWidth }}>
+        <View style={{ flexDirection: "row" }}>
+          {renderImageGridSlot(visible[0], 0, { width: halfWidth, aspectRatio: 1 })}
+          <View style={{ width: gap }} />
+          {renderImageGridSlot(visible[1], 1, { width: halfWidth, aspectRatio: 1 })}
+        </View>
+        <View style={{ height: gap }} />
+        <View style={{ flexDirection: "row" }}>
+          {renderImageGridSlot(visible[2], 2, { width: halfWidth, aspectRatio: 1 })}
+          <View style={{ width: gap }} />
+          {renderImageGridSlot(visible[3], 3, { width: halfWidth, aspectRatio: 1 }, "cover", moreOverlay)}
+        </View>
       </View>
     );
   };
@@ -275,7 +464,7 @@ const PostCard = ({
           <View className="mr-2">
             <TouchableOpacity onPress={handleProfilePress} activeOpacity={0.7}>
               <FastImage
-                source={{ uri: item.postOwner.avatar, priority: FastImage.priority.high }}
+                source={{ uri: item.postOwner.avatar, priority: FastImage.priority.normal }}
                 style={{ height: 35, width: 35, borderRadius: 5, backgroundColor: theme.surfaceStrong }}
                 resizeMode={FastImage.resizeMode.cover}
                 className="mt-1"
@@ -311,20 +500,36 @@ const PostCard = ({
         </View>
 
         <View className="px-4 py-1">
-          {item.post && (
-            <Text style={{ fontSize: 15, color: theme.text }} className="text-sm" numberOfLines={expanded ? undefined : 3} ellipsizeMode="tail">
-              {item.post.split(/(https?:\/\/[^\s]+)/g).map((part, idx) => {
-                if (part.match(/https?:\/\/[^\s]+/)) {
-                  return (
-                    <Text key={idx} style={{ color: theme.primary, textDecorationLine: "underline" }} onPress={() => handleAppLink(part)}>
-                      {part}
-                    </Text>
-                  );
-                }
-                return part;
-              })}
-            </Text>
-          )}
+          {item.post && (() => {
+            const isExpandable = item.post?.length > 130 || lineCount > 3;
+            return (
+              <Text
+                style={{ fontSize: 15, color: theme.text }}
+                className="text-sm"
+                numberOfLines={expanded ? undefined : 3}
+                ellipsizeMode="tail"
+                // Tap anywhere on the body to toggle expand/collapse — matches web.
+                // Nested link Text elements have their own onPress and will short-circuit.
+                onPress={isExpandable ? toggleExpanded : undefined}
+                suppressHighlighting
+              >
+                {item.post.split(/(https?:\/\/[^\s]+)/g).map((part, idx) => {
+                  if (part.match(/https?:\/\/[^\s]+/)) {
+                    return (
+                      <Text
+                        key={idx}
+                        style={{ color: theme.primary, textDecorationLine: "underline" }}
+                        onPress={() => handleAppLink(part)}
+                      >
+                        {part}
+                      </Text>
+                    );
+                  }
+                  return part;
+                })}
+              </Text>
+            );
+          })()}
 
           {(item.post?.length > 130 || lineCount > 3) && (
             <TouchableOpacity onPress={toggleExpanded}>
@@ -342,41 +547,10 @@ const PostCard = ({
           )}
         </View>
 
-        {/* Post Images */}
+        {/* Post Images — Facebook-style adaptive grid */}
         {resolvedPostUrls.length > 0 && (
           <View className="mb-3 self-center mt-3" style={{ width: screenWidth }}>
-            <FlatList
-              ref={flatListImageRef}
-              horizontal
-              pagingEnabled
-              data={resolvedPostUrls}
-              keyExtractor={(item, index) => item || index.toString()}
-              renderItem={renderPostUrls}
-              showsHorizontalScrollIndicator={false}
-              onScroll={handleScroll}
-              scrollEventThrottle={16}
-              scrollEnabled={resolvedPostUrls.length > 1}
-              snapToInterval={screenWidth}
-              decelerationRate="fast"
-            />
-            {/* Floating Page Indicator */}
-            {resolvedPostUrls.length > 1 && (
-              <View
-                style={{
-                  position: "absolute",
-                  bottom: 15,
-                  right: 10,
-                  backgroundColor: theme.overlayStrong,
-                  borderRadius: 12,
-                  paddingHorizontal: 10,
-                  paddingVertical: 4,
-                }}
-              >
-                <Text className="text-sm" style={{ color: theme.primaryContrast }}>
-                  {currentIndex + 1} / {resolvedPostUrls.length}
-                </Text>
-              </View>
-            )}
+            {renderImageGrid()}
           </View>
         )}
 

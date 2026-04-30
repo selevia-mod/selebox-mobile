@@ -25,7 +25,7 @@ import { useVideosStats } from "../context/video-stats-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { databases } from "../lib/appwrite";
 import { buildVideoNotificationResourceId, NotificationService } from "../lib/notifications";
-import TimeAgo from "../lib/time-ago";
+import TimeAgo from "../lib/utils/time-ago";
 import {
   buildMentionSearchTerms,
   extractMentionTargetsFromMarkup,
@@ -51,7 +51,9 @@ import {
   removeVideoCommentLike,
   threadVideoComments,
 } from "../lib/video";
+import useCommentReactionState from "../hooks/useCommentReactionState";
 import secrets from "../private/secrets";
+import ReactionPicker from "./ReactionPicker";
 import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 import UserMention from "./UserMention";
 
@@ -226,6 +228,36 @@ const VideoCommentItem = memo(
       syncLikeMutation();
     }, [applyOptimisticLikeState, item?.$id, normalizedCurrentUserId, syncLikeMutation]);
 
+    // Reaction overlay — wires the picker over the existing binary like.
+    const reactions = useCommentReactionState({ initialLiked: liked });
+
+    const handleReactionTap = useCallback(() => {
+      if (!item?.$id || !normalizedCurrentUserId) return;
+      const wasReacted = !!reactions.userReactionKey;
+      reactions.toggleTopLevelDefault();
+      // Sync server-side like to match reaction presence
+      const targetLiked = !wasReacted;
+      if (targetLiked !== desiredLikedRef.current) {
+        desiredLikedRef.current = targetLiked;
+        applyOptimisticLikeState(targetLiked);
+        syncLikeMutation();
+      }
+    }, [applyOptimisticLikeState, item?.$id, normalizedCurrentUserId, reactions, syncLikeMutation]);
+
+    const handlePickReactionWithSync = useCallback(
+      (key) => {
+        const wasTopLevel = reactions.isPickerForTopLevel;
+        reactions.handlePickReaction(key);
+        // Only top-level reactions sync to backend like state (replies are visual-only).
+        if (wasTopLevel && !desiredLikedRef.current) {
+          desiredLikedRef.current = true;
+          applyOptimisticLikeState(true);
+          syncLikeMutation();
+        }
+      },
+      [applyOptimisticLikeState, reactions, syncLikeMutation],
+    );
+
     return (
       <View className="mb-4">
         <View className="flex-row items-start space-x-2">
@@ -264,10 +296,32 @@ const VideoCommentItem = memo(
                 })}
               </View>
 
-              <View className="mt-1 flex-row items-center space-x-3 px-1">
+              <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>
                 <Text className="font-sans text-xs" style={{ color: theme.textMuted }}>
                   {TimeAgo(item?.$createdAt)}
                 </Text>
+                <TouchableOpacity
+                  ref={reactions.likeButtonRef}
+                  onPress={handleReactionTap}
+                  onLongPress={reactions.openTopLevelPicker}
+                  delayLongPress={220}
+                  disabled={!normalizedCurrentUserId}
+                  hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                  style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+                >
+                  {reactions.activeReaction ? (
+                    <Text style={{ fontSize: 13, lineHeight: 16 }}>{reactions.activeReaction.emoji}</Text>
+                  ) : (
+                    <Text className="font-sans text-xs font-semibold" style={{ color: theme.textSoft }}>
+                      React
+                    </Text>
+                  )}
+                  {likeCount > 0 ? (
+                    <Text className="font-sans text-xs font-semibold" style={{ color: reactions.activeReaction ? theme.like : theme.textSoft }}>
+                      {likeCount}
+                    </Text>
+                  ) : null}
+                </TouchableOpacity>
                 <TouchableOpacity onPress={() => onReplyPress(item)}>
                   <Text className="font-sans text-xs font-semibold" style={{ color: theme.primary }}>
                     Reply
@@ -325,10 +379,39 @@ const VideoCommentItem = memo(
                                 mentionColor: theme.accentBlue,
                               })}
                             </View>
-                            <View className="mt-1 px-1">
+                            <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>
                               <Text className="font-sans text-[11px]" style={{ color: theme.textMuted }}>
                                 {TimeAgo(reply?.$createdAt)}
                               </Text>
+                              <TouchableOpacity
+                                ref={(el) => reactions.registerReplyButton(reply.$id, el)}
+                                onPress={() => reactions.toggleReplyDefault(reply.$id)}
+                                onLongPress={() => reactions.openReplyPicker(reply.$id)}
+                                delayLongPress={220}
+                                disabled={!normalizedCurrentUserId}
+                                hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                                style={{ flexDirection: "row", alignItems: "center" }}
+                              >
+                                {reactions.getReplyReaction(reply.$id) ? (
+                                  <Text style={{ fontSize: 13, lineHeight: 16 }}>
+                                    {reactions.getReplyReaction(reply.$id).emoji}
+                                  </Text>
+                                ) : (
+                                  <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.textSoft }}>
+                                    React
+                                  </Text>
+                                )}
+                              </TouchableOpacity>
+                              {normalizedCurrentUserId ? (
+                                <TouchableOpacity
+                                  onPress={() => onReplyPress(item, reply?.commentOwner)}
+                                  hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                                >
+                                  <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.primary }}>
+                                    Reply
+                                  </Text>
+                                </TouchableOpacity>
+                              ) : null}
                             </View>
                           </View>
                         </View>
@@ -354,17 +437,16 @@ const VideoCommentItem = memo(
               )}
             </View>
 
-            <TouchableOpacity onPress={handleLikeComment} disabled={!normalizedCurrentUserId} className="ml-3 items-center pt-2">
-              <MaterialCommunityIcons name={liked ? "heart" : "heart-outline"} size={16} color={liked ? theme.like : theme.textSubtle} />
-              <Text
-                className="mt-1 text-center font-sans text-[11px] font-semibold"
-                style={{ minWidth: 16, opacity: likeCount > 0 ? 1 : 0, color: theme.textSoft }}
-              >
-                {likeCount > 0 ? likeCount : 0}
-              </Text>
-            </TouchableOpacity>
           </View>
         </View>
+
+        <ReactionPicker
+          visible={reactions.pickerVisible}
+          anchor={reactions.pickerAnchor}
+          activeKey={reactions.pickerActiveKey}
+          onSelect={handlePickReactionWithSync}
+          onClose={reactions.closePicker}
+        />
       </View>
     );
   },
@@ -1231,7 +1313,7 @@ const VideoCommentModal = ({ isVisible, onClose, item, onCommentPosted }) => {
   }, []);
 
   const handleReplyPress = useCallback(
-    (comment) => {
+    (comment, mentionUser) => {
       if (!comment?.$id) return;
       setReplyTarget({
         id: comment.$id,
@@ -1240,6 +1322,13 @@ const VideoCommentModal = ({ isVisible, onClose, item, onCommentPosted }) => {
       });
       committedMentionRangeRef.current = null;
       clearMentionSuggestions();
+
+      // Reply-on-reply: prefill the composer with @username so the reply visually
+      // addresses the original reply author, while threading to the top-level parent
+      // (matches web's flat-thread model).
+      if (mentionUser?.username) {
+        setCommentText(`@${mentionUser.username} `);
+      }
 
       setTimeout(() => {
         inputRef.current?.focus();
@@ -1541,6 +1630,11 @@ const VideoCommentModal = ({ isVisible, onClose, item, onCommentPosted }) => {
               contentContainerStyle={commentListContentContainerStyle}
               showsVerticalScrollIndicator={false}
               renderItem={renderCommentItem}
+              // Virtualization tuning — see PostCommentModal for rationale.
+              initialNumToRender={8}
+              maxToRenderPerBatch={6}
+              windowSize={10}
+              updateCellsBatchingPeriod={50}
               removeClippedSubviews={Platform.OS !== "android"}
               nestedScrollEnabled
               keyboardShouldPersistTaps="handled"

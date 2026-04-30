@@ -1,31 +1,56 @@
-import { Entypo, Ionicons } from "@expo/vector-icons";
+// Library card for a saved book.
+//
+// Visual + interaction parity with the rest of the app:
+//   • The 3-dot menu is a CENTERED MODAL SHEET — same shape as
+//     StyledPlaylistButton (Video 3-dot), ProfileActionsMenu, and the
+//     Post / Books action menus. Stacked rounded action rows with
+//     icon + label + subtitle, Cancel at the bottom.
+//   • Report opens the standard ReportModal and submits via the same
+//     email-based admin flow used for video / user / book reports
+//     (StyledPlaylistButton, ProfileActionsMenu, book-info).
+//   • Stats row uses theme-aware icon colors instead of the prior random
+//     rainbow hexes — reads as one cohesive system.
+//   • Card itself carries a subtle violet shadow lift, consistent with
+//     other premium surfaces.
+//
+// The card supports optional opt-outs (`hideRemove`, `hideSettings`,
+// `hideStats`) so it can be reused outside the library list — same
+// surface shape, different visibility.
+
+import { Entypo, Ionicons, MaterialIcons } from "@expo/vector-icons";
+import axios from "axios";
 import { router } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Animated, Easing, Text, TouchableOpacity, TouchableWithoutFeedback, View } from "react-native";
+import { Alert, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
-import useAppTheme from "../hooks/useAppTheme";
+import LoaderKit from "react-native-loader-kit";
+import Modal from "react-native-modal";
 import Share from "react-native-share";
 import { useGlobalContext } from "../context/global-provider";
-import { isBookDownloaded, saveDownloadedBook } from "../lib/book-downloads";
+import useAppTheme from "../hooks/useAppTheme";
+import { isBookDownloaded, removeDownloadedBook, saveDownloadedBook } from "../lib/book-downloads";
 import { BookReadService } from "../lib/book-reads";
 import { BookUnlocksService } from "../lib/book-unlocks";
 import { BookService } from "../lib/books";
-import FormatNumber from "../lib/format-number";
+import FormatNumber from "../lib/utils/format-number";
 import secrets from "../private/secrets";
 import BookTag from "./BookTag";
+import ReportModal from "./ReportModal";
 
 const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats, handleRemoveFromLibrary, customStyle }) => {
   const { theme } = useAppTheme();
-  const [showMenu, setShowMenu] = useState(false);
+  const [sheetVisible, setSheetVisible] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportDetail, setReportDetail] = useState("");
+  const [reportLoading, setReportLoading] = useState(false);
+
   const [likeTotal, setLikeTotal] = useState(0);
   const [bookmarkTotal, setBookmarkTotal] = useState(0);
   const [commentTotal, setCommentTotal] = useState(0);
   const [chaptersTotal, setChaptersTotal] = useState(0);
   const [readTotal, setReadTotal] = useState(0);
-  const [isBookStatsLoading, setIsBookStatsLoading] = useState(true);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isDownloaded, setIsDownloaded] = useState(false);
-  const animation = useRef(new Animated.Value(0)).current;
 
   const { user, globalSettings } = useGlobalContext();
   const bookChapterLockStart = globalSettings["BOOKS_CHAPTER_LOCK_START"];
@@ -35,12 +60,9 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
   useEffect(() => {
     const fetchData = async () => {
       try {
-        setIsBookStatsLoading(true);
         await Promise.all([fetchBookLikes(), fetchBookBookmarks(), fetchBookComments(), fetchBookChapters(), fetchBookReads()]);
       } catch (error) {
         console.log("fetchData error", error);
-      } finally {
-        setIsBookStatsLoading(false);
       }
     };
     fetchData();
@@ -97,22 +119,6 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
     }
   };
 
-  // Animate menu open/close
-  useEffect(() => {
-    Animated.timing(animation, {
-      toValue: showMenu ? 1 : 0,
-      duration: 180,
-      easing: Easing.out(Easing.ease),
-      useNativeDriver: true,
-    }).start();
-  }, [showMenu]);
-
-  const opacity = animation;
-  const translateY = animation.interpolate({
-    inputRange: [0, 1],
-    outputRange: [-8, 0],
-  });
-
   const formattedDate = useMemo(() => {
     return new Date(item?.$createdAt)
       .toLocaleString("en-US", {
@@ -128,23 +134,104 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
 
   const handleBookPress = () => router.push({ pathname: "book-info", params: { bookId: item.$id } });
 
-  const handleShare = async () => {
-    setShowMenu(false);
-    await Share.open({
-      message: `Check out this book!`,
-      url: `${secrets.WEBSITE}/books/${item?.$id}`,
-      title: `${item.title}`,
-      type: "url",
-    });
+  const closeSheet = () => setSheetVisible(false);
+  const openSheet = () => setSheetVisible(true);
+
+  const handleShare = () => {
+    closeSheet();
+    setTimeout(async () => {
+      try {
+        await Share.open({
+          message: `Check out this book!`,
+          url: `${secrets.WEBSITE}/books/${item?.$id}`,
+          title: `${item?.title || "Selebox book"}`,
+          type: "url",
+        });
+      } catch (error) {
+        if (error?.message && !/User did not share/i.test(error.message)) {
+          console.log("BookLibraryCard share error:", error.message);
+        }
+      }
+    }, 200);
+  };
+
+  const handleOpenReport = () => {
+    closeSheet();
+    setTimeout(() => setShowReportModal(true), 200);
+  };
+
+  const handleCloseReport = () => setShowReportModal(false);
+
+  // Mirrors the email-based report flow used by StyledPlaylistButton
+  // (videos), ProfileActionsMenu (users), and book-info (books). Until
+  // Phase 5 unifies reports under contentReportsCollection, every report
+  // type goes through the same admin inbox via this Appwrite Function.
+  const handleSubmitReport = async (reportDetails) => {
+    Alert.alert(
+      "Report book",
+      "Are you sure you want to report this book? Confirming will submit your report for review by our team.",
+      [
+        { text: "No", style: "cancel" },
+        {
+          text: "Yes",
+          onPress: async () => {
+            setReportLoading(true);
+            try {
+              const adminEmails = (() => {
+                try {
+                  return JSON.parse(globalSettings?.["ADMIN_EMAILS"] || "[]").join(",");
+                } catch {
+                  return "";
+                }
+              })();
+              const bccEmails = (() => {
+                try {
+                  return JSON.parse(globalSettings?.["BCC_EMAILS"] || "[]").join(",");
+                } catch {
+                  return "";
+                }
+              })();
+              const response = await axios.post("https://67e9284815c6fe834817.appwrite.global", {
+                from: "selebox.dev@gmail.com",
+                to: adminEmails,
+                cc: user?.email,
+                bcc: bccEmails,
+                subject: `${user?.username} | Selebox | Reported Book`,
+                html: `
+                  <p><strong>Dear Selebox Team,</strong></p>
+                  <p>I am writing to report this book <b><u>${secrets.WEBSITE}/books/${item?.$id}</u></b> ("${item?.title || "Untitled"}"). Please find this report for your review.</p>
+                  <p><strong>Report Detail:</strong></p>
+                  <p>${reportDetails}</p>
+                  <p>Thank you for your time and consideration.</p>
+                  <p>Best regards,<br>
+                  ${user?.username}<br>
+                  ${user?.accountId}<br>
+                  ${user?.email}<br>
+                  ${new Date(user?.$createdAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</p>`,
+              });
+              if (response.data?.success) {
+                setReportDetail("");
+                setShowReportModal(false);
+                Alert.alert("Success", "Your report has been submitted for review.");
+              } else {
+                Alert.alert("Error", "There was an error submitting your report. Please try again.");
+              }
+            } catch (error) {
+              Alert.alert("Error", error?.message || "Failed to submit report.");
+            }
+            setReportLoading(false);
+          },
+        },
+      ],
+      { cancelable: true },
+    );
   };
 
   const handleRemove = () => {
-    setShowMenu(false);
-    handleRemoveFromLibrary();
-  };
-
-  const handleReport = () => {
-    setShowMenu(false);
+    closeSheet();
+    setTimeout(() => {
+      handleRemoveFromLibrary?.();
+    }, 200);
   };
 
   const fetchAllBookChapters = async () => {
@@ -153,7 +240,6 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
       status: "Publish",
       limit: 50,
     });
-
     return { chapters: response.documents || [], total: response.total ?? response.documents?.length ?? 0 };
   };
 
@@ -169,12 +255,9 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
     }
   };
 
-  const handleDownload = async () => {
-    if (!item?.$id || isDownloading) return;
-    if (isDownloaded) {
-      Alert.alert("Already downloaded", "This book is available offline.");
-      return;
-    }
+  // Download path — fetch chapters and persist to MMKV. Wrapped so the
+  // toggle handler below can call it cleanly when isDownloaded === false.
+  const performDownload = async () => {
     if (item?.isLocked && (bookChapterLockStart === undefined || bookChapterLockStart === null)) {
       Alert.alert("Please wait", "Book settings are still loading. Try again in a moment.");
       return;
@@ -201,10 +284,7 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
           unlocks: unlockDocument,
           currentUserId: user?.$id,
         });
-
-        if (!isLocked) {
-          readableChapters.push(chapter);
-        }
+        if (!isLocked) readableChapters.push(chapter);
       });
 
       if (!readableChapters.length) {
@@ -212,153 +292,289 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
         return;
       }
 
-      saveDownloadedBook({
-        bookId: item.$id,
-        book: item,
-        chapters: readableChapters,
-      });
-
+      saveDownloadedBook({ bookId: item.$id, book: item, chapters: readableChapters });
       setIsDownloaded(true);
       await ensureBookInLibrary();
     } catch (error) {
-      console.log("handleDownload: error", error);
-      Alert.alert("Download failed", "We couldn’t download this book. Please try again.");
+      console.log("performDownload: error", error);
+      Alert.alert("Download failed", "We couldn't download this book. Please try again.");
     } finally {
       setIsDownloading(false);
+    }
+  };
+
+  // Remove path — confirms before wiping the local copy from MMKV.
+  const performRemoveDownload = () => {
+    Alert.alert(
+      "Remove download?",
+      "This book will no longer be available offline. You can download it again anytime.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: () => {
+            try {
+              removeDownloadedBook(item.$id);
+              setIsDownloaded(false);
+            } catch (error) {
+              console.log("performRemoveDownload: error", error);
+              Alert.alert("Couldn't remove", "Something went wrong. Please try again.");
+            }
+          },
+        },
+      ],
+      { cancelable: true },
+    );
+  };
+
+  // Toggle handler bound to the icon. When the book isn't downloaded we
+  // start the download flow; when it is, we offer to remove it. This is
+  // the YouTube-style "downloaded toggle" the user expected — the previous
+  // version disabled the icon once downloaded, leaving no way back.
+  const handleToggleDownload = () => {
+    if (!item?.$id || isDownloading) return;
+    if (isDownloaded) {
+      performRemoveDownload();
+    } else {
+      performDownload();
     }
   };
 
   if (!item) return null;
 
   return (
-    <TouchableWithoutFeedback onPress={() => setShowMenu(false)}>
+    <>
       <View
-        className="mb-5 overflow-hidden rounded-lg"
-        style={[customStyle, { position: "relative", backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }]}
+        className="mb-3 overflow-hidden rounded-2xl"
+        style={[
+          customStyle,
+          {
+            position: "relative",
+            backgroundColor: theme.card,
+            borderWidth: 1,
+            borderColor: theme.border,
+            // Subtle violet shadow lift — reads as a deliberate card on
+            // both light and dark surfaces.
+            shadowColor: theme.primary,
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.1,
+            shadowRadius: 10,
+            elevation: 2,
+            padding: 12,
+          },
+        ]}
       >
+        {/* Downloading overlay — premium violet glass card centered over the
+            book row. Replaces the previous flat `overlayStrong` backdrop with
+            a deep-violet panel that matches the unlock modal's surface
+            language so download feedback reads as part of the same system. */}
         {isDownloading && (
-          <View className="absolute inset-0 z-20 h-full w-full items-center justify-center" style={{ backgroundColor: theme.overlayStrong }}>
-            <ActivityIndicator size="large" color={theme.primaryContrast} />
-            <Text className="mt-2 text-sm font-semibold" style={{ color: theme.primaryContrast }}>
-              Downloading...
-            </Text>
-          </View>
-        )}
-        {/* Header Row */}
-        {!hideSettings && (
-          <View className="mb-2 flex-row items-center justify-between">
-            <Text className="text-xs" style={{ color: theme.textSoft }}>
-              Last updated: {formattedDate}
-            </Text>
-            <View className="flex-row items-center space-x-3">
-              <TouchableOpacity
-                hitSlop={12}
-                onPress={handleDownload}
-                disabled={isDownloading || isDownloaded}
-                activeOpacity={0.7}
-                className={isDownloading || isDownloaded ? "opacity-50" : ""}
-              >
-                <Ionicons name={isDownloaded ? "checkmark-circle" : "download-outline"} size={18} color={isDownloaded ? theme.accentGreen : theme.textSubtle} />
-              </TouchableOpacity>
-              <View className="relative">
-                <TouchableOpacity hitSlop={12} onPress={() => setShowMenu((prev) => !prev)} activeOpacity={0.7}>
-                  <Entypo name="dots-three-horizontal" size={18} color={theme.textSubtle} />
-                </TouchableOpacity>
-
-                {showMenu && (
-                  <Animated.View
-                    className="absolute right-0 top-6 w-[90] rounded-lg p-2 shadow-lg"
-                    style={{ zIndex: 999, opacity, transform: [{ translateY }], backgroundColor: theme.surfaceElevated, borderWidth: 1, borderColor: theme.border }}
-                  >
-                    <TouchableOpacity onPress={handleShare} className="rounded px-2 py-1 hover:bg-gray-800">
-                      <Text style={{ color: theme.text }}>Share</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={handleReport} className="rounded px-2 py-1 hover:bg-gray-800">
-                      <Text style={{ color: theme.text }}>Report</Text>
-                    </TouchableOpacity>
-                    {!hideRemove && (
-                      <TouchableOpacity onPress={handleRemove} className="rounded px-2 py-1 hover:bg-gray-800">
-                        <Text style={{ color: theme.danger }}>Remove</Text>
-                      </TouchableOpacity>
-                    )}
-                  </Animated.View>
-                )}
+          <View
+            pointerEvents="auto"
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 20,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: "rgba(22, 14, 42, 0.78)",
+              borderRadius: 18,
+            }}
+          >
+            <View
+              className="flex-row items-center rounded-2xl"
+              style={{
+                paddingHorizontal: 14,
+                paddingVertical: 10,
+                backgroundColor: "rgba(22, 14, 42, 0.96)",
+                borderWidth: 1,
+                borderColor: theme.primary,
+                shadowColor: theme.primary,
+                shadowOffset: { width: 0, height: 6 },
+                shadowOpacity: 0.5,
+                shadowRadius: 12,
+                elevation: 6,
+              }}
+            >
+              <LoaderKit
+                style={{ width: 18, height: 18, marginRight: 10 }}
+                name="LineScalePulseOutRapid"
+                color={theme.primary}
+              />
+              <View>
+                <Text
+                  className="font-bold"
+                  style={{ color: "#FFFFFF", fontSize: 12, letterSpacing: 0.4, textTransform: "uppercase" }}
+                >
+                  Downloading
+                </Text>
+                <Text
+                  className="font-medium"
+                  style={{ color: "rgba(229, 231, 245, 0.7)", fontSize: 10, letterSpacing: 0.2, marginTop: 1 }}
+                >
+                  Saving for offline reading…
+                </Text>
               </View>
             </View>
           </View>
         )}
 
+        {/* Header Row — last updated label + download icon + 3-dots */}
+        {!hideSettings && (
+          <View className="mb-2.5 flex-row items-center justify-between">
+            <Text className="text-[10px] font-semibold uppercase" style={{ color: theme.textSoft, letterSpacing: 0.6 }}>
+              Updated {formattedDate}
+            </Text>
+            <View className="flex-row items-center" style={{ gap: 6 }}>
+              <TouchableOpacity
+                hitSlop={10}
+                onPress={handleToggleDownload}
+                disabled={isDownloading}
+                activeOpacity={0.7}
+                accessibilityLabel={isDownloaded ? "Downloaded — tap to remove from offline" : "Download for offline"}
+                accessibilityHint={isDownloaded ? "Removes this book from your offline downloads" : "Saves this book for offline reading"}
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 999,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  // When downloaded, the disc tints green-soft so it visually
+                  // reads as "active / saved" — and tapping removes. When not
+                  // downloaded, neutral surfaceMuted disc that invites a tap.
+                  backgroundColor: isDownloaded ? `${theme.accentGreen}1F` : theme.surfaceMuted,
+                  borderWidth: 1,
+                  borderColor: isDownloaded ? theme.accentGreen : theme.border,
+                  opacity: isDownloading ? 0.6 : 1,
+                }}
+              >
+                <Ionicons
+                  name={isDownloaded ? "checkmark-circle" : "download-outline"}
+                  size={15}
+                  color={isDownloaded ? theme.accentGreen : theme.iconMuted}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity
+                hitSlop={10}
+                onPress={openSheet}
+                activeOpacity={0.7}
+                accessibilityLabel="Book actions"
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 999,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: theme.surfaceMuted,
+                  borderWidth: 1,
+                  borderColor: theme.border,
+                }}
+              >
+                <Entypo name="dots-three-horizontal" size={14} color={theme.iconMuted} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
         {/* Book Row */}
-        <TouchableOpacity onPress={handleBookPress} activeOpacity={0.8} className="flex-row items-center p-1" style={{ zIndex: -999 }}>
+        <TouchableOpacity onPress={handleBookPress} activeOpacity={0.85} className="flex-row" style={{ gap: 12 }}>
           {/* Thumbnail */}
-          <FastImage
-            source={{
-              uri: item?.thumbnail,
-              priority: FastImage.priority.high,
-            }}
+          <View
             style={{
-              height: 110,
-              width: 80,
               borderRadius: 10,
-              backgroundColor: theme.surfaceMuted,
+              overflow: "hidden",
+              borderWidth: 1,
+              borderColor: theme.border,
             }}
-            resizeMode={FastImage.resizeMode.cover}
-          />
+          >
+            <FastImage
+              source={{ uri: item?.thumbnail, priority: FastImage.priority.normal }}
+              style={{ height: 116, width: 80, backgroundColor: theme.surfaceMuted }}
+              resizeMode={FastImage.resizeMode.cover}
+            />
+          </View>
 
           {/* Book Details */}
-          <View className="ml-4 flex-1 justify-between">
+          <View className="flex-1 justify-between">
             <View>
-              <Text className="text-base font-semibold" style={{ color: theme.text }} numberOfLines={1}>
-                {item?.title}
+              <Text
+                className="font-bold"
+                style={{ color: theme.text, fontSize: 15, lineHeight: 19, letterSpacing: 0.1 }}
+                numberOfLines={2}
+              >
+                {item?.title || "Untitled"}
               </Text>
-              <Text className="mt-1 text-xs" style={{ color: theme.textMuted }} numberOfLines={2}>
+              <Text
+                className="mt-1 text-[12px]"
+                style={{ color: theme.textMuted, lineHeight: 16 }}
+                numberOfLines={2}
+              >
                 {item?.synopsis || "No synopsis available."}
               </Text>
 
-              {/* Status Badge */}
-              <View className="mt-2 flex-row items-center justify-between">
+              {/* Status + Downloaded chip */}
+              <View className="mt-2 flex-row items-center" style={{ gap: 6 }}>
                 <BookTag tagName={item?.status} />
                 {isDownloaded && (
-                  <View className="flex-row items-center rounded-full bg-emerald-500/20 px-2 py-0.5">
-                    <Ionicons name="download-outline" size={12} color={theme.accentGreen} />
-                    <Text className="ml-1 text-[10px] font-semibold" style={{ color: theme.accentGreen }}>
-                      Downloaded
+                  <View
+                    className="flex-row items-center rounded-full"
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 2,
+                      backgroundColor: `${theme.accentGreen}1F`,
+                      borderWidth: 0.5,
+                      borderColor: theme.accentGreen,
+                    }}
+                  >
+                    <Ionicons name="download" size={10} color={theme.accentGreen} />
+                    <Text
+                      className="ml-1 text-[9px] font-bold"
+                      style={{ color: theme.accentGreen, letterSpacing: 0.4, textTransform: "uppercase" }}
+                    >
+                      Offline
                     </Text>
                   </View>
                 )}
               </View>
             </View>
 
-            {/* Stats Row */}
+            {/* Stats Row — theme-aware icon color so the row reads as one
+                cohesive system instead of the previous rainbow of hardcoded
+                hexes. The numbers carry the meaning; the icons differentiate
+                what each number is. */}
             {!hideStats && (
-              <View className="mt-3 flex-row items-center justify-between">
-                <View className="flex-row items-center space-x-1">
-                  <Ionicons name="eye-outline" size={14} color="#5f59dbe2" />
-                  <Text className="text-xs" style={{ color: theme.textSoft }}>
+              <View className="mt-2.5 flex-row items-center" style={{ gap: 12 }}>
+                <View className="flex-row items-center" style={{ gap: 3 }}>
+                  <Ionicons name="eye-outline" size={12} color={theme.iconMuted} />
+                  <Text className="text-[11px] font-semibold" style={{ color: theme.textSoft }}>
                     {FormatNumber(readTotal)}
                   </Text>
                 </View>
-                <View className="flex-row items-center space-x-1">
-                  <Ionicons name="heart-outline" size={14} color="#f87171" />
-                  <Text className="text-xs" style={{ color: theme.textSoft }}>
+                <View className="flex-row items-center" style={{ gap: 3 }}>
+                  <Ionicons name="heart-outline" size={12} color={theme.iconMuted} />
+                  <Text className="text-[11px] font-semibold" style={{ color: theme.textSoft }}>
                     {FormatNumber(likeTotal)}
                   </Text>
                 </View>
-                <View className="flex-row items-center space-x-1">
-                  <Ionicons name="chatbubble-outline" size={14} color="#38bdf8" />
-                  <Text className="text-xs" style={{ color: theme.textSoft }}>
+                <View className="flex-row items-center" style={{ gap: 3 }}>
+                  <Ionicons name="chatbubble-outline" size={12} color={theme.iconMuted} />
+                  <Text className="text-[11px] font-semibold" style={{ color: theme.textSoft }}>
                     {FormatNumber(commentTotal)}
                   </Text>
                 </View>
-                <View className="flex-row items-center space-x-1">
-                  <Ionicons name="bookmark" size={14} color="#facc15" />
-                  <Text className="text-xs" style={{ color: theme.textSoft }}>
+                <View className="flex-row items-center" style={{ gap: 3 }}>
+                  <Ionicons name="bookmark-outline" size={12} color={theme.iconMuted} />
+                  <Text className="text-[11px] font-semibold" style={{ color: theme.textSoft }}>
                     {FormatNumber(bookmarkTotal)}
                   </Text>
                 </View>
-                <View className="flex-row items-center space-x-1">
-                  <Ionicons name="list-outline" size={14} color="#a78bfa" />
-                  <Text className="text-xs" style={{ color: theme.textSoft }}>
+                <View className="flex-row items-center" style={{ gap: 3 }}>
+                  <Ionicons name="list-outline" size={12} color={theme.iconMuted} />
+                  <Text className="text-[11px] font-semibold" style={{ color: theme.textSoft }}>
                     {chaptersTotal}
                   </Text>
                 </View>
@@ -367,7 +583,77 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
           </View>
         </TouchableOpacity>
       </View>
-    </TouchableWithoutFeedback>
+
+      {/* Action sheet — same shape as ProfileActionsMenu / StyledPlaylistButton.
+          Title + stacked rounded action rows + Cancel. */}
+      <Modal isVisible={sheetVisible} onBackdropPress={closeSheet} onBackButtonPress={closeSheet} backdropOpacity={0.6} useNativeDriver>
+        <View className="rounded-2xl px-5 py-5" style={{ backgroundColor: theme.surfaceElevated }}>
+          <Text className="text-lg font-semibold" style={{ color: theme.text }}>
+            Book actions
+          </Text>
+
+          <TouchableOpacity className="mt-4 rounded-xl px-4 py-3" style={{ backgroundColor: theme.surfaceMuted }} onPress={handleShare}>
+            <View className="flex flex-row items-center">
+              <MaterialIcons name="ios-share" size={22} color={theme.icon} style={{ marginRight: 12 }} />
+              <View>
+                <Text className="text-base font-semibold" style={{ color: theme.text }}>
+                  Share book
+                </Text>
+                <Text className="mt-1 text-xs" style={{ color: theme.textSoft }}>
+                  Send this book to a friend
+                </Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity className="mt-2 rounded-xl px-4 py-3" style={{ backgroundColor: theme.surfaceMuted }} onPress={handleOpenReport}>
+            <View className="flex flex-row items-center">
+              <MaterialIcons name="flag" size={22} color={theme.icon} style={{ marginRight: 12 }} />
+              <View>
+                <Text className="text-base font-semibold" style={{ color: theme.text }}>
+                  Report book
+                </Text>
+                <Text className="mt-1 text-xs" style={{ color: theme.textSoft }}>
+                  Tell us what's wrong
+                </Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+
+          {!hideRemove && (
+            <TouchableOpacity className="mt-2 rounded-xl px-4 py-3" style={{ backgroundColor: theme.surfaceMuted }} onPress={handleRemove}>
+              <View className="flex flex-row items-center">
+                <MaterialIcons name="bookmark-remove" size={22} color={theme.iconDanger ?? "#ef4444"} style={{ marginRight: 12 }} />
+                <View>
+                  <Text className="text-base font-semibold" style={{ color: theme.iconDanger ?? "#ef4444" }}>
+                    Remove from library
+                  </Text>
+                  <Text className="mt-1 text-xs" style={{ color: theme.textSoft }}>
+                    Take this book out of your library
+                  </Text>
+                </View>
+              </View>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity className="mt-3 items-center" onPress={closeSheet}>
+            <Text className="text-sm" style={{ color: theme.textMuted }}>
+              Cancel
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </Modal>
+
+      <ReportModal
+        type="Book"
+        isVisible={showReportModal}
+        onClose={handleCloseReport}
+        handleSubmitReport={handleSubmitReport}
+        reportDetail={reportDetail}
+        setReportDetail={setReportDetail}
+        reportLoading={reportLoading}
+      />
+    </>
   );
 });
 

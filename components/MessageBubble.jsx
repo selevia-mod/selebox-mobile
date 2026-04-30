@@ -60,7 +60,7 @@ const MessageBubble = ({ item, user, otherUsers, seenIndicatorsMap, showDeleteMo
         {seenUsers.map((seenUser) => (
           <FastImage
             key={seenUser.$id}
-            source={{ uri: seenUser?.avatar, priority: FastImage.priority.high }}
+            source={{ uri: seenUser?.avatar, priority: FastImage.priority.normal }}
             style={{
               width: 16,
               height: 16,

@@ -5,7 +5,7 @@ import { Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import Svg, { Path } from "react-native-svg";
 import useAppTheme from "../hooks/useAppTheme";
-import FormatNumber from "../lib/format-number";
+import FormatNumber from "../lib/utils/format-number";
 import BookTag from "./BookTag";
 
 const BookmarkIcon = memo(({ color = "#B19CD9", size = 28 }) => {
@@ -56,7 +56,7 @@ const BookRankingCard = ({ item, rank }) => {
           <FastImage
             source={{
               uri: book.thumbnail,
-              priority: FastImage.priority.high,
+              priority: FastImage.priority.normal,
             }}
             style={{
               height: 120,

@@ -10,7 +10,7 @@ import useAppTheme from "../hooks/useAppTheme";
 import { isBookDownloaded, upsertDownloadedChapter } from "../lib/book-downloads";
 import { BookUnlocksService } from "../lib/book-unlocks";
 import { BookService, isIntroductionChapter } from "../lib/books";
-import { useModalMessage } from "../lib/useModalMessage";
+import { useModalMessage } from "../hooks/useModalMessage";
 import CustomAlertModal from "./CustomAlertModal";
 import StarIcon from "./StarIcon";
 
