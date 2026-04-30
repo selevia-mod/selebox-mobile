@@ -25,7 +25,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useGlobalContext } from "../context/global-provider";
-import { loadConversations, subscribeToInbox } from "../lib/messages-supabase";
+import { chatEvents, loadConversations, subscribeToInbox } from "../lib/messages-supabase";
 
 // How long to wait after the most recent inbox event before refetching.
 // Long enough to coalesce a burst (group chat going active), short enough
@@ -95,6 +95,25 @@ export function useTotalUnreadCount() {
         debounceRef.current = null;
       }
       unsubscribe();
+    };
+  }, [chatUserId, compute]);
+
+  // Listen for "I just marked a conversation read" events from
+  // markConversationRead. Without this, the badge waits for the next
+  // focus event (i.e., the user has to fully exit chat back to a main
+  // tab) — manifests as the user-reported "purple number doesn't clear
+  // until I exit the whole message screen" bug. Recompute immediately so
+  // the badge drops the moment the user enters the thread.
+  useEffect(() => {
+    if (!chatUserId) return undefined;
+    const handler = () => {
+      // No debounce here — read events are user-initiated (one per thread
+      // open), not bursty. Immediate recompute is what the user expects.
+      compute();
+    };
+    chatEvents.on("read", handler);
+    return () => {
+      chatEvents.off("read", handler);
     };
   }, [chatUserId, compute]);
 

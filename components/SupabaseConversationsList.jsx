@@ -24,7 +24,7 @@ import useAppTheme from "../hooks/useAppTheme";
 // initial 10-row paint + 21-screen window is still wasteful.
 import { getCachedConversations, setCachedConversations } from "../lib/chat-cache";
 import { getFlatListConfig } from "../lib/device-tier";
-import { loadConversations, subscribeToInbox } from "../lib/messages-supabase";
+import { chatEvents, loadConversations, subscribeToInbox } from "../lib/messages-supabase";
 import supabase from "../lib/supabase";
 import TimeAgo from "../lib/utils/time-ago";
 
@@ -33,10 +33,23 @@ const ConversationRow = ({ conversation, onPress, theme, currentUserId }) => {
   // read `isGroup` directly which always evaluated undefined → groups
   // rendered as 1:1 conversations. Rename here so the rest of this
   // component can use `isGroup` naturally.
-  const { is_group: isGroup, otherUser, members, lastMessageAt, last_message_preview, last_message_sender, muted, archived } = conversation;
+  // The DB columns are all snake_case (last_message_at, last_message_preview,
+  // last_message_sender). The previous destructuring read `lastMessageAt`
+  // (camelCase), which always evaluated to undefined and hid the timestamp
+  // on every conversation row.
+  const {
+    is_group: isGroup,
+    otherUser,
+    members,
+    last_message_at: lastMessageAt,
+    last_message_preview,
+    last_message_sender,
+    muted,
+  } = conversation;
   const unread = conversation.unread || 0;
-
-  if (archived) return null;
+  // Note: archived filtering is handled by the parent (SupabaseConversationsList
+  // toggles between 'active' and 'archived' view modes), so we no longer
+  // skip archived rows here.
 
   // Avatar — group conversations stack first 3 members, 1:1 shows the other
   // user's avatar. Initials fallback when no avatar URL.
@@ -182,6 +195,10 @@ const SupabaseConversationsList = ({ currentUserId }) => {
     return !(cached && cached.length);
   });
   const [refreshing, setRefreshing] = useState(false);
+  // 'active' shows non-archived conversations (default). 'archived' shows
+  // archived ones, accessed via the toggle pill in the header. Without
+  // this view, archiving a chat hid it permanently with no recovery path.
+  const [viewMode, setViewMode] = useState("active");
   // null = unknown (initial), false = no Supabase auth session, true = signed in
   const [hasSession, setHasSession] = useState(null);
   // Used to stamp newly-arriving messages onto the right conversation row
@@ -244,6 +261,32 @@ const SupabaseConversationsList = ({ currentUserId }) => {
     }, [fetchConversations]),
   );
 
+  // Listen for "I just marked a conversation read" events so the
+  // per-conversation unread badge clears the moment the thread opens.
+  // Without this, the row keeps showing the unread pill ("1" / "2") even
+  // after the user has entered the thread — only refreshing on next
+  // network refetch.
+  useEffect(() => {
+    if (!currentUserId) return undefined;
+    const handler = ({ conversationId }) => {
+      if (!conversationId) return;
+      const list = conversationsRef.current;
+      const idx = list.findIndex((c) => c.id === conversationId);
+      if (idx < 0) return;
+      const existing = list[idx];
+      if ((existing.unread || 0) === 0) return;
+      const next = list.map((c, i) => (i === idx ? { ...c, unread: 0 } : c));
+      setConversations(next);
+      // Mirror into the cache too — without this the next focus paint
+      // would show stale unread counts from the cached blob.
+      setCachedConversations(currentUserId, next);
+    };
+    chatEvents.on("read", handler);
+    return () => {
+      chatEvents.off("read", handler);
+    };
+  }, [currentUserId]);
+
   // Inbox-wide realtime subscription. Any new message in any conversation
   // triggers a row-level update — bump unread + reorder. We don't refetch
   // the whole list; we patch the existing row.
@@ -300,6 +343,66 @@ const SupabaseConversationsList = ({ currentUserId }) => {
 
   const keyExtractor = useCallback((item) => item.id, []);
 
+  // Split conversations by archived state so the toggle pill can show
+  // counts ("Archived (3)") and the FlatList can render the right slice.
+  const { activeList, archivedList } = useMemo(() => {
+    const active = [];
+    const archived = [];
+    for (const c of conversations) {
+      if (c.archived) archived.push(c);
+      else active.push(c);
+    }
+    return { activeList: active, archivedList: archived };
+  }, [conversations]);
+  const visibleList = viewMode === "archived" ? archivedList : activeList;
+
+  // Header pill — toggles between Active and Archived. Only renders the
+  // Archived chip when there's at least one archived chat (no point
+  // showing "Archived (0)").
+  const renderViewModeHeader = () => {
+    if (viewMode === "active" && archivedList.length === 0) return null;
+    return (
+      <View
+        className="flex-row items-center px-4 py-2"
+        style={{ borderBottomWidth: 0.5, borderBottomColor: theme.divider, backgroundColor: theme.background }}
+      >
+        <TouchableOpacity
+          onPress={() => setViewMode("active")}
+          className="rounded-full px-3 py-1.5"
+          style={{
+            backgroundColor: viewMode === "active" ? theme.primary : "transparent",
+            borderWidth: 1,
+            borderColor: viewMode === "active" ? theme.primary : theme.border,
+            marginRight: 8,
+          }}
+        >
+          <Text
+            className="text-xs font-pbold"
+            style={{ color: viewMode === "active" ? (theme.primaryContrast ?? "#fff") : theme.text }}
+          >
+            Active{viewMode === "active" ? "" : ` (${activeList.length})`}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setViewMode("archived")}
+          className="rounded-full px-3 py-1.5"
+          style={{
+            backgroundColor: viewMode === "archived" ? theme.primary : "transparent",
+            borderWidth: 1,
+            borderColor: viewMode === "archived" ? theme.primary : theme.border,
+          }}
+        >
+          <Text
+            className="text-xs font-pbold"
+            style={{ color: viewMode === "archived" ? (theme.primaryContrast ?? "#fff") : theme.text }}
+          >
+            Archived ({archivedList.length})
+          </Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
   // Empty + loading skeleton — matches the violet-soft "premium" empty
   // states elsewhere in the app.
   if (loading) {
@@ -351,19 +454,33 @@ const SupabaseConversationsList = ({ currentUserId }) => {
     );
   }
 
+  // Special empty state for the archived view.
+  const isEmptyVisible = visibleList.length === 0;
+
   return (
-    <FlatList
-      data={conversations}
-      renderItem={renderItem}
-      keyExtractor={keyExtractor}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={theme.primary} colors={[theme.primary]} />}
-      contentContainerStyle={{ flexGrow: 1, backgroundColor: theme.background }}
-      style={{ backgroundColor: theme.background }}
-      windowSize={flatListConfig.windowSize}
-      initialNumToRender={flatListConfig.initialNumToRender}
-      maxToRenderPerBatch={flatListConfig.maxToRenderPerBatch}
-      removeClippedSubviews={flatListConfig.removeClippedSubviews}
-    />
+    <View style={{ flex: 1, backgroundColor: theme.background }}>
+      {renderViewModeHeader()}
+      {isEmptyVisible ? (
+        <View className="flex-1 items-center justify-center px-6">
+          <Text className="text-sm" style={{ color: theme.textSoft }}>
+            {viewMode === "archived" ? "No archived chats." : "No active chats."}
+          </Text>
+        </View>
+      ) : (
+        <FlatList
+          data={visibleList}
+          renderItem={renderItem}
+          keyExtractor={keyExtractor}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={theme.primary} colors={[theme.primary]} />}
+          contentContainerStyle={{ flexGrow: 1, backgroundColor: theme.background }}
+          style={{ backgroundColor: theme.background }}
+          windowSize={flatListConfig.windowSize}
+          initialNumToRender={flatListConfig.initialNumToRender}
+          maxToRenderPerBatch={flatListConfig.maxToRenderPerBatch}
+          removeClippedSubviews={flatListConfig.removeClippedSubviews}
+        />
+      )}
+    </View>
   );
 };
 

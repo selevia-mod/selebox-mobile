@@ -7,6 +7,7 @@ import FastImage from "react-native-fast-image";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import useIsOffline from "../hooks/useIsOffline";
+import { subscribeToInbox } from "../lib/messages-supabase";
 import { NotificationService } from "../lib/notifications";
 import {
   getUnreadDmCount,
@@ -31,7 +32,7 @@ const MainScreensHeader = ({ title }) => {
   const [appwriteUnread, setAppwriteUnread] = useState(0);
   const [supabaseDmUnread, setSupabaseDmUnread] = useState(0);
   const newNotifications = appwriteUnread + supabaseDmUnread;
-  const { unreadCount } = useTotalUnreadCount();
+  const { unreadCount, refresh: refreshChatUnread } = useTotalUnreadCount();
 
   useEffect(() => {
     const subscription = Notifications.addNotificationReceivedListener(async () => {
@@ -43,25 +44,48 @@ const MainScreensHeader = ({ title }) => {
   useFocusEffect(
     useCallback(() => {
       fetchNewNotificationCount();
-    }, []),
+      // Also pull the chat-tab badge fresh — useTotalUnreadCount only
+      // recomputes on inbox INSERTs (not on `messages.read_at` UPDATEs the
+      // user's own `markConversationRead` fires). Without this refresh,
+      // the badge stays at the pre-open count after a user enters a thread
+      // and navigates back.
+      refreshChatUnread?.();
+    }, [refreshChatUnread]),
   );
 
-  // Live updates for the Supabase dm_message side. The Appwrite count is
-  // poll-on-focus (its service has no realtime), but Supabase rows can
-  // arrive any time the recipient is online, so the badge should bump
-  // without waiting for the user to navigate back to a main screen.
+  // Live updates for the Supabase dm_message side.
+  //
+  // We piggyback on the inbox subscription (postgres_changes on `messages`)
+  // rather than `subscribeToDmNotifications` because `notifications` has
+  // restrictive RLS gated on `auth.uid()` — and on the current Appwrite-auth
+  // path there's no Supabase session, so realtime postgres_changes on
+  // `notifications` deliver nothing to anon clients. The `messages` table
+  // is anon-permissive, so its INSERT events DO arrive for everyone.
+  //
+  // When any new message arrives, we recount the bell unread via the
+  // SECURITY DEFINER RPC `get_chat_unread_count` (which works for both
+  // auth modes). The trigger has already written the bell row by the time
+  // we recount, so the count reflects the new state.
+  //
+  // We also keep `subscribeToDmNotifications` mounted for the future
+  // Supabase-auth case — when that flips on, realtime on `notifications`
+  // starts firing and the badge becomes near-instantaneous.
   useEffect(() => {
     if (!user?.$id) return;
-    const unsubscribe = subscribeToDmNotifications({
-      onInsert: () => {
-        // Cheap recount — the unread index makes this O(unread rows).
-        getUnreadDmCount().then(setSupabaseDmUnread).catch(() => {});
-      },
-      onUpdate: () => {
-        getUnreadDmCount().then(setSupabaseDmUnread).catch(() => {});
-      },
+    const recount = () => {
+      getUnreadDmCount().then(setSupabaseDmUnread).catch(() => {});
+    };
+    const unsubscribeInbox = subscribeToInbox(() => {
+      recount();
     });
-    return unsubscribe;
+    const unsubscribeNotif = subscribeToDmNotifications({
+      onInsert: recount,
+      onUpdate: recount,
+    });
+    return () => {
+      unsubscribeInbox();
+      unsubscribeNotif();
+    };
   }, [user?.$id]);
 
   const fetchNewNotificationCount = async () => {

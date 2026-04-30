@@ -19,6 +19,10 @@ import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import { router, useLocalSearchParams } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import RNModal from "react-native-modal";
+import { useGlobalContext } from "../context/global-provider";
+import { reportContent } from "../lib/safety";
+import ReportModal from "./ReportModal";
 import { Alert, FlatList, Image as RNImage, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -140,6 +144,13 @@ const buildRowsWithDividers = (messages) => {
 const MessageBubbleImpl = ({ message, isMine, theme, onLongPress, reactionList, repliedTo }) => {
   const isDeleted = Boolean(message.deleted_at);
   const isPending = Boolean(message._pending);
+  const hasImage = Boolean(message.image_url);
+  const hasBody = Boolean(message.body && message.body.trim());
+  // Image-only messages (picture / GIF without caption) should let the
+  // image carry the visual weight. The purple frame around a 200×200 photo
+  // adds noise — drop it to a soft tint so the image breathes. Text and
+  // emoji messages keep the full purple bubble for legibility.
+  const isImageOnly = hasImage && !hasBody;
 
   return (
     <TouchableOpacity
@@ -175,15 +186,26 @@ const MessageBubbleImpl = ({ message, isMine, theme, onLongPress, reactionList, 
       <View
         className="rounded-2xl px-4 py-2.5"
         style={{
-          backgroundColor: isMine ? theme.primary : theme.surfaceMuted,
+          // Image-only own bubbles get a soft tint instead of solid purple
+          // so the photo / GIF reads as the main content. Image-only
+          // received bubbles drop the gray surface for the same reason.
+          // Anything with text (including emoji) keeps the full bubble.
+          backgroundColor: isImageOnly
+            ? (isMine ? "rgba(121, 117, 212, 0.18)" : "transparent")
+            : (isMine ? theme.primary : theme.surfaceMuted),
           opacity: isPending ? 0.6 : 1,
-          borderWidth: isMine ? 0 : 1,
+          borderWidth: isMine || isImageOnly ? 0 : 1,
           borderColor: theme.border,
-          shadowColor: isMine ? theme.primary : "transparent",
+          // Drop the shadow on image-only bubbles too — without the solid
+          // bg the shadow looks like a stray drop-shadow on the image.
+          shadowColor: isMine && !isImageOnly ? theme.primary : "transparent",
           shadowOffset: { width: 0, height: 2 },
-          shadowOpacity: isMine ? 0.18 : 0,
+          shadowOpacity: isMine && !isImageOnly ? 0.18 : 0,
           shadowRadius: 6,
-          elevation: isMine ? 2 : 0,
+          elevation: isMine && !isImageOnly ? 2 : 0,
+          // Tighter padding for image-only — less wasted space around photo
+          paddingHorizontal: isImageOnly ? 4 : undefined,
+          paddingVertical: isImageOnly ? 4 : undefined,
         }}
       >
         {message.image_url ? (
@@ -285,6 +307,7 @@ const MessageBubble = memo(MessageBubbleImpl, (prev, next) => {
 
 const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) => {
   const { theme } = useAppTheme();
+  const { user } = useGlobalContext();
   const params = useLocalSearchParams();
   const conversationId = conversationIdProp || params?.conversationId;
 
@@ -325,6 +348,15 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
   // Header kebab menu (View profile / Mute / Archive / Report / Delete
   // for 1:1, View members / Mute / Archive / Leave for groups).
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+
+  // Report flow state — same shape as ProfileActionsMenu uses, so the
+  // chat report path mirrors how reports are filed elsewhere in the app
+  // (centered ReportModal with a free-form details TextInput, then a
+  // confirmation Alert before submit, then reportContent → unified
+  // content_reports queue + Appwrite for legacy admin tooling).
+  const [reportModalVisible, setReportModalVisible] = useState(false);
+  const [reportDetail, setReportDetail] = useState("");
+  const [reportLoading, setReportLoading] = useState(false);
 
   // Refs for realtime callbacks so they don't re-subscribe on every render.
   const messagesRef = useRef([]);
@@ -725,13 +757,38 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
   // then dispatch their backend call. Errors surface as Alerts; success
   // navigates back to the inbox where appropriate.
   // ─────────────────────────────────────────────────────────────────────
+  // Resolves a Supabase profile UUID to the Appwrite hex ID that
+  // creator-profile expects, then navigates. Used both by the kebab
+  // "View profile" item AND by the avatar/name tap in the chat header
+  // — without the resolution either entry point hangs on the skeleton
+  // because creator-profile's getUserByID() is an Appwrite document
+  // fetch that can't find a record by UUID.
+  const goToProfile = useCallback(async (otherSupabaseId) => {
+    if (!otherSupabaseId) return;
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("legacy_appwrite_id")
+        .eq("id", otherSupabaseId)
+        .maybeSingle();
+      if (error) throw error;
+      const appwriteId = data?.legacy_appwrite_id;
+      if (!appwriteId) {
+        Alert.alert("Profile unavailable", "Couldn't load this user's profile.");
+        return;
+      }
+      router.push({ pathname: "/creator-profile", params: { userId: appwriteId } });
+    } catch (e) {
+      console.log("[chat] goToProfile resolve failed:", e?.message);
+      Alert.alert("Profile unavailable", e?.message || "Couldn't load this user's profile.");
+    }
+  }, []);
+
   const handleViewProfile = useCallback(() => {
     setHeaderMenuOpen(false);
     if (!conversation || conversation.is_group) return;
-    const otherId = conversation.otherUser?.id;
-    if (!otherId) return;
-    router.push({ pathname: "/creator-profile", params: { userId: otherId } });
-  }, [conversation]);
+    goToProfile(conversation.otherUser?.id);
+  }, [conversation, goToProfile]);
 
   // Mute toggle — if currently muted (mutedUntil future), unmute by
   // setting null. Otherwise mute for 8 hours. Matches the most-common
@@ -753,7 +810,20 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
   const handleArchive = useCallback(() => {
     setHeaderMenuOpen(false);
     if (!conversation) return;
-    Alert.alert("Archive this chat?", "It will be hidden from your list. You can find it again by re-opening the conversation.", [
+    const isArchived = Boolean(conversation.archived);
+    if (isArchived) {
+      // Toggle off — unarchive immediately, no confirmation needed.
+      (async () => {
+        try {
+          await supabaseSetArchived(conversation, false);
+          setConversation((c) => (c ? { ...c, archived: false } : c));
+        } catch (e) {
+          Alert.alert("Couldn't unarchive", e?.message || "Try again.");
+        }
+      })();
+      return;
+    }
+    Alert.alert("Archive this chat?", "It will move to your Archived list. Open Archived from the chat list header to unarchive or delete it.", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Archive",
@@ -772,16 +842,109 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
     ]);
   }, [conversation]);
 
+  // Report flow — aligned with ProfileActionsMenu / post / video / book
+  // report flows so chat reports look and behave like every other report
+  // surface in the app:
+  //
+  //   1. 3-dot menu → "Report user" closes the kebab and opens ReportModal
+  //      (the same bottom-sheet component used by profile / video / book
+  //      reports).
+  //   2. User types a description, taps Submit.
+  //   3. Confirmation Alert ("Are you sure?") — one last chance to back
+  //      out, mirroring ProfileActionsMenu.
+  //   4. On confirm, reportContent() dual-writes (Appwrite legacy +
+  //      Supabase content_reports). The unified admin queue picks it up.
+  //   5. Success / failure Alert closes the loop.
+  //
+  // Chat carries Supabase UUIDs but the report system stores Appwrite hex
+  // IDs (so admin's existing per-user lookups still work). The other
+  // user's Appwrite ID is resolved via profiles.legacy_appwrite_id (same
+  // pattern as handleViewProfile).
   const handleReport = useCallback(() => {
     setHeaderMenuOpen(false);
     if (!conversation || conversation.is_group) return;
-    const otherId = conversation.otherUser?.id;
-    if (!otherId) return;
-    // Wires through to whatever report flow the rest of the app uses.
-    // If the screen doesn't exist yet, the route resolves to a 404 in
-    // dev — that's the signal to wire it in a follow-up.
-    router.push({ pathname: "/report-user", params: { userId: otherId } });
-  }, [conversation]);
+    const otherSupabaseId = conversation.otherUser?.id;
+    const myAppwriteId = user?.$id;
+    if (!otherSupabaseId || !myAppwriteId) {
+      Alert.alert("Couldn't report", "Missing user info; try again in a moment.");
+      return;
+    }
+    setReportDetail("");
+    setReportModalVisible(true);
+  }, [conversation, user]);
+
+  const handleCloseReportModal = useCallback(() => {
+    if (reportLoading) return;
+    setReportModalVisible(false);
+  }, [reportLoading]);
+
+  const handleSubmitChatReport = useCallback(
+    async (details) => {
+      if (!conversation || conversation.is_group) return;
+      const otherSupabaseId = conversation.otherUser?.id;
+      const otherUsername = conversation.otherUser?.username || "this user";
+      const myAppwriteId = user?.$id;
+      if (!otherSupabaseId || !myAppwriteId) {
+        Alert.alert("Couldn't report", "Missing user info; try again in a moment.");
+        return;
+      }
+
+      // Confirmation step — matches ProfileActionsMenu.handleSubmitReport
+      // ("Are you sure you want to report …") so users get one final
+      // checkpoint before the submit fires.
+      Alert.alert(
+        "Report user",
+        `Are you sure you want to report ${otherUsername}? Confirming will submit your report for review by our team.`,
+        [
+          { text: "No", style: "cancel" },
+          {
+            text: "Yes",
+            onPress: async () => {
+              setReportLoading(true);
+              try {
+                // Resolve the other user's Appwrite ID. content_reports
+                // stores Appwrite hex IDs to match the rest of the app.
+                const { data: prof, error } = await supabase
+                  .from("profiles")
+                  .select("legacy_appwrite_id")
+                  .eq("id", otherSupabaseId)
+                  .maybeSingle();
+                if (error) throw error;
+                const otherAppwriteId = prof?.legacy_appwrite_id;
+                if (!otherAppwriteId) {
+                  Alert.alert("Couldn't report", "Couldn't resolve that user's profile.");
+                  setReportLoading(false);
+                  return;
+                }
+
+                await reportContent({
+                  contentId: otherAppwriteId,
+                  contentType: "user",
+                  reporterId: myAppwriteId,
+                  ownerId: otherAppwriteId,
+                  reason: "user_report_from_chat",
+                  notes: details
+                    ? `${details}\n\n— from chat conversation ${conversation.id}`
+                    : `Reported from chat conversation ${conversation.id}`,
+                });
+
+                setReportDetail("");
+                setReportModalVisible(false);
+                Alert.alert("Success", "Your report has been submitted for review.");
+              } catch (e) {
+                console.log("[chat] handleSubmitChatReport failed:", e?.message);
+                Alert.alert("Error", e?.message || "Failed to submit report.");
+              } finally {
+                setReportLoading(false);
+              }
+            },
+          },
+        ],
+        { cancelable: true },
+      );
+    },
+    [conversation, user],
+  );
 
   // Delete: same backend effect as archive (per-side hide via
   // archived_by_a/b), but framed in destructive copy. The UX promise
@@ -1056,9 +1219,10 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
           activeOpacity={0.85}
           onPress={() => {
             if (!conversation || conversation.is_group) return;
-            const otherId = headerOtherUser?.id;
-            if (!otherId) return;
-            router.push({ pathname: "/creator-profile", params: { userId: otherId } });
+            // Same Appwrite-ID resolution as the kebab "View profile" entry —
+            // creator-profile's getUserByID expects an Appwrite hex ID, not
+            // the Supabase UUID we have here.
+            goToProfile(headerOtherUser?.id);
           }}
           className="ml-3 flex-1 flex-row items-center"
         >
@@ -1149,6 +1313,19 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
         onReport={handleReport}
         onDelete={handleDeleteConversation}
         onLeaveGroup={handleLeaveGroup}
+      />
+
+      {/* Report flow — uses the same ReportModal component the rest of the
+          app uses (ProfileActionsMenu, video / book / post reports). Keeps
+          the visual + interaction language consistent across surfaces. */}
+      <ReportModal
+        type="User"
+        isVisible={reportModalVisible}
+        onClose={handleCloseReportModal}
+        handleSubmitReport={handleSubmitChatReport}
+        reportDetail={reportDetail}
+        setReportDetail={setReportDetail}
+        reportLoading={reportLoading}
       />
 
       <KeyboardAvoidingView
@@ -1545,13 +1722,29 @@ const MessageActionPill = ({ target, theme, onClose, onReact, onReply, onCopy, o
   );
 };
 
-// GIF picker modal — search bar at top, grid of trending/searched GIFs
-// below. Tap a GIF to set it as the pending attachment + close.
-// Bottom-sheet style menu for the thread header's 3-dot button. Items
-// differ for 1:1 vs group conversations:
-//   1:1   → View profile / (Un)mute / Archive / Report / Delete
-//   group → View members / (Un)mute / Archive / Leave group
-// Tap-outside-to-dismiss is handled by the backdrop TouchableOpacity.
+// Header kebab menu — visual language matched to the home-feed Post
+// safety sheet (app/(tabs)/home.jsx Post actions modal) and to
+// ProfileActionsMenu. Centered react-native-modal card on
+// `theme.surfaceElevated`, title at top, stacked rounded-rectangle action
+// rows on `theme.surfaceMuted` with icon + bold label + small subtitle,
+// destructive items use `theme.iconDanger` (red), Cancel link at bottom.
+//
+// Deferred dispatch — same pattern as ProfileActionsMenu:
+// Tapping any action does NOT execute the handler immediately. We stash
+// the chosen action, close the sheet, then dispatch from `onModalHide`
+// after the dismiss animation finishes. Without this, opening a second
+// modal (ReportModal) or system Alert (Archive / Delete confirmations)
+// while the kebab is mid-dismiss leaves overlapping backdrops that
+// freeze touches across the whole screen — exact symptom the user hit
+// when "tap Report → something flashes → screen frozen, can't tap
+// anything." A setTimeout fallback fires the action even if onModalHide
+// somehow misses (some platform/animation combos drop it).
+//
+// Items differ for 1:1 vs group conversations:
+//   1:1   → View profile / (Un)mute / (Un)archive / Report / Delete
+//   group → View members / (Un)mute / (Un)archive / Leave group
+const PENDING_ACTION_FALLBACK_MS = 550;
+
 const ThreadActionsMenu = ({
   visible,
   onClose,
@@ -1564,66 +1757,180 @@ const ThreadActionsMenu = ({
   onDelete,
   onLeaveGroup,
 }) => {
+  const pendingActionRef = useRef(null);
+  const dispatchedRef = useRef(false);
+  const fallbackTimerRef = useRef(null);
+
+  const clearFallbackTimer = () => {
+    if (fallbackTimerRef.current) {
+      clearTimeout(fallbackTimerRef.current);
+      fallbackTimerRef.current = null;
+    }
+  };
+
+  // Cancel any pending fallback timer if the menu unmounts mid-animation.
+  useEffect(() => clearFallbackTimer, []);
+
+  const dispatchPending = () => {
+    if (dispatchedRef.current) return;
+    const action = pendingActionRef.current;
+    if (!action) return;
+    dispatchedRef.current = true;
+    pendingActionRef.current = null;
+    clearFallbackTimer();
+    switch (action) {
+      case "viewProfile":
+        onViewProfile?.();
+        break;
+      case "toggleMute":
+        onToggleMute?.();
+        break;
+      case "archive":
+        onArchive?.();
+        break;
+      case "report":
+        onReport?.();
+        break;
+      case "delete":
+        onDelete?.();
+        break;
+      case "leaveGroup":
+        onLeaveGroup?.();
+        break;
+      default:
+        break;
+    }
+  };
+
+  const queueAction = (action) => {
+    pendingActionRef.current = action;
+    dispatchedRef.current = false;
+    clearFallbackTimer();
+    fallbackTimerRef.current = setTimeout(dispatchPending, PENDING_ACTION_FALLBACK_MS);
+    onClose();
+  };
+
   if (!conversation) return null;
   const isGroup = Boolean(conversation.is_group);
   const isMuted = Boolean(conversation.muted);
+  const isArchived = Boolean(conversation.archived);
+  const dangerColor = theme.iconDanger ?? "#ef4444";
 
-  // Each row is one menu item. We render them as plain TouchableOpacities
-  // in a column so styling stays consistent and we don't pay for FlatList
-  // overhead on a 5-item list.
-  const Row = ({ icon, label, onPress, danger }) => (
+  // Single row component — same shape as the home feed's safety sheet
+  // rows (icon + bold primary label + small subtitle). `marginTop`
+  // varies: the first row uses mt-4 (gap from title), subsequent rows
+  // use mt-2 (tight stack).
+  const ActionRow = ({ icon, label, subtitle, onPress, danger, first, disabled }) => (
     <TouchableOpacity
       onPress={onPress}
+      disabled={disabled}
       activeOpacity={0.85}
-      className="flex-row items-center px-4 py-3.5"
-      style={{ borderBottomWidth: 0.5, borderBottomColor: theme.divider }}
+      className={`${first ? "mt-4" : "mt-2"} rounded-xl px-4 py-3`}
+      style={{ backgroundColor: theme.surfaceMuted, opacity: disabled ? 0.5 : 1 }}
     >
-      <Feather name={icon} size={18} color={danger ? "#dc2626" : theme.icon} />
-      <Text className="ml-3 font-pbold text-base" style={{ color: danger ? "#dc2626" : theme.text }}>
-        {label}
-      </Text>
+      <View className="flex flex-row items-center">
+        <MaterialIcons
+          name={icon}
+          size={22}
+          color={danger ? dangerColor : theme.icon}
+          style={{ marginRight: 12 }}
+        />
+        <View style={{ flex: 1 }}>
+          <Text className="text-base font-semibold" style={{ color: danger ? dangerColor : theme.text }}>
+            {label}
+          </Text>
+          {subtitle ? (
+            <Text className="mt-1 text-xs" style={{ color: theme.textSoft }}>
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+      </View>
     </TouchableOpacity>
   );
 
   return (
-    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
-      <TouchableOpacity
-        activeOpacity={1}
-        onPress={onClose}
-        style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "flex-end" }}
-      >
-        {/* Inner press-blocker so taps inside the menu don't close it. */}
-        <TouchableOpacity activeOpacity={1} onPress={() => {}}>
-          <View style={{ backgroundColor: theme.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 24, paddingTop: 8 }}>
-            {/* Drag handle — visual cue this is a sheet. */}
-            <View className="self-center my-2" style={{ width: 36, height: 4, borderRadius: 2, backgroundColor: theme.divider }} />
+    <RNModal
+      isVisible={visible}
+      onBackdropPress={onClose}
+      onBackButtonPress={onClose}
+      onModalHide={dispatchPending}
+      backdropOpacity={0.6}
+      useNativeDriver
+    >
+      <View className="rounded-2xl px-5 py-5" style={{ backgroundColor: theme.surfaceElevated }}>
+        <Text className="text-lg font-semibold" style={{ color: theme.text }}>
+          {isGroup ? "Group actions" : "Chat actions"}
+        </Text>
 
-            {!isGroup ? (
-              <Row icon="user" label="View profile" onPress={onViewProfile} />
-            ) : (
-              <Row icon="users" label="View members" onPress={onViewProfile} />
-            )}
+        {/* View profile (1:1) / View members (group) — always first */}
+        <ActionRow
+          first
+          icon={isGroup ? "group" : "person"}
+          label={isGroup ? "View members" : "View profile"}
+          subtitle={isGroup ? "See who's in this group" : "See more about this person"}
+          onPress={() => queueAction("viewProfile")}
+        />
 
-            <Row
-              icon={isMuted ? "bell" : "bell-off"}
-              label={isMuted ? "Unmute notifications" : "Mute notifications"}
-              onPress={onToggleMute}
+        {/* Mute / Unmute notifications */}
+        <ActionRow
+          icon={isMuted ? "notifications" : "notifications-off"}
+          label={isMuted ? "Unmute notifications" : "Mute notifications"}
+          subtitle={
+            isMuted
+              ? "Resume getting notified when messages arrive"
+              : "Stop getting notified for 8 hours"
+          }
+          onPress={() => queueAction("toggleMute")}
+        />
+
+        {/* Archive / Unarchive */}
+        <ActionRow
+          icon={isArchived ? "unarchive" : "archive"}
+          label={isArchived ? "Unarchive chat" : "Archive chat"}
+          subtitle={
+            isArchived
+              ? "Move back to your active chats"
+              : "Hide from your inbox; recoverable from Archived"
+          }
+          onPress={() => queueAction("archive")}
+        />
+
+        {/* 1:1 footer: Report + Delete (both destructive) */}
+        {!isGroup ? (
+          <>
+            <ActionRow
+              icon="flag"
+              label="Report user"
+              subtitle="Tell us what's wrong"
+              onPress={() => queueAction("report")}
+              danger
             />
+            <ActionRow
+              icon="delete"
+              label="Delete conversation"
+              subtitle="Removes this chat from your inbox"
+              onPress={() => queueAction("delete")}
+              danger
+            />
+          </>
+        ) : (
+          <ActionRow
+            icon="logout"
+            label="Leave group"
+            subtitle="Stop receiving messages from this group"
+            onPress={() => queueAction("leaveGroup")}
+            danger
+          />
+        )}
 
-            <Row icon="archive" label="Archive chat" onPress={onArchive} />
-
-            {!isGroup ? (
-              <>
-                <Row icon="flag" label="Report user" onPress={onReport} danger />
-                <Row icon="trash-2" label="Delete conversation" onPress={onDelete} danger />
-              </>
-            ) : (
-              <Row icon="log-out" label="Leave group" onPress={onLeaveGroup} danger />
-            )}
-          </View>
+        <TouchableOpacity className="mt-3 items-center" onPress={onClose}>
+          <Text className="text-sm" style={{ color: theme.textMuted }}>
+            Cancel
+          </Text>
         </TouchableOpacity>
-      </TouchableOpacity>
-    </Modal>
+      </View>
+    </RNModal>
   );
 };
 
