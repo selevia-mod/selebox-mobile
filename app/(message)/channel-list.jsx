@@ -18,7 +18,11 @@ import useAppTheme from "../../hooks/useAppTheme";
 
 const ChannelListScreen = () => {
   const { theme } = useAppTheme();
-  const { user } = useGlobalContext();
+  // chatUserId is the Supabase UUID for the current user (resolved from
+  // user.$id via profiles.legacy_appwrite_id when running on the Appwrite
+  // auth path). Use it for chat queries — `user.$id` is the Appwrite hex
+  // and won't match `profiles.id`.
+  const { chatUserId } = useGlobalContext();
 
   return (
     <SafeAreaView className="flex-1" style={{ backgroundColor: theme.background }}>
@@ -45,7 +49,7 @@ const ChannelListScreen = () => {
         </TouchableOpacity>
       </View>
 
-      <SupabaseConversationsList currentUserId={user?.id || user?.$id} />
+      <SupabaseConversationsList currentUserId={chatUserId} />
     </SafeAreaView>
   );
 };

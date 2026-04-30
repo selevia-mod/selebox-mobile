@@ -14,8 +14,11 @@ import SupabaseNewChat from "../../components/SupabaseNewChat";
 import { useGlobalContext } from "../../context/global-provider";
 
 const NewChat = () => {
-  const { user } = useGlobalContext();
-  return <SupabaseNewChat currentUserId={user?.id || user?.$id} />;
+  // chatUserId is the resolved Supabase UUID — matches `profiles.id` so the
+  // search's .neq("id", currentUserId) actually filters us out instead of
+  // throwing on an Appwrite hex ID.
+  const { chatUserId } = useGlobalContext();
+  return <SupabaseNewChat currentUserId={chatUserId} />;
 };
 
 export default NewChat;

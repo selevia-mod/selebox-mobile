@@ -15,6 +15,11 @@ import { USE_SUPABASE_AUTH, USE_SUPABASE_WALLET } from "../lib/feature-flags";
 // the topbar pill, store, and all unlock surfaces read these values.
 // Realtime subscription auto-refreshes the pill on any wallet UPDATE.
 import { getWallet, resetWalletCaches, subscribeToWallet } from "../lib/wallet-supabase";
+// Hotfix — chat broken when Appwrite is the auth source. The chat lib used to
+// rely on supabase.auth.getUser(), which is null without a Supabase session.
+// We now seed the lib with the resolved Supabase UUID for the current user
+// so requireUser() inside messages-supabase.js can answer.
+import { setMessagesAppwriteUser } from "../lib/messages-supabase";
 import RegisterForPushNotificationsAsync from "../lib/register-push-notifications";
 import { getCurrentSupabaseUser, subscribeToAuthChanges } from "../lib/supabase-auth";
 import { setGlobalSettingsReducer } from "../store/reducers/app";
@@ -54,6 +59,11 @@ export default function GlobalProvider({ children }) {
 
   const [isLogged, setIsLogged] = useState(null);
   const [user, setUser] = useState(null);
+  // Hotfix — chat needs the Supabase UUID for the current user. When auth
+  // is on Appwrite (USE_SUPABASE_AUTH=false, today's prod), `user.$id` is an
+  // Appwrite hex ID that won't match `profiles.id` (Supabase UUID). We
+  // resolve once and cache here so chat screens can pass the right ID.
+  const [chatUserId, setChatUserId] = useState(null);
   const [avatar, setAvatar] = useState(null);
   const [balance, setBalance] = useState(null);
   const [allVideos, setAllVideos] = useState([]);
@@ -386,6 +396,32 @@ export default function GlobalProvider({ children }) {
     // users get their realtime subscription seamlessly.
   }, [user?.$id, USE_SUPABASE_WALLET]);
 
+  // Hotfix — keep the chat lib's user cache + the exposed chatUserId in
+  // sync with the active auth user. Without this, messages-supabase's
+  // requireUser() throws "Not signed in" on every chat operation when
+  // running on the Appwrite auth path.
+  useEffect(() => {
+    let cancelled = false;
+    const rawId = user?.id || user?.$id || null;
+    if (!rawId) {
+      setChatUserId(null);
+      setMessagesAppwriteUser(null);
+      return undefined;
+    }
+    (async () => {
+      try {
+        const resolved = await setMessagesAppwriteUser(rawId);
+        if (cancelled) return;
+        setChatUserId(resolved || null);
+      } catch (error) {
+        console.warn("[chat] resolve user failed:", error?.message);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.$id, user?.id]);
+
   return (
     <GlobalContext.Provider
       value={{
@@ -395,6 +431,7 @@ export default function GlobalProvider({ children }) {
         setIsLogged,
         user,
         setUser,
+        chatUserId,
         balance,
         setBalance,
         refetchBalance,

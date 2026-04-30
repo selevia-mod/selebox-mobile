@@ -55,7 +55,14 @@ import {
   recordPostView,
 } from "../../lib/posts";
 import { USE_SUPABASE_POSTS } from "../../lib/feature-flags";
-import { adaptSupabasePostToAppwriteShape, fetchFeedPage, fetchFollowingFeedPage, fetchPostStats } from "../../lib/posts-supabase";
+import {
+  adaptSupabasePostToAppwriteShape,
+  fetchDiscoverFeedPage,
+  fetchFeedPage,
+  fetchFollowingFeedPage,
+  fetchForYouFeedPage,
+  fetchPostStats,
+} from "../../lib/posts-supabase";
 // Phase E.3 — gate feed video autoplay by device tier. Low-tier devices
 // pause everything (autoplay is the single biggest battery + jank source);
 // mid/high devices keep the existing topmost-only behavior.
@@ -971,13 +978,17 @@ const Home = () => {
           setFollowingCount(typeof res.followingCount === "number" ? res.followingCount : null);
         }
       } else if (activeTab === "discover") {
-        // Phase C.5 — Supabase Discover read path. Gated by USE_SUPABASE_POSTS.
-        // When on, all post data flows through `loadSupabaseFeedPage`:
-        // single Supabase read → batched stats → adapter → feed entries.
-        // Reposts come hydrated with `original` so PostCard's C.4
-        // dual-section render path lights up.
+        // Discover — Postgres-RPC algorithmic feed: trending velocity over
+        // last 48h, hard-excludes followed creators, boosts new creators
+        // (< 100 followers), enforces same-author diversity. The RPC
+        // returns posts in score order; loadSupabaseFeedPage hydrates the
+        // joined POST_SELECT shape and adapts to the legacy Appwrite shape
+        // PostCard expects. Refresh always starts at offset 0.
         if (USE_SUPABASE_POSTS) {
-          const result = await loadSupabaseFeedPage(() => fetchFeedPage({ limit: PAGE_SIZE }), PAGE_SIZE);
+          const result = await loadSupabaseFeedPage(
+            () => fetchDiscoverFeedPage({ userId: user?.$id, limit: PAGE_SIZE, offset: 0 }),
+            PAGE_SIZE,
+          );
           feed = result.entries;
           nextCursor = result.cursor;
           hasMoreRes = result.more;
@@ -988,14 +999,17 @@ const Home = () => {
           hasMoreRes = res.hasMore;
         }
       } else {
-        // For You — personalized via feed generator API on Appwrite, or
-        // a plain recency-ordered Supabase feed when USE_SUPABASE_POSTS
-        // is on. Phase C.8: For-You falls back to the same Supabase
-        // posts feed as Discover during the cross-platform transition;
-        // the Appwrite-only personalization recommender will be
-        // reintroduced as a follow-up (server-side).
+        // For You — Postgres-RPC algorithmic feed: tag/author affinity
+        // (built nightly from the user's like/comment/repost/follow
+        // history with 30-day decay) + log-engagement + recency + same-
+        // author diversity penalty + small random freshness. Falls back
+        // to the legacy Appwrite recommender when USE_SUPABASE_POSTS is
+        // off so we can flip the flag without a code change.
         if (USE_SUPABASE_POSTS) {
-          const result = await loadSupabaseFeedPage(() => fetchFeedPage({ limit: PAGE_SIZE }), PAGE_SIZE);
+          const result = await loadSupabaseFeedPage(
+            () => fetchForYouFeedPage({ userId: user?.$id, limit: PAGE_SIZE, offset: 0 }),
+            PAGE_SIZE,
+          );
           feed = result.entries;
           nextCursor = result.cursor;
           hasMoreRes = result.more;
@@ -1101,10 +1115,16 @@ const Home = () => {
           more = res.hasMore;
         }
       } else if (activeTab === "discover") {
-        // Phase C.5 — Supabase pagination. `lastId` here is the oldest
-        // post's created_at from the previous page, stashed by loadFeed.
+        // Discover pagination — RPC uses integer offset (score isn't
+        // monotonic with time, so a created_at cursor would skip rows).
+        // posts.length captures everything we've rendered so far for the
+        // active tab; refresh resets it to 0 by clearing posts.
         if (USE_SUPABASE_POSTS) {
-          const result = await loadSupabaseFeedPage(() => fetchFeedPage({ limit: PAGE_SIZE, before: lastId }), PAGE_SIZE);
+          const offset = posts.length;
+          const result = await loadSupabaseFeedPage(
+            () => fetchDiscoverFeedPage({ userId: user?.$id, limit: PAGE_SIZE, offset }),
+            PAGE_SIZE,
+          );
           feed = result.entries;
           apiNextCursor = result.cursor;
           more = result.more;
@@ -1115,12 +1135,15 @@ const Home = () => {
           more = res.hasMore;
         }
       } else {
-        // For-You pagination. Phase C.8 mirrors the loadFeed branch:
-        // when on Supabase, paginate the global recent-posts feed via
-        // fetchFeedPage; otherwise fall through to the Appwrite
-        // recommender.
+        // For-You pagination — same offset-based RPC contract as Discover.
+        // Falls back to the Appwrite recommender when USE_SUPABASE_POSTS
+        // is off.
         if (USE_SUPABASE_POSTS) {
-          const result = await loadSupabaseFeedPage(() => fetchFeedPage({ limit: PAGE_SIZE, before: lastId }), PAGE_SIZE);
+          const offset = posts.length;
+          const result = await loadSupabaseFeedPage(
+            () => fetchForYouFeedPage({ userId: user?.$id, limit: PAGE_SIZE, offset }),
+            PAGE_SIZE,
+          );
           feed = result.entries;
           apiNextCursor = result.cursor;
           more = result.more;

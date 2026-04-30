@@ -15,9 +15,12 @@ import { useGlobalContext } from "../../context/global-provider";
 
 const ChannelScreen = () => {
   const params = useLocalSearchParams();
-  const { user } = useGlobalContext();
+  // chatUserId is the resolved Supabase UUID — required for sender_id
+  // comparisons inside SupabaseThread (own-vs-other bubble alignment,
+  // realtime markRead skip-self, presence track, etc.).
+  const { chatUserId } = useGlobalContext();
   const conversationId = params.conversationId || params.channelId;
-  return <SupabaseThread conversationId={conversationId} currentUserId={user?.id || user?.$id} />;
+  return <SupabaseThread conversationId={conversationId} currentUserId={chatUserId} />;
 };
 
 export default ChannelScreen;
