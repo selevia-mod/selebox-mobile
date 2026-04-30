@@ -18,6 +18,7 @@ const MessageLayout = () => {
         <Stack.Screen name="channel-list" options={{ headerShown: false }} />
         <Stack.Screen name="channel" options={{ headerShown: false }} />
         <Stack.Screen name="new-chat" options={{ headerShown: false }} />
+        <Stack.Screen name="new-group" options={{ headerShown: false }} />
       </Stack>
 
       <ThemedStatusBar />

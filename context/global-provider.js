@@ -21,6 +21,9 @@ import { getWallet, resetWalletCaches, subscribeToWallet } from "../lib/wallet-s
 // so requireUser() inside messages-supabase.js can answer.
 import { setMessagesAppwriteUser } from "../lib/messages-supabase";
 import RegisterForPushNotificationsAsync from "../lib/register-push-notifications";
+// Direct supabase client — used to mirror the Expo push token onto the
+// profile row so chat-push can look it up at message-send time.
+import supabaseClient from "../lib/supabase";
 import { getCurrentSupabaseUser, subscribeToAuthChanges } from "../lib/supabase-auth";
 import { setGlobalSettingsReducer } from "../store/reducers/app";
 import { setIsLoggedReducer, setUserReducer } from "../store/reducers/auth";
@@ -117,12 +120,35 @@ export default function GlobalProvider({ children }) {
       const stillSameUser = (user?.$id || user?.id) === userIdAtSchedule;
       if (!stillSameUser || !userIdAtSchedule) return;
       RegisterForPushNotificationsAsync()
-        .then((token) => {
+        .then(async (token) => {
           if (!token) return;
           setExpoPushToken(token);
+          // Write to Appwrite (legacy auth source — keeps anything still
+          // reading from Appwrite working).
           updateUserExpoPushToken(userIdAtSchedule, token).catch((error) =>
-            console.warn("Failed to update push token on server:", error?.message || error),
+            console.warn("Failed to update push token on Appwrite:", error?.message || error),
           );
+          // Also mirror to the Supabase profiles row so the chat-push
+          // helper can look it up by Supabase UUID. We resolve the
+          // Appwrite hex → Supabase UUID via legacy_appwrite_id (same
+          // resolver as the rest of the chat lib uses). If the profile
+          // row doesn't exist yet (rare, post-migration new user), we
+          // silently skip; the next launch will retry.
+          try {
+            const { resolveSupabaseUserId } = await import("../lib/posts-supabase");
+            const resolvedId = await resolveSupabaseUserId(userIdAtSchedule);
+            if (resolvedId) {
+              const { error } = await supabaseClient
+                .from("profiles")
+                .update({ expo_push_token: token })
+                .eq("id", resolvedId);
+              if (error) {
+                console.warn("Failed to update push token on Supabase:", error.message);
+              }
+            }
+          } catch (e) {
+            console.warn("Supabase push-token mirror failed:", e?.message);
+          }
         })
         .catch((error) => console.warn("Push notification registration failed:", error?.message || error));
     });

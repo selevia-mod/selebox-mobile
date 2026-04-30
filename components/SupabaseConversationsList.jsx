@@ -28,7 +28,11 @@ import supabase from "../lib/supabase";
 import TimeAgo from "../lib/utils/time-ago";
 
 const ConversationRow = ({ conversation, onPress, theme, currentUserId }) => {
-  const { isGroup, otherUser, members, lastMessageAt, last_message_preview, last_message_sender, muted, archived } = conversation;
+  // The DB column is `is_group` (snake_case). The destructuring used to
+  // read `isGroup` directly which always evaluated undefined → groups
+  // rendered as 1:1 conversations. Rename here so the rest of this
+  // component can use `isGroup` naturally.
+  const { is_group: isGroup, otherUser, members, lastMessageAt, last_message_preview, last_message_sender, muted, archived } = conversation;
   const unread = conversation.unread || 0;
 
   if (archived) return null;

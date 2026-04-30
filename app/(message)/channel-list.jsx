@@ -40,13 +40,24 @@ const ChannelListScreen = () => {
             Messages
           </Text>
         </View>
-        <TouchableOpacity
-          onPress={() => router.push("new-chat")}
-          className="h-10 w-10 items-center justify-center rounded-full border"
-          style={{ borderColor: theme.border, backgroundColor: theme.surfaceMuted }}
-        >
-          <Feather name="edit" size={18} color={theme.icon} />
-        </TouchableOpacity>
+        <View className="flex-row items-center" style={{ gap: 8 }}>
+          {/* New group — multi-select user search → createGroupConversation. */}
+          <TouchableOpacity
+            onPress={() => router.push("/(message)/new-group")}
+            className="h-10 w-10 items-center justify-center rounded-full border"
+            style={{ borderColor: theme.border, backgroundColor: theme.surfaceMuted }}
+          >
+            <Feather name="users" size={18} color={theme.icon} />
+          </TouchableOpacity>
+          {/* New 1:1 chat — the existing pencil icon. */}
+          <TouchableOpacity
+            onPress={() => router.push("/(message)/new-chat")}
+            className="h-10 w-10 items-center justify-center rounded-full border"
+            style={{ borderColor: theme.border, backgroundColor: theme.surfaceMuted }}
+          >
+            <Feather name="edit" size={18} color={theme.icon} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <SupabaseConversationsList currentUserId={chatUserId} />
