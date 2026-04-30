@@ -16,10 +16,10 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.talesofsiren.talesofsiren",
-      "associatedDomains": ["applinks:www.selebox.com", "applinks:selebox.com", "applinks:www.selebox.com", "applinks:selebox.com"],
+      "associatedDomains": ["applinks:www.selebox.com", "applinks:selebox.com"],
       "usesAppleSignIn": true,
       "infoPlist": {
-        "UIBackgroundModes": ["audio", "fetch", "audio", "fetch"],
+        "UIBackgroundModes": ["audio", "fetch"],
         "NSPhotoLibraryUsageDescription": "We need access to your photos to let you upload a profile picture or set a custom avatar. Your photos will remain private and secure.",
         "NSCameraUsageDescription": "We need access to your camera to allow photo or video selection.",
         "NSMicrophoneUsageDescription": "We need access to your microphone for video-related features.",
