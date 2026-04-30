@@ -22,7 +22,6 @@ import useAppTheme from "../hooks/useAppTheme";
 // Phase E.10 — tier-tuned FlatList config for the conversations list.
 // Conversation lists are usually short, but on low-tier devices the
 // initial 10-row paint + 21-screen window is still wasteful.
-import { getCachedConversations, setCachedConversations } from "../lib/chat-cache";
 import { getFlatListConfig } from "../lib/device-tier";
 import { loadConversations, subscribeToInbox } from "../lib/messages-supabase";
 import supabase from "../lib/supabase";
@@ -165,22 +164,8 @@ const FETCH_FRESHNESS_MS = 30 * 1000;
 
 const SupabaseConversationsList = ({ currentUserId }) => {
   const { theme } = useAppTheme();
-  // Paint from MMKV cache instantly on mount so the user never sees a
-  // skeleton spinner when the cache is warm. The fetch effect below
-  // refreshes against the network and overwrites the cache with the
-  // canonical server state. If there's no cache (first launch / new
-  // user / signed out and back in), `conversations` starts empty and
-  // we fall back to the loading state path.
-  const [conversations, setConversations] = useState(() => {
-    const cached = currentUserId ? getCachedConversations(currentUserId) : null;
-    return cached || [];
-  });
-  // `loading` flips to true only when we don't have ANY content to
-  // paint — a warm cache means we skip the skeleton entirely.
-  const [loading, setLoading] = useState(() => {
-    const cached = currentUserId ? getCachedConversations(currentUserId) : null;
-    return !(cached && cached.length);
-  });
+  const [conversations, setConversations] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   // null = unknown (initial), false = no Supabase auth session, true = signed in
   const [hasSession, setHasSession] = useState(null);
@@ -223,11 +208,6 @@ const SupabaseConversationsList = ({ currentUserId }) => {
       const list = await loadConversations();
       setConversations(list);
       lastFetchedAtRef.current = Date.now();
-      // Persist the freshly fetched list so the next tab focus paints
-      // instantly. We cache after EVERY successful fetch (not just the
-      // first) so any per-side flag changes (archive, mute) and unread
-      // count drops are reflected in the cache too.
-      setCachedConversations(currentUserId, list);
     } catch (error) {
       console.log("[supabase-chat] loadConversations failed:", error?.message);
       setConversations([]);
@@ -271,11 +251,6 @@ const SupabaseConversationsList = ({ currentUserId }) => {
       };
       const next = [updated, ...list.filter((c, i) => i !== idx)];
       setConversations(next);
-      // Mirror the realtime patch into the cache too — without this,
-      // the cache stays at the last full-fetch's preview/timestamps and
-      // the user sees stale "last message" text when they re-open the
-      // tab. Cheap microsecond write.
-      setCachedConversations(currentUserId, next);
     });
     return unsubscribe;
   }, [currentUserId, fetchConversations]);

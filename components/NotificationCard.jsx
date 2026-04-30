@@ -11,7 +11,6 @@ import {
   buildPostNotificationNavigationParams,
   buildVideoNotificationNavigationParams,
 } from "../lib/notifications";
-import { markChatNotificationsRead } from "../lib/notifications-supabase";
 import TimeAgo from "../lib/utils/time-ago";
 import { stripMentionMarkup } from "../lib/user-mentions";
 import UserAvatar from "./UserAvatar";
@@ -114,22 +113,7 @@ const NotificationCard = ({ item, onViewed }) => {
   const handleNotificationPress = async () => {
     if (isUnread && item?.$id) {
       onViewed?.(item.$id);
-      // Mark-read uses the right backend for the row's origin. Supabase rows
-      // call the chat-notifications RPC (also clears any sibling unread rows
-      // for the same conversation), Appwrite rows call markAsViewed.
-      if (item?._backend === "supabase") {
-        void markChatNotificationsRead(item?.conversationId || item?.resourceId);
-      } else {
-        void notificationService.markAsViewed({ notificationId: item.$id });
-      }
-    }
-    // Chat (dm_message) — navigate to the conversation thread.
-    if (notificationType === "dm_message") {
-      const conversationId = item?.conversationId || item?.resourceId;
-      if (conversationId) {
-        router.push({ pathname: "/(message)/channel", params: { conversationId } });
-      }
-      return;
+      void notificationService.markAsViewed({ notificationId: item.$id });
     }
     if (notificationType === "video-upload") {
       router.push("/creator-section");

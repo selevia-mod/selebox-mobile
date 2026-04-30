@@ -8,11 +8,6 @@ import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import useIsOffline from "../hooks/useIsOffline";
 import { NotificationService } from "../lib/notifications";
-import {
-  getUnreadDmCount,
-  markAllDmNotificationsRead,
-  subscribeToDmNotifications,
-} from "../lib/notifications-supabase";
 import { useTotalUnreadCount } from "../hooks/useTotalUnreadCount";
 import StyledCoinIndicator from "./StyledCoinIndicator";
 
@@ -23,14 +18,7 @@ const MainScreensHeader = ({ title }) => {
   const { user } = useGlobalContext();
   const { theme } = useAppTheme();
   const isOffline = useIsOffline();
-  // Bell badge sums two backends:
-  //   • appwriteUnread — likes / comments / replies / follows / clips (legacy)
-  //   • supabaseDmUnread — chat dm_message rows (task #201)
-  // Kept as separate state so each updates from its own source / channel
-  // without re-fetching the other one. The badge text is the sum.
-  const [appwriteUnread, setAppwriteUnread] = useState(0);
-  const [supabaseDmUnread, setSupabaseDmUnread] = useState(0);
-  const newNotifications = appwriteUnread + supabaseDmUnread;
+  const [newNotifications, setNewNotifications] = useState(0);
   const { unreadCount } = useTotalUnreadCount();
 
   useEffect(() => {
@@ -46,51 +34,23 @@ const MainScreensHeader = ({ title }) => {
     }, []),
   );
 
-  // Live updates for the Supabase dm_message side. The Appwrite count is
-  // poll-on-focus (its service has no realtime), but Supabase rows can
-  // arrive any time the recipient is online, so the badge should bump
-  // without waiting for the user to navigate back to a main screen.
-  useEffect(() => {
-    if (!user?.$id) return;
-    const unsubscribe = subscribeToDmNotifications({
-      onInsert: () => {
-        // Cheap recount — the unread index makes this O(unread rows).
-        getUnreadDmCount().then(setSupabaseDmUnread).catch(() => {});
-      },
-      onUpdate: () => {
-        getUnreadDmCount().then(setSupabaseDmUnread).catch(() => {});
-      },
-    });
-    return unsubscribe;
-  }, [user?.$id]);
-
   const fetchNewNotificationCount = async () => {
     // Defense-in-depth — getUnreadCount also early-returns 0 on missing userId now,
     // but skipping the call entirely avoids an unnecessary round-trip while logged out.
     if (!user?.$id) {
-      setAppwriteUnread(0);
-      setSupabaseDmUnread(0);
+      setNewNotifications(0);
       return;
     }
-    const [appwriteCount, supabaseCount] = await Promise.all([
-      notificationService.getUnreadCount({ userId: user.$id }),
-      getUnreadDmCount().catch(() => 0),
-    ]);
-    setAppwriteUnread(appwriteCount || 0);
-    setSupabaseDmUnread(supabaseCount || 0);
+    const newNotificationCount = await notificationService.getUnreadCount({ userId: user.$id });
+    setNewNotifications(newNotificationCount);
   };
 
   const handleChatsPress = () => router.push("channel-list");
   const handleProfilePress = () => router.push("/profile");
   const handleNotificationsPress = async () => {
-    // Optimistic clear — opening the bell panel is the same gesture as
-    // "I've seen these," and the panel itself will reconcile from the
-    // server. Mark both backends in parallel.
-    setAppwriteUnread(0);
-    setSupabaseDmUnread(0);
+    setNewNotifications(0);
     if (!isOffline && user?.$id) {
       void notificationService.markAllAsRead({ userId: user.$id });
-      void markAllDmNotificationsRead();
     }
     router.push("/notification");
   };
