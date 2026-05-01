@@ -62,6 +62,7 @@ import {
   fetchFollowingFeedPage,
   fetchForYouFeedPage,
   fetchPostStats,
+  trackPostViews,
 } from "../../lib/posts-supabase";
 // Phase E.3 — gate feed video autoplay by device tier. Low-tier devices
 // pause everything (autoplay is the single biggest battery + jank source);
@@ -363,6 +364,11 @@ const Home = () => {
   const currentlyPlayingKey = useRef(null);
   const pendingPlaybackKey = useRef(null);
   const lastViewableKeysRef = useRef([]);
+  // Buffer + debounce state for trackPostViews — see onViewableItemsChanged.
+  // Set holds post IDs that just entered the viewport since the last flush;
+  // timer fires 1.5s after the last viewport change to batch the RPC call.
+  const pendingViewIdsRef = useRef(new Set());
+  const flushViewsTimerRef = useRef(null);
   const isHomeFocused = useRef(false);
   const isFetchingMoreRef = useRef(false);
   const paginationPrefetchLockRef = useRef(false);
@@ -1667,6 +1673,37 @@ const Home = () => {
 
   const onViewableItemsChanged = useRef(({ viewableItems }) => {
     viewableItems.forEach((entry) => markSeenPost(entry?.item));
+
+    // Buffer post IDs that just entered the viewport, then flush in
+    // batches via trackPostViews. This populates server-side post_views
+    // so feed_for_you can dedupe on the next refresh ("always fresh"
+    // For You UX). Best-effort — failures are swallowed in the helper,
+    // and only Supabase-shape UUIDs are tracked (Appwrite hex IDs are
+    // skipped at the helper level).
+    //
+    // We bias toward IDs since Supabase posts already carry .id (UUID);
+    // for old/legacy items that only have $id (Appwrite hex), the helper
+    // will filter those out. Net effect: tracking only fires for the
+    // posts that feed_for_you actually returns.
+    const newIds = viewableItems
+      .map((v) => v?.item?.id || v?.item?.$id)
+      .filter(Boolean);
+    if (newIds.length > 0) {
+      newIds.forEach((id) => pendingViewIdsRef.current.add(id));
+      // Debounce — flush 1.5s after the last viewport change. Avoids
+      // spamming the RPC during a fast scroll.
+      if (flushViewsTimerRef.current) clearTimeout(flushViewsTimerRef.current);
+      flushViewsTimerRef.current = setTimeout(() => {
+        const idsToFlush = Array.from(pendingViewIdsRef.current);
+        pendingViewIdsRef.current.clear();
+        if (idsToFlush.length > 0 && (chatUserId || user?.$id)) {
+          void trackPostViews({
+            userId: chatUserId || user?.$id,
+            postIds: idsToFlush,
+          });
+        }
+      }, 1500);
+    }
 
     const visibleKeys = viewableItems.map((v) => v.item?.key).filter(Boolean);
     lastViewableKeysRef.current = visibleKeys;
