@@ -22,7 +22,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import RNModal from "react-native-modal";
 import { useGlobalContext } from "../context/global-provider";
 import { reportContent } from "../lib/safety";
-import ReportModal from "./ReportModal";
+import ReportContentModal from "./ReportContentModal";
 import { Alert, FlatList, Image as RNImage, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -349,13 +349,11 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
   // for 1:1, View members / Mute / Archive / Leave for groups).
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
 
-  // Report flow state — same shape as ProfileActionsMenu uses, so the
-  // chat report path mirrors how reports are filed elsewhere in the app
-  // (centered ReportModal with a free-form details TextInput, then a
-  // confirmation Alert before submit, then reportContent → unified
-  // content_reports queue + Appwrite for legacy admin tooling).
+  // Report flow state — uses the rich post-card-style ReportContentModal
+  // (reason chips + optional notes) so the chat report UX matches the
+  // home feed safety sheet. Submit dual-writes via reportContent to the
+  // unified content_reports queue + Appwrite for legacy admin tooling.
   const [reportModalVisible, setReportModalVisible] = useState(false);
-  const [reportDetail, setReportDetail] = useState("");
   const [reportLoading, setReportLoading] = useState(false);
 
   // Refs for realtime callbacks so they don't re-subscribe on every render.
@@ -842,19 +840,22 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
     ]);
   }, [conversation]);
 
-  // Report flow — aligned with ProfileActionsMenu / post / video / book
-  // report flows so chat reports look and behave like every other report
-  // surface in the app:
+  // Report flow — uses the post-card-style ReportContentModal so chat
+  // reports match the home feed safety sheet's UX:
   //
-  //   1. 3-dot menu → "Report user" closes the kebab and opens ReportModal
-  //      (the same bottom-sheet component used by profile / video / book
-  //      reports).
-  //   2. User types a description, taps Submit.
-  //   3. Confirmation Alert ("Are you sure?") — one last chance to back
-  //      out, mirroring ProfileActionsMenu.
-  //   4. On confirm, reportContent() dual-writes (Appwrite legacy +
-  //      Supabase content_reports). The unified admin queue picks it up.
-  //   5. Success / failure Alert closes the loop.
+  //   1. 3-dot menu → "Report user" closes the kebab. After a 250ms
+  //      defer (so the kebab's RNModal portal fully unmounts), the
+  //      ReportContentModal slides in.
+  //   2. User picks a reason chip (Objectionable content / Harassment /
+  //      Hate speech / Sexual / Spam / Self-harm / Other) and optionally
+  //      adds notes. Submit is disabled until a reason is selected — the
+  //      chip selection is the friction checkpoint, no separate "Are
+  //      you sure?" alert needed.
+  //   3. Submit → reportContent() dual-writes to Appwrite legacy +
+  //      Supabase content_reports. The unified admin queue picks it up.
+  //   4. Modal dismisses; success Alert fires AFTER the dismiss animation
+  //      completes (via onModalHideComplete) so the alert + modal don't
+  //      stack and freeze touches on iOS.
   //
   // Chat carries Supabase UUIDs but the report system stores Appwrite hex
   // IDs (so admin's existing per-user lookups still work). The other
@@ -869,8 +870,16 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
       Alert.alert("Couldn't report", "Missing user info; try again in a moment.");
       return;
     }
-    setReportDetail("");
-    setReportModalVisible(true);
+    // Defer the ReportContentModal mount so the kebab's react-native-modal
+    // portal has fully unmounted before the new RNModal mounts. Without
+    // this delay, the kebab's portal is still in the tree when the report
+    // modal tries to render, causing it to render BEHIND the dismissing
+    // kebab's backdrop — invisible to the user even though isVisible is
+    // true. 250ms covers the kebab's dismiss animation (~200ms) plus a
+    // frame of safety.
+    setTimeout(() => {
+      setReportModalVisible(true);
+    }, 250);
   }, [conversation, user]);
 
   const handleCloseReportModal = useCallback(() => {
@@ -878,73 +887,80 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
     setReportModalVisible(false);
   }, [reportLoading]);
 
+  // ReportContentModal calls this with { reason, notes } — same shape
+  // home.jsx uses for post reports. We resolve the other user's Appwrite
+  // hex ID via profiles.legacy_appwrite_id (content_reports stores
+  // Appwrite IDs so admin's existing per-user lookups still work) and
+  // dual-write through reportContent. On success, close the modal and
+  // surface a system Alert AFTER the modal's dismiss animation
+  // (onModalHideComplete) so the Alert doesn't stack on top of the
+  // closing modal — that combination breaks touches on iOS.
+  const pendingReportSuccessRef = useRef(false);
+
   const handleSubmitChatReport = useCallback(
-    async (details) => {
+    async ({ reason, notes }) => {
       if (!conversation || conversation.is_group) return;
       const otherSupabaseId = conversation.otherUser?.id;
-      const otherUsername = conversation.otherUser?.username || "this user";
       const myAppwriteId = user?.$id;
       if (!otherSupabaseId || !myAppwriteId) {
         Alert.alert("Couldn't report", "Missing user info; try again in a moment.");
         return;
       }
+      if (!reason) return;
 
-      // Confirmation step — matches ProfileActionsMenu.handleSubmitReport
-      // ("Are you sure you want to report …") so users get one final
-      // checkpoint before the submit fires.
-      Alert.alert(
-        "Report user",
-        `Are you sure you want to report ${otherUsername}? Confirming will submit your report for review by our team.`,
-        [
-          { text: "No", style: "cancel" },
-          {
-            text: "Yes",
-            onPress: async () => {
-              setReportLoading(true);
-              try {
-                // Resolve the other user's Appwrite ID. content_reports
-                // stores Appwrite hex IDs to match the rest of the app.
-                const { data: prof, error } = await supabase
-                  .from("profiles")
-                  .select("legacy_appwrite_id")
-                  .eq("id", otherSupabaseId)
-                  .maybeSingle();
-                if (error) throw error;
-                const otherAppwriteId = prof?.legacy_appwrite_id;
-                if (!otherAppwriteId) {
-                  Alert.alert("Couldn't report", "Couldn't resolve that user's profile.");
-                  setReportLoading(false);
-                  return;
-                }
+      setReportLoading(true);
+      try {
+        // Resolve the other user's Appwrite ID — content_reports stores
+        // Appwrite hex IDs to match the rest of the app.
+        const { data: prof, error } = await supabase
+          .from("profiles")
+          .select("legacy_appwrite_id")
+          .eq("id", otherSupabaseId)
+          .maybeSingle();
+        if (error) throw error;
+        const otherAppwriteId = prof?.legacy_appwrite_id;
+        if (!otherAppwriteId) {
+          Alert.alert("Couldn't report", "Couldn't resolve that user's profile.");
+          setReportLoading(false);
+          return;
+        }
 
-                await reportContent({
-                  contentId: otherAppwriteId,
-                  contentType: "user",
-                  reporterId: myAppwriteId,
-                  ownerId: otherAppwriteId,
-                  reason: "user_report_from_chat",
-                  notes: details
-                    ? `${details}\n\n— from chat conversation ${conversation.id}`
-                    : `Reported from chat conversation ${conversation.id}`,
-                });
+        await reportContent({
+          contentId: otherAppwriteId,
+          contentType: "user",
+          reporterId: myAppwriteId,
+          ownerId: otherAppwriteId,
+          reason,
+          notes: notes
+            ? `${notes}\n\n— from chat conversation ${conversation.id}`
+            : `Reported from chat conversation ${conversation.id}`,
+        });
 
-                setReportDetail("");
-                setReportModalVisible(false);
-                Alert.alert("Success", "Your report has been submitted for review.");
-              } catch (e) {
-                console.log("[chat] handleSubmitChatReport failed:", e?.message);
-                Alert.alert("Error", e?.message || "Failed to submit report.");
-              } finally {
-                setReportLoading(false);
-              }
-            },
-          },
-        ],
-        { cancelable: true },
-      );
+        // Close the modal first, then queue the success Alert to fire
+        // after the modal's dismiss animation completes. This avoids the
+        // modal-on-top-of-alert touch-freeze bug on iOS.
+        pendingReportSuccessRef.current = true;
+        setReportModalVisible(false);
+      } catch (e) {
+        console.log("[chat] handleSubmitChatReport failed:", e?.message);
+        Alert.alert("Error", e?.message || "Failed to submit report.");
+      } finally {
+        setReportLoading(false);
+      }
     },
     [conversation, user],
   );
+
+  const handleReportModalHidden = useCallback(() => {
+    if (pendingReportSuccessRef.current) {
+      pendingReportSuccessRef.current = false;
+      // Tiny delay so the dismiss animation has flushed before the
+      // system Alert appears.
+      setTimeout(() => {
+        Alert.alert("Report submitted", "Thanks — our team will review it.");
+      }, 80);
+    }
+  }, []);
 
   // Delete: same backend effect as archive (per-side hide via
   // archived_by_a/b), but framed in destructive copy. The UX promise
@@ -1315,17 +1331,16 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
         onLeaveGroup={handleLeaveGroup}
       />
 
-      {/* Report flow — uses the same ReportModal component the rest of the
-          app uses (ProfileActionsMenu, video / book / post reports). Keeps
-          the visual + interaction language consistent across surfaces. */}
-      <ReportModal
-        type="User"
+      {/* Report flow — uses the rich post-card-style ReportContentModal
+          (reason chips + optional notes). Same visual language as the
+          home feed safety sheet. */}
+      <ReportContentModal
         isVisible={reportModalVisible}
         onClose={handleCloseReportModal}
-        handleSubmitReport={handleSubmitChatReport}
-        reportDetail={reportDetail}
-        setReportDetail={setReportDetail}
-        reportLoading={reportLoading}
+        onSubmit={handleSubmitChatReport}
+        submitting={reportLoading}
+        theme={theme}
+        onModalHideComplete={handleReportModalHidden}
       />
 
       <KeyboardAvoidingView

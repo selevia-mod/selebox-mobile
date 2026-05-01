@@ -123,18 +123,34 @@ export default function GlobalProvider({ children }) {
         .then(async (token) => {
           if (!token) return;
           setExpoPushToken(token);
-          // Write to Appwrite (legacy auth source — keeps anything still
-          // reading from Appwrite working).
-          updateUserExpoPushToken(userIdAtSchedule, token).catch((error) =>
-            console.warn("Failed to update push token on Appwrite:", error?.message || error),
-          );
-          // Also mirror to the Supabase profiles row so the chat-push
-          // helper can look it up by Supabase UUID. We resolve the
-          // Appwrite hex → Supabase UUID via legacy_appwrite_id (same
-          // resolver as the rest of the chat lib uses). If the profile
-          // row doesn't exist yet (rare, post-migration new user), we
-          // silently skip; the next launch will retry.
+
+          // Push-token storage routes by auth mode:
+          //
+          //   USE_SUPABASE_AUTH = false (legacy / current default):
+          //     • user.$id is an Appwrite hex — write to Appwrite's
+          //       userCollection (legacy admin tooling reads from there).
+          //     • Also mirror to Supabase profiles via legacy_appwrite_id
+          //       resolution, so the chat-push helper (which is
+          //       Supabase-native) can find the token.
+          //
+          //   USE_SUPABASE_AUTH = true (post-cutover):
+          //     • user.$id is a Supabase UUID — write directly to
+          //       profiles.expo_push_token, no resolution needed.
+          //     • Skip the Appwrite write entirely. Without an Appwrite
+          //       session, that call would 401 every push registration
+          //       and spam the warning log for no benefit.
+
+          if (!USE_SUPABASE_AUTH) {
+            updateUserExpoPushToken(userIdAtSchedule, token).catch((error) =>
+              console.warn("Failed to update push token on Appwrite:", error?.message || error),
+            );
+          }
+
           try {
+            // When AUTH=true the user.$id IS already the Supabase UUID,
+            // so resolveSupabaseUserId returns it unchanged. When AUTH=false
+            // it does the legacy_appwrite_id lookup. Either way we end up
+            // with the right id to write to profiles.expo_push_token.
             const { resolveSupabaseUserId } = await import("../lib/posts-supabase");
             const resolvedId = await resolveSupabaseUserId(userIdAtSchedule);
             if (resolvedId) {

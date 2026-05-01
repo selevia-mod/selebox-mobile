@@ -266,7 +266,22 @@ const isPlayableFeedItem = (entry) => {
 
 const Home = () => {
   const routeParams = useLocalSearchParams();
-  const { user } = useGlobalContext();
+  const { user, chatUserId } = useGlobalContext();
+  // The Supabase feed functions (fetchFollowingFeedPage /
+  // fetchForYouFeedPage / fetchDiscoverFeedPage) all expect a Supabase
+  // UUID, not the Appwrite hex `user.$id` used elsewhere. They have an
+  // internal Appwrite→UUID resolver (`resolveSupabaseUserId` via
+  // `profiles.legacy_appwrite_id`), but it uses a separate module-level
+  // cache from the one chat uses (`getMessagesUserId`), so on cold start
+  // the first feed call could lazy-resolve and miss → empty feed for
+  // Appwrite-auth users (the entire mobile user base today since
+  // USE_SUPABASE_AUTH=false).
+  //
+  // Reuse the global-provider's already-resolved id (`chatUserId`,
+  // populated on auth bootstrap by `setMessagesAppwriteUser` →
+  // `profiles.legacy_appwrite_id`). Falls back to `user?.$id` for the
+  // Appwrite-only legacy feed paths (when USE_SUPABASE_POSTS=false).
+  const supabaseFeedUserId = chatUserId || user?.$id || null;
   const { theme } = useAppTheme();
   const { batchLoadVideoStats } = useVideosStats();
   const isOffline = useIsOffline();
@@ -965,7 +980,7 @@ const Home = () => {
         // CTA; on Supabase we leave that as null (the home screen handles
         // null gracefully — it just hides the count chip).
         if (USE_SUPABASE_POSTS) {
-          const result = await loadSupabaseFeedPage(() => fetchFollowingFeedPage({ userId: user?.$id, limit: PAGE_SIZE }), PAGE_SIZE);
+          const result = await loadSupabaseFeedPage(() => fetchFollowingFeedPage({ userId: supabaseFeedUserId, limit: PAGE_SIZE }), PAGE_SIZE);
           feed = result.entries;
           nextCursor = result.cursor;
           hasMoreRes = result.more;
@@ -984,7 +999,7 @@ const Home = () => {
         // first. Refresh always starts at offset 0.
         if (USE_SUPABASE_POSTS) {
           const result = await loadSupabaseFeedPage(
-            () => fetchDiscoverFeedPage({ userId: user?.$id, limit: PAGE_SIZE, offset: 0 }),
+            () => fetchDiscoverFeedPage({ userId: supabaseFeedUserId, limit: PAGE_SIZE, offset: 0 }),
             PAGE_SIZE,
           );
           feed = result.entries;
@@ -1005,7 +1020,7 @@ const Home = () => {
         // off so we can flip the flag without a code change.
         if (USE_SUPABASE_POSTS) {
           const result = await loadSupabaseFeedPage(
-            () => fetchForYouFeedPage({ userId: user?.$id, limit: PAGE_SIZE, offset: 0 }),
+            () => fetchForYouFeedPage({ userId: supabaseFeedUserId, limit: PAGE_SIZE, offset: 0 }),
             PAGE_SIZE,
           );
           feed = result.entries;
@@ -1102,7 +1117,7 @@ const Home = () => {
         // oldest post's created_at from the previous page (stashed by
         // loadFeed/fetchFollowingFeedPage as a string cursor).
         if (USE_SUPABASE_POSTS) {
-          const result = await loadSupabaseFeedPage(() => fetchFollowingFeedPage({ userId: user?.$id, limit: PAGE_SIZE, before: lastId }), PAGE_SIZE);
+          const result = await loadSupabaseFeedPage(() => fetchFollowingFeedPage({ userId: supabaseFeedUserId, limit: PAGE_SIZE, before: lastId }), PAGE_SIZE);
           feed = result.entries;
           apiNextCursor = result.cursor;
           more = result.more;
@@ -1120,7 +1135,7 @@ const Home = () => {
         if (USE_SUPABASE_POSTS) {
           const offset = posts.length;
           const result = await loadSupabaseFeedPage(
-            () => fetchDiscoverFeedPage({ userId: user?.$id, limit: PAGE_SIZE, offset }),
+            () => fetchDiscoverFeedPage({ userId: supabaseFeedUserId, limit: PAGE_SIZE, offset }),
             PAGE_SIZE,
           );
           feed = result.entries;
@@ -1139,7 +1154,7 @@ const Home = () => {
         if (USE_SUPABASE_POSTS) {
           const offset = posts.length;
           const result = await loadSupabaseFeedPage(
-            () => fetchForYouFeedPage({ userId: user?.$id, limit: PAGE_SIZE, offset }),
+            () => fetchForYouFeedPage({ userId: supabaseFeedUserId, limit: PAGE_SIZE, offset }),
             PAGE_SIZE,
           );
           feed = result.entries;
