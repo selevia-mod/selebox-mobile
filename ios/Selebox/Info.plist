@@ -21,7 +21,7 @@
     <key>CFBundlePackageType</key>
     <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.4.17</string>
+    <string>2.4.18</string>
     <key>CFBundleSignature</key>
     <string>????</string>
     <key>CFBundleURLTypes</key>
@@ -42,7 +42,7 @@
       <dict>
         <key>CFBundleURLSchemes</key>
         <array>
-          <string>com.googleusercontent.apps.152263386495-7pe1l8fd6cogl5du6n7hc2frs8p3g9sp</string>
+          <string>com.googleusercontent.apps.771577005846-c5fv9a1nqpvurij4chbu7pu10o90srgq</string>
         </array>
       </dict>
     </array>

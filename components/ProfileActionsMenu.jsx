@@ -242,18 +242,30 @@ const ProfileActionsMenu = ({
     dispatchedRef.current = true;
     pendingActionRef.current = null;
     clearFallbackTimer();
+
+    // Modal-stacking race fix — same root cause as the chat-report bug
+    // (task #37). On iOS, calling Share.open() / Alert.alert while
+    // react-native-modal is still mid-dismiss makes the native sheet /
+    // alert appear AND immediately get rejected by the OS (or never
+    // appear at all). The kebab menu visually closes but nothing
+    // happens. The 80ms buffer lets the dismiss animation flush before
+    // we open the next system UI — same number of milliseconds chat
+    // landed on after testing. Snooze + Block (which use Alert.alert)
+    // get the same delay; Report just toggles a React state, no need.
+    const NATIVE_UI_DELAY_MS = 80;
+
     switch (action) {
       case "share":
-        runShare();
+        setTimeout(runShare, NATIVE_UI_DELAY_MS);
         break;
       case "report":
         runOpenReport();
         break;
       case "snooze":
-        runSnooze();
+        setTimeout(runSnooze, NATIVE_UI_DELAY_MS);
         break;
       case "block":
-        runBlockPrompt();
+        setTimeout(runBlockPrompt, NATIVE_UI_DELAY_MS);
         break;
       default:
         break;

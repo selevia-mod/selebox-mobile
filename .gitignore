@@ -59,3 +59,8 @@ yarn-error.*
 private/
 backups/
 *.OLD.*
+
+# Auth migration artifacts — contain password hashes / PII, never commit
+scripts/appwrite-users.json
+scripts/auth-migration-failures.json
+scripts/auth-migration-unsupported.json

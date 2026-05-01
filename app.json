@@ -2,7 +2,7 @@
   "expo": {
     "name": "Selebox",
     "slug": "tales-of-siren",
-    "version": "2.4.17",
+    "version": "2.4.18",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "appwrite-callback-66b8be7400121b5d4697",
@@ -92,7 +92,7 @@
       [
         "@react-native-google-signin/google-signin",
         {
-          "iosUrlScheme": "com.googleusercontent.apps.152263386495-7pe1l8fd6cogl5du6n7hc2frs8p3g9sp"
+          "iosUrlScheme": "com.googleusercontent.apps.771577005846-c5fv9a1nqpvurij4chbu7pu10o90srgq"
         }
       ],
       [
