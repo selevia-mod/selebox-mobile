@@ -39,23 +39,36 @@ const BooksLibrary = ({ isActive = false }) => {
 
   useFocusEffect(
     useCallback(() => {
+      // Stale-while-revalidate: paint Redux cache immediately for instant
+      // first render, then ALWAYS refetch from the server in the
+      // background. Previously this was cache-first/never-revalidate,
+      // which meant cross-platform writes (e.g. a bookmark added on web)
+      // never showed up — Library would render whatever was in MMKV
+      // since the last fetch and skip the network entirely. The post-
+      // USE_SUPABASE_BOOKS-flip world makes this acutely visible because
+      // web and mobile finally share the same backing table.
       if (library.length > 0) {
         setUserLibrary(library.slice(0, PAGE_SIZE));
-      } else {
-        fetchUserLibrary();
       }
+      fetchUserLibrary();
     }, []),
   );
 
   const fetchUserLibrary = async () => {
     try {
       const bookLibraryData = await bookService.fetchBookLibraryByUser({ userId: user.$id });
-      setUserLibrary(bookLibraryData.documents);
-      setLastId(bookLibraryData.documents[bookLibraryData.documents.length - 1].$id);
-      setHasMore(bookLibraryData.documents.length < bookLibraryData.total);
-      dispatch(setLibraryLastId(bookLibraryData.documents[bookLibraryData.documents.length - 1].$id));
-      dispatch(setLibraryHasMore(bookLibraryData.documents.length < bookLibraryData.total));
-      dispatch(setLibrary(bookLibraryData.documents));
+      const docs = bookLibraryData?.documents || [];
+      const total = Number.isFinite(bookLibraryData?.total) ? bookLibraryData.total : docs.length;
+      setUserLibrary(docs);
+      // Guard against the previous .documents[-1].$id crash when the user
+      // has zero bookmarks — accessing index -1 on an empty array returns
+      // undefined and the .$id read threw.
+      const cursor = docs.length > 0 ? docs[docs.length - 1].$id : null;
+      setLastId(cursor);
+      setHasMore(docs.length < total);
+      dispatch(setLibraryLastId(cursor));
+      dispatch(setLibraryHasMore(docs.length < total));
+      dispatch(setLibrary(docs));
     } catch (error) {
       console.log("fetchUserLibrary: error", error);
     }
@@ -116,7 +129,12 @@ const BooksLibrary = ({ isActive = false }) => {
             {
               text: "Yes",
               onPress: async () => {
-                await bookService.deleteBookLibrary({ bookLibraryId: item.$id });
+                // Pass bookId + userId so the dual-write side can drop
+                // the (book_id, user_id) row from Supabase. Library record
+                // shape: item.$id is the library doc id, item.book.$id is
+                // the book id (relation expanded).
+                const bookIdForDelete = item?.book?.$id || item?.book;
+                await bookService.deleteBookLibrary({ bookLibraryId: item.$id, bookId: bookIdForDelete, userId: user?.$id });
                 fetchUserLibrary();
               },
               style: "destructive",

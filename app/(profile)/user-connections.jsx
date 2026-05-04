@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { ActivityIndicator, FlatList, Image, Text, TouchableOpacity, View } from "react-native";
 import { StyledSafeAreaView } from "../../components";
 import AnimatedSkeleton from "../../components/AnimatedSkeleton";
+import UserRoleBadgeIcons from "../../components/UserRoleBadgeIcons";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import { FollowService } from "../../lib/follows";
@@ -286,6 +287,11 @@ const UserConnectionsScreen = () => {
     try {
       setActionLoading((prev) => ({ ...prev, [otherUserId]: true }));
       await FollowService.followUser({ followerId: user.$id, followingId: otherUserId });
+      // ABUSE DEFENSE: dedup by followingId so unfollow→refollow on
+      // the same user can't farm the goal. See Profile.jsx for the
+      // full rule.
+      const { tickGoalUnique } = await import("../../lib/goals-store");
+      tickGoalUnique("follow_user", `follow:${otherUserId}`);
       clearConnectionCacheForViewer(user.$id);
       setFollowBackStatus((prev) => ({
         ...prev,
@@ -411,9 +417,12 @@ const UserConnectionsScreen = () => {
             <Image source={{ uri: userItem.avatar }} className="h-11 w-11 rounded-full" style={{ backgroundColor: theme.surfaceStrong }} />
           </View>
           <View className="ml-3 flex-1">
-            <Text className="text-[15px] font-semibold" style={{ color: theme.text }} numberOfLines={1} ellipsizeMode="tail">
-              {userItem.username}
-            </Text>
+            <View className="flex-row items-center">
+              <Text className="text-[15px] font-semibold" style={{ color: theme.text }} numberOfLines={1} ellipsizeMode="tail">
+                {userItem.username}
+              </Text>
+              <UserRoleBadgeIcons user={userItem} size={14} />
+            </View>
             {isMutual && (
               <Text className="mt-0.5 text-xs" style={{ color: theme.accentTeal }}>
                 Mutual

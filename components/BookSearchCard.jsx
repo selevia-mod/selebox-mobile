@@ -3,6 +3,7 @@ import React, { memo } from "react";
 import { ActivityIndicator, Dimensions, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import useAppTheme from "../hooks/useAppTheme";
+import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -57,9 +58,12 @@ const BookSearchCard = ({ item, customWidth, customHeight, customFontSize, hideA
           </Text>
 
           {/* Author */}
-          <Text className="mt-1 text-sm" style={{ color: theme.textMuted }} numberOfLines={1}>
-            {`by ${item?.uploader?.username}`}
-          </Text>
+          <View className="mt-1 flex-row items-center">
+            <Text className="text-sm" style={{ color: theme.textMuted }} numberOfLines={1}>
+              {`by ${item?.uploader?.username}`}
+            </Text>
+            <UserRoleBadgeIcons user={item?.uploader} size={12} />
+          </View>
         </View>
 
         {/* Tags */}

@@ -167,8 +167,13 @@ const SignIn = () => {
         const secret = params.get("secret");
         const userId = params.get("userId");
 
-        console.log("Secret:", secret);
-        console.log("User ID:", userId);
+        // Guarded behind __DEV__ — these values include the OAuth
+        // secret and userId, which we don't want appearing in
+        // production logs / crash reports.
+        if (__DEV__) {
+          console.log("Secret:", secret);
+          console.log("User ID:", userId);
+        }
 
         if (secret && userId) {
           try {

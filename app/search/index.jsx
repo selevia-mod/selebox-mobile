@@ -5,6 +5,7 @@ import { ActivityIndicator, Keyboard, ScrollView, Text, TextInput, TouchableOpac
 import FastImage from "react-native-fast-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 import UserAvatar from "../../components/UserAvatar";
+import UserRoleBadgeIcons from "../../components/UserRoleBadgeIcons";
 import useAppTheme from "../../hooks/useAppTheme";
 import { addRecentSearch, clearRecentSearches, getRecentSearches, removeRecentSearch } from "../../lib/recent-searches";
 import { searchAll } from "../../lib/search";
@@ -82,9 +83,16 @@ const SearchScreen = () => {
     } else if (type === "book") {
       router.push({ pathname: "/book-info", params: { bookId: item.$id } });
     } else if (type === "video") {
-      router.push({ pathname: "/video-player", params: { videoId: item.$id, videoUri: item?.uri || "" } });
+      // video-player.jsx reads `params.id` as the video URI and
+      // `params.docId` as the doc id — NOT `videoId` / `videoUri`.
+      // The previous param names silently no-op'd because the player
+      // couldn't find the URI.
+      router.push({ pathname: "/video-player", params: { id: item?.uri || item?.video_url || "", docId: item.$id } });
     } else if (type === "post") {
-      router.push({ pathname: "/(tabs)/home", params: { focusPostId: item.$id } });
+      // The dedicated post detail screen — `/(tabs)/home` doesn't
+      // currently scroll-to-post by URL param after the Supabase
+      // migration, which is why taps appeared to do nothing.
+      router.push({ pathname: "/(post)/post-item", params: { postId: item.$id } });
     }
   };
 
@@ -215,9 +223,12 @@ const SearchScreen = () => {
               <TouchableOpacity key={user.$id} onPress={() => goToContent("user", user)} activeOpacity={0.7} style={resultRowStyle}>
                 <UserAvatar name={user?.username} avatarUri={user?.avatar} size={40} borderRadius={20} />
                 <View style={{ flex: 1, marginLeft: 12 }}>
-                  <Text style={{ fontSize: 14, fontWeight: "600", color: theme.text }} numberOfLines={1}>
-                    {user?.username || "Unknown"}
-                  </Text>
+                  <View style={{ flexDirection: "row", alignItems: "center" }}>
+                    <Text style={{ fontSize: 14, fontWeight: "600", color: theme.text }} numberOfLines={1}>
+                      {user?.username || "Unknown"}
+                    </Text>
+                    <UserRoleBadgeIcons user={user} size={14} />
+                  </View>
                   {user?.bio ? (
                     <Text style={{ marginTop: 2, fontSize: 12, color: theme.textSoft }} numberOfLines={1}>
                       {user.bio}

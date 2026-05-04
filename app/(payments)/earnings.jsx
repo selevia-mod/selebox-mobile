@@ -1,11 +1,13 @@
 import { FontAwesome6, Ionicons, MaterialCommunityIcons, MaterialIcons } from "@expo/vector-icons";
-import { useEffect, useState } from "react";
+import { router } from "expo-router";
+import { useCallback, useEffect, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { CustomAlertModal, CustomPicker, PaymentBreakdownEarnings, WithdrawModal } from "../../components";
 import AnimatedSkeleton from "../../components/AnimatedSkeleton";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import { useEarnings } from "../../hooks/useEarnings";
+import { getMyAuthorProfile } from "../../lib/earnings-supabase";
 
 const Earnings = () => {
   const { user, globalSettings } = useGlobalContext();
@@ -19,8 +21,26 @@ const Earnings = () => {
   const { earnings, remainingBalance, withdraw, loading, latestWithdrawal } = useEarnings(user?.$id, selectedMonth);
   const isWithdrawalPending = latestWithdrawal?.status === "pending";
 
+  // Pioneer-exempt status drives the "zero fees" preview in WithdrawModal.
+  // Loaded once on mount; harmless if it fails (modal falls back to
+  // non-exempt math, server still enforces correctness at submit time).
+  const [authorProfile, setAuthorProfile] = useState(null);
+
   const [withdrawModal, setWithdrawModal] = useState({ visible: false, amount: "", amountToReceive: 0 });
   const [alert, setAlert] = useState({ message: "", open: false, icon: "circle-info", color: theme.primary });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const p = await getMyAuthorProfile();
+        if (!cancelled) setAuthorProfile(p);
+      } catch (_) {
+        // non-fatal — just means modal renders non-Pioneer fees
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const generateMonths = () => {
@@ -99,7 +119,12 @@ const Earnings = () => {
     }
 
     try {
-      await withdraw({ amount, amountToReceive });
+      // The Supabase withdrawal RPC takes pesos in MINOR units (centavos)
+      // since it earmarks against author_earnings.net_php_minor (which is
+      // also stored in centavos). Convert the peso input here so the user
+      // types pesos but the server-side math is exact-integer.
+      const amountPhpMinor = Math.round(amount * 100);
+      await withdraw({ amount, amountToReceive, amountPhpMinor });
       setWithdrawModal({ ...withdrawModal, visible: false });
       setTimeout(() => {
         showAlert("Your withdrawal request has been submitted.", "success");
@@ -112,6 +137,20 @@ const Earnings = () => {
       }
     }
   };
+
+  // Navigate to the per-item drill-down for a category (book / video /
+  // post / clip). Passes the active month so the breakdown matches
+  // what's shown on the tile — taps from "May 2026" go to a screen
+  // scoped to May 2026. Pass empty `monthYear` to view lifetime.
+  const openBreakdown = useCallback(
+    (category, label) => {
+      router.push({
+        pathname: "/(payments)/earnings-breakdown",
+        params: { category, label, monthYear: selectedMonth || "" },
+      });
+    },
+    [selectedMonth],
+  );
 
   const getWithdrawalStatusColor = (status) => {
     switch (status) {
@@ -239,26 +278,23 @@ const Earnings = () => {
         </View>
       </View>
 
-      {/* Other sections */}
+      {/* Other sections — each tile drills into a per-item earnings
+          list scoped to the selected month. Total Earnings + This Month
+          stay non-tappable summary cards. */}
       <View className="flex-row space-x-4">
         <View className="flex-1">
           <PaymentBreakdownEarnings
             title="Post"
-            amount="₱ 0.00"
+            amount={`₱ ${earnings.breakdown.posts?.toFixed(2) || "0.00"}`}
             loading={loading}
             icon={<MaterialCommunityIcons name="text-box-outline" size={14} color={theme.accentAmber} />}
             iconBackgroundColor={theme.accentAmberSoft}
+            onPress={() => openBreakdown("post", "Post")}
           />
         </View>
-        <View className="flex-1">
-          <PaymentBreakdownEarnings
-            title="Clips"
-            amount="₱ 0.00"
-            loading={loading}
-            icon={<MaterialIcons name="movie-filter" size={14} color={theme.like} />}
-            iconBackgroundColor={theme.likeSoft}
-          />
-        </View>
+        {/* Clips earnings tile removed — clips feature retired May 2026.
+            The breakdown.clips field still exists in the data model
+            (always 0) but no UI surface displays it. */}
       </View>
 
       <View className="flex-row space-x-4">
@@ -269,6 +305,7 @@ const Earnings = () => {
             loading={loading}
             icon={<Ionicons name="videocam" size={14} color={theme.accentPurple} />}
             iconBackgroundColor={theme.accentPurpleSoft}
+            onPress={() => openBreakdown("video", "Videos")}
           />
         </View>
         <View className="flex-1">
@@ -278,6 +315,7 @@ const Earnings = () => {
             loading={loading}
             icon={<Ionicons name="book" size={14} color={theme.accentTeal} />}
             iconBackgroundColor={theme.accentTealSoft}
+            onPress={() => openBreakdown("book", "Books")}
           />
         </View>
       </View>
@@ -302,6 +340,7 @@ const Earnings = () => {
         WITHDRAWAL_MINIMUM_AMOUNT={WITHDRAWAL_MINIMUM_AMOUNT}
         PLATFORM_COST={PLATFORM_COST}
         TRANSFER_FEE={TRANSFER_FEE}
+        profile={authorProfile}
         loading={loading}
       />
     </View>

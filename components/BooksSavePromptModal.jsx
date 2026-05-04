@@ -1,4 +1,5 @@
-import { ActivityIndicator, Modal, Text, TouchableOpacity, TouchableWithoutFeedback, View } from "react-native";
+import { ActivityIndicator, Text, TouchableOpacity, View } from "react-native";
+import Modal from "react-native-modal";
 import useAppTheme from "../hooks/useAppTheme";
 
 const BooksSavePromptModal = ({
@@ -17,14 +18,32 @@ const BooksSavePromptModal = ({
   const { theme } = useAppTheme();
   const isAnyLoading = loadingLocalDraft || loadingServerDraft || loadingPublish;
 
+  // Switched from RN's built-in <Modal> to react-native-modal so this
+  // sheet shares the same JS overlay layer as BookChapterPublishSuccessModal.
+  // The native iOS UIViewController-based <Modal> stacks above the JS view
+  // tree — when the success modal tries to slide up while this one is
+  // dismissing, the native layer either blocks the JS modal entirely or
+  // gets stuck open (the "Publishing..." freeze symptom). With both modals
+  // on the same JS overlay layer, transitions are clean.
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <TouchableWithoutFeedback onPress={onClose}>
-        <View className="flex-1 items-center justify-end" style={{ backgroundColor: theme.backdrop }}>
-          <View
-            className="w-full space-y-4 rounded-t-2xl p-5"
-            style={{ borderTopWidth: 1, borderTopColor: theme.border, backgroundColor: theme.surfaceElevated }}
-          >
+    <Modal
+      isVisible={visible}
+      onBackdropPress={isAnyLoading ? undefined : onClose}
+      onBackButtonPress={isAnyLoading ? undefined : onClose}
+      backdropOpacity={0.6}
+      animationIn="fadeIn"
+      animationOut="fadeOut"
+      animationInTiming={220}
+      animationOutTiming={220}
+      useNativeDriverForBackdrop
+      hideModalContentWhileAnimating
+      style={{ margin: 0, justifyContent: "flex-end" }}
+    >
+      <View style={{ flex: 1, justifyContent: "flex-end" }}>
+        <View
+          className="w-full space-y-4 rounded-t-2xl p-5"
+          style={{ borderTopWidth: 1, borderTopColor: theme.border, backgroundColor: theme.surfaceElevated }}
+        >
             <Text className="text-center text-lg font-bold" style={{ color: theme.text }}>
               Save Options
             </Text>
@@ -106,9 +125,8 @@ const BooksSavePromptModal = ({
                 Cancel
               </Text>
             </TouchableOpacity>
-          </View>
         </View>
-      </TouchableWithoutFeedback>
+      </View>
     </Modal>
   );
 };

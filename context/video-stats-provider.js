@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useRef, useState } from "react";
-import { createVideoLike, deleteVideoLike, getVideoLikeByOwner, getVideoLikeCount, getVideoCommentCount } from "../lib/video";
+import { createVideoLike, deleteVideoLike, getVideoLikeByOwner, getVideoLikeCount, getVideoCommentCount, getVideoViewCount } from "../lib/video";
 
 const VideosStatsContext = createContext();
 
@@ -28,9 +28,16 @@ export const VideosStatsProvider = ({ children }) => {
       const gen = (loadGenRef.current.get(videoId) || 0) + 1;
       loadGenRef.current.set(videoId, gen);
       try {
-        const actualLikeCount = await getVideoLikeCount({ videoId });
-        const actualCommentCount = await getVideoCommentCount({ videoId });
-        const resp = await getVideoLikeByOwner({ videoId, likeOwner: userId });
+        // Fetch like + comment + view counts in parallel — three single-row
+        // reads on the denormalized counter columns kept current by triggers.
+        // Sequential awaits would add ~150ms of round-trips per card; parallel
+        // collapses the wait to one round-trip.
+        const [actualLikeCount, actualCommentCount, actualViewCount, resp] = await Promise.all([
+          getVideoLikeCount({ videoId }),
+          getVideoCommentCount({ videoId }),
+          getVideoViewCount({ videoId }),
+          getVideoLikeByOwner({ videoId, likeOwner: userId }),
+        ]);
         const preservedCommentCount = videosStatsRef.current[videoId]?.commentsCount;
         const nextCommentCount = actualCommentCount ?? preservedCommentCount ?? 0;
 
@@ -43,6 +50,7 @@ export const VideosStatsProvider = ({ children }) => {
             liked: true,
             likeId: likeDoc.$id,
             videoLikes: actualLikeCount,
+            videoViews: actualViewCount,
             commentsCount: nextCommentCount,
           });
         } else {
@@ -50,6 +58,7 @@ export const VideosStatsProvider = ({ children }) => {
             liked: false,
             likeId: null,
             videoLikes: actualLikeCount,
+            videoViews: actualViewCount,
             commentsCount: nextCommentCount,
           });
         }
@@ -79,9 +88,10 @@ export const VideosStatsProvider = ({ children }) => {
 
       const results = await Promise.allSettled(
         needed.map(async (videoId) => {
-          const [likeCount, commentCount, likeResp] = await Promise.all([
+          const [likeCount, commentCount, viewCount, likeResp] = await Promise.all([
             getVideoLikeCount({ videoId }),
             getVideoCommentCount({ videoId }),
+            getVideoViewCount({ videoId }),
             getVideoLikeByOwner({ videoId, likeOwner: userId }),
           ]);
 
@@ -92,6 +102,7 @@ export const VideosStatsProvider = ({ children }) => {
               liked: !!likeDoc,
               likeId: likeDoc?.$id || null,
               videoLikes: likeCount,
+              videoViews: viewCount,
               commentsCount: commentCount ?? videosStatsRef.current[videoId]?.commentsCount ?? 0,
             },
           };

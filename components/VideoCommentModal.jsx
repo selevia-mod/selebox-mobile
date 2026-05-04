@@ -24,6 +24,7 @@ import { useGlobalContext } from "../context/global-provider";
 import { useVideosStats } from "../context/video-stats-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { databases } from "../lib/appwrite";
+import { dualWriteDeleteComment, dualWriteDeleteCommentsBulk } from "../lib/posts-dual-write";
 import { buildVideoNotificationResourceId, NotificationService } from "../lib/notifications";
 import TimeAgo from "../lib/utils/time-ago";
 import {
@@ -287,7 +288,7 @@ const VideoCommentItem = memo(
                 ) : null}
                 {renderMentionText?.(item?.comment, "mt-1 font-sans text-sm leading-5", "font-sans font-semibold", {
                   color: theme.textMuted,
-                  mentionColor: theme.accentBlue,
+                  mentionColor: theme.mention,
                 })}
               </View>
 
@@ -366,7 +367,7 @@ const VideoCommentItem = memo(
                               ) : null}
                               {renderMentionText?.(reply?.comment, "mt-0.5 font-sans text-xs leading-5", "font-sans font-semibold", {
                                 color: theme.textMuted,
-                                mentionColor: theme.accentBlue,
+                                mentionColor: theme.mention,
                               })}
                             </View>
                             <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>
@@ -1045,6 +1046,14 @@ const VideoCommentModal = ({ isVisible, onClose, item, onCommentPosted }) => {
 
       try {
         await databases.deleteDocument(secrets.appwriteConfig.databaseId, secrets.appwriteConfig.videosCommentRepliesCollectionId, replyId);
+        // Mirror to Supabase. Video replies live in the same `comments`
+        // table as parents (with parent_id set), so a single delete by
+        // legacy_appwrite_id is enough.
+        try {
+          await dualWriteDeleteComment({ appwriteDocId: replyId });
+        } catch (sbErr) {
+          console.log("handleDeleteReply: Supabase mirror skipped", sbErr?.message);
+        }
 
         setComments((prev) =>
           prev.map((commentItem) =>
@@ -1103,6 +1112,16 @@ const VideoCommentModal = ({ isVisible, onClose, item, onCommentPosted }) => {
         }
 
         await databases.deleteDocument(secrets.appwriteConfig.databaseId, secrets.appwriteConfig.videosCommentsCollectionId, commentId);
+        // Mirror to Supabase. Replies cascade via legacy_appwrite_id; we
+        // collect their ids first since after the bulk delete they're gone
+        // from local state (and Appwrite).
+        try {
+          const replyIds = (getCommentReplies(comment) || []).map((r) => r?.$id).filter(Boolean);
+          await dualWriteDeleteCommentsBulk(replyIds);
+          await dualWriteDeleteComment({ appwriteDocId: commentId });
+        } catch (sbErr) {
+          console.log("handleDeleteComment: Supabase mirror skipped", sbErr?.message);
+        }
 
         setRawCommentsState((prev) => {
           const next = prev.filter((existingComment) => String(existingComment?.$id || "") !== commentId);

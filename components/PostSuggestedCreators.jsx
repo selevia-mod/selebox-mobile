@@ -6,6 +6,7 @@ import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import AnimatedSkeleton from "./AnimatedSkeleton";
 import StyledDivider from "./StyledDivider";
+import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const ITEM_SIZE = SCREEN_WIDTH * 0.18;
@@ -90,9 +91,12 @@ const PostSuggestedCreators = ({ forceUpdate, hideDivider = false }) => {
           }}
           resizeMode={FastImage.resizeMode.cover}
         />
-        <Text numberOfLines={1} ellipsizeMode="tail" className="mt-2 text-[12px]" style={{ color: theme.textMuted }}>
-          {item.username}
-        </Text>
+        <View className="mt-2 flex-row items-center">
+          <Text numberOfLines={1} ellipsizeMode="tail" className="text-[12px]" style={{ color: theme.textMuted }}>
+            {item.username}
+          </Text>
+          <UserRoleBadgeIcons user={item} size={10} />
+        </View>
       </TouchableOpacity>
     );
   };

@@ -84,7 +84,10 @@ const VideosFromFollowing = ({ videos = [] }) => {
 
   return (
     <View style={{ minHeight: containerHeight }} className="space-y-2">
-      <VideosSectionTitle title={"From Creators You Follow"} />
+      <VideosSectionTitle
+        title={"From Creators You Follow"}
+        onSeeAllPress={() => router.push({ pathname: "/(video)/shelf-all", params: { type: "fromFollowing" } })}
+      />
       <FlatList
         horizontal
         showsHorizontalScrollIndicator={false}

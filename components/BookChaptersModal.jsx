@@ -1,5 +1,5 @@
 import { Entypo } from "@expo/vector-icons";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, RefreshControl, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import Modal from "react-native-modal";
@@ -8,21 +8,84 @@ import { useSelector } from "react-redux";
 import useAppTheme from "../hooks/useAppTheme";
 import { BookUnlocksService } from "../lib/book-unlocks";
 import { BOOK_CHAPTER_LIST_SELECT, BookService, getBookChapterSectionLabel, isIntroductionChapter, sortBookChaptersByOrder } from "../lib/books";
+import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 
 const CHAPTERS_PAGE_SIZE = 50;
 const PAGINATION_BOTTOM_DISTANCE = 140;
 const CONTENT_FIT_TOLERANCE = 12;
 
-const BookChaptersModal = ({ isVisible, onClose, book, unlocks, onSelect, chapters: initialChapters = [], useInitialChaptersOnly = false }) => {
+// Tab bucketing for the author-only Published / Drafts split. The
+// `localId` check catches offline drafts (Redux/MMKV-only chapters that
+// were never sent to the server); the `status === "Draft"` check catches
+// server-side drafts (the `Save Draft Online` flow). Anything else is
+// treated as published — covers "Publish", "Published", and the
+// historical case where status was missing on legacy rows.
+const getChapterTabBucket = (chapter) => {
+  if (chapter?.localId) return "draft";
+  if (chapter?.status === "Draft") return "draft";
+  return "published";
+};
+
+const BookChaptersModal = ({
+  isVisible,
+  onClose,
+  book,
+  unlocks,
+  onSelect,
+  chapters: initialChapters = [],
+  useInitialChaptersOnly = false,
+  // When true, render the Published / Drafts tab bar above the list.
+  // Only the author of the book has this set; readers see the existing
+  // single-list view (drafts aren't fetched in the reader path anyway,
+  // so toggling tabs there would be empty UX). book-editor.jsx is the
+  // current driver since that's where displayedChapters merges server
+  // rows with offline-only local drafts.
+  showAuthorTabs = false,
+}) => {
   const { theme } = useAppTheme();
   const { user } = useSelector((state) => state.auth);
   const { globalSettings } = useSelector((state) => state.app);
-  const bookChapterLockStart = globalSettings["BOOKS_CHAPTER_LOCK_START"];
+  // Prefer the per-book threshold (mapped from `lock_from_chapter`).
+  // globalSettings is a fallback for legacy books — relying on it alone
+  // caused a flicker where the gate trivially failed because
+  // globalSettings hadn't rehydrated and undefined comparisons
+  // short-circuited isChapterLocked to false. The static helper has
+  // its own defensive fallback now too.
+  const bookChapterLockStart = book?.bookChapterLockStart ?? globalSettings?.["BOOKS_CHAPTER_LOCK_START"];
   const [chapters, setChapters] = useState(initialChapters || []);
   const [refreshing, setRefreshing] = useState(false);
   const [lastId, setLastId] = useState();
   const [hasMore, setHasMore] = useState(false);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
+  const [activeTab, setActiveTab] = useState("published");
+
+  // Reset to Published whenever the modal opens — keeps the entry view
+  // predictable (the user expects to land on what readers see, then
+  // explicitly switch into Drafts when they're hunting for one).
+  useEffect(() => {
+    if (isVisible) setActiveTab("published");
+  }, [isVisible]);
+
+  // Bucket counts drive the badges next to each tab label. Computed
+  // from the full `chapters` state, not the filtered list, so the count
+  // doesn't change as the user toggles tabs.
+  const tabCounts = useMemo(() => {
+    let published = 0;
+    let draft = 0;
+    for (const ch of chapters || []) {
+      if (getChapterTabBucket(ch) === "draft") draft += 1;
+      else published += 1;
+    }
+    return { published, draft };
+  }, [chapters]);
+
+  // Filtered list rendered by FlatList. When tabs are off (reader view)
+  // we pass `chapters` through unchanged so existing behavior is preserved
+  // bit-for-bit.
+  const displayedChapters = useMemo(() => {
+    if (!showAuthorTabs) return chapters;
+    return (chapters || []).filter((ch) => getChapterTabBucket(ch) === activeTab);
+  }, [chapters, showAuthorTabs, activeTab]);
   const insets = useSafeAreaInsets();
   const activeRequestRef = useRef(0);
   const chaptersRef = useRef(initialChapters || []);
@@ -202,13 +265,17 @@ const BookChaptersModal = ({ isVisible, onClose, book, unlocks, onSelect, chapte
   };
 
   const renderChapter = ({ item, index }) => {
-    const isChapterLocked = BookUnlocksService.isChapterLocked({
+    // Display-only lock check (no owner-bypass): the author of the book
+    // should see lock icons on their own paywalled chapters too — same as
+    // web does — even though tapping those chapters still routes them
+    // straight to the reader (book-info.jsx onChapterSelect uses the full
+    // isChapterLocked which DOES bypass for owners, preserving free read).
+    const isChapterLocked = BookUnlocksService.isChapterLockedForDisplay({
       book,
       bookChapterLockStart,
       chapter: item,
       index,
       unlocks,
-      currentUserId: user?.$id,
     });
     const chapterStatusLabel = getChapterStatusLabel(item);
     const sectionLabel = getBookChapterSectionLabel(item, index);
@@ -267,10 +334,76 @@ const BookChaptersModal = ({ isVisible, onClose, book, unlocks, onSelect, chapte
           </TouchableOpacity>
         </View>
 
+        {/* Author-only Published / Drafts tab bar. Sits between the
+            sticky header and the FlatList so it stays visible at the
+            top of the modal regardless of scroll position. */}
+        {showAuthorTabs && (
+          <View
+            className="flex-row"
+            style={{ borderBottomWidth: 1, borderBottomColor: theme.border, backgroundColor: theme.surfaceElevated }}
+          >
+            {[
+              { key: "published", label: "Published", count: tabCounts.published },
+              { key: "drafts", label: "Drafts", count: tabCounts.draft, bucket: "draft" },
+            ].map((tab) => {
+              const isActive = activeTab === (tab.bucket || tab.key);
+              return (
+                <TouchableOpacity
+                  key={tab.key}
+                  onPress={() => setActiveTab(tab.bucket || tab.key)}
+                  activeOpacity={0.85}
+                  style={{
+                    flex: 1,
+                    paddingVertical: 12,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexDirection: "row",
+                    borderBottomWidth: 2,
+                    borderBottomColor: isActive ? "#7975D4" : "transparent",
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 13,
+                      fontWeight: isActive ? "700" : "500",
+                      color: isActive ? "#7975D4" : theme.textSoft,
+                      letterSpacing: 0.3,
+                    }}
+                  >
+                    {tab.label}
+                  </Text>
+                  <View
+                    style={{
+                      marginLeft: 8,
+                      minWidth: 22,
+                      paddingHorizontal: 6,
+                      paddingVertical: 1,
+                      borderRadius: 999,
+                      backgroundColor: isActive ? "#7975D4" : theme.surfaceMuted,
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        fontWeight: "700",
+                        color: isActive ? "#FFFFFF" : theme.textMuted,
+                      }}
+                    >
+                      {tab.count > 99 ? "99+" : tab.count}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
+
         {/* Chapters list */}
         <FlatList
           className="flex-1"
-          data={chapters}
+          data={displayedChapters}
           renderItem={renderChapter}
           refreshing={refreshing}
           onRefresh={onRefresh}
@@ -293,15 +426,24 @@ const BookChaptersModal = ({ isVisible, onClose, book, unlocks, onSelect, chapte
                 <Text className="text-lg font-bold" style={{ color: theme.text }} numberOfLines={2} ellipsizeMode="tail">
                   {book?.title}
                 </Text>
-                <Text className="text-base font-medium" style={{ color: theme.textSoft }}>
-                  By {book?.uploader?.username}
-                </Text>
+                <View className="flex-row items-center">
+                  <Text className="text-base font-medium" style={{ color: theme.textSoft }}>
+                    By {book?.uploader?.username}
+                  </Text>
+                  <UserRoleBadgeIcons user={book?.uploader} size={14} />
+                </View>
               </View>
             </View>
           }
           ListEmptyComponent={
             <View className="items-center justify-center p-6">
-              <Text style={{ color: theme.textSoft }}>No chapters available</Text>
+              <Text style={{ color: theme.textSoft }}>
+                {showAuthorTabs && activeTab === "draft"
+                  ? "No drafts yet — every saved-as-draft part lands here."
+                  : showAuthorTabs && activeTab === "published"
+                    ? "No published parts yet."
+                    : "No chapters available"}
+              </Text>
             </View>
           }
           ListFooterComponent={renderFooter}

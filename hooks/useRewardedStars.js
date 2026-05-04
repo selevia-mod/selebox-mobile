@@ -44,6 +44,19 @@ export function useRewardedStar({ userId, cooldownSeconds, setStarsData }) {
         setStarsData(result);
         setShowPlusOne(true);
 
+        // ABUSE DEFENSE: tick the watch_ads goal ONLY after the
+        // earnStar API confirmed the impression credited (we got a
+        // result back). Server-side StarService enforces the daily
+        // ad cap (10/day per the original spec), so spamming the
+        // CLOSED event without legit ad views can't farm beyond the
+        // server-side limit. NOT using tickGoalUnique here — each
+        // ad watch is a distinct event and the goal target (3/day)
+        // is well below the StarService cap.
+        if (result) {
+          const { tickGoal } = await import("../lib/goals-store");
+          tickGoal("watch_ads", 1);
+        }
+
         Animated.timing(plusOneAnim, {
           toValue: -30,
           duration: 700,

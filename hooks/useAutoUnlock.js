@@ -20,9 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Dimensions } from "react-native";
-import { Query } from "react-native-appwrite";
 import { useGlobalContext } from "../context/global-provider";
-import { appwriteConfig, databases } from "../lib/appwrite";
 import { USE_SUPABASE_WALLET } from "../lib/feature-flags";
 import { VideoUnlocksService, computeNextThresholdSeconds } from "../lib/video-unlocks";
 // Phase F.5 — Supabase video unlock path. When the flag is on, the
@@ -58,6 +56,14 @@ export default function useAutoUnlock({
 
   /* ---------------- Refs (closure-stable signals for the listener) ---------------- */
   const showChoiceModalRef = useRef(false);
+  // Synchronous companion to showChoiceModalRef. The state-mirrored ref
+  // updates only in a useEffect (one render late), so two timeUpdate
+  // events firing in the same JS tick — common when a scrub-forward
+  // emits both the scrub event and the post-seek settle event — would
+  // both observe ref.current=false and each call openChoiceModal,
+  // leading to chained modals. This ref is flipped synchronously inside
+  // openChoiceModal/closeChoiceModal so the guard is airtight.
+  const modalActiveRef = useRef(false);
   const isUnlockingRef = useRef(false);
   const nextThresholdRef = useRef(DEFAULT_INITIAL_SECONDS);
   const sessionStartedRef = useRef(false);
@@ -129,7 +135,12 @@ export default function useAutoUnlock({
       let paid = 0;
       try {
         if (USE_SUPABASE_WALLET) {
-          paid = await getPaidThroughSecondsSupabase({ videoId: video?.$id });
+          // Prefer the canonical Supabase UUID over the legacy Appwrite
+          // hex `$id`. wallet-supabase.getPaidThroughSeconds bails with
+          // `0` when the id isn't UUID-shaped, which would silently swallow
+          // the resume position for migrated (legacy 541939) videos that
+          // still surface their hex ID via `$id`.
+          paid = await getPaidThroughSecondsSupabase({ videoId: video?.id || video?.$id });
         } else {
           paid = await videoUnlockService.getPaidThroughSeconds({
             videoId: video?.$id,
@@ -150,6 +161,11 @@ export default function useAutoUnlock({
   /* ---------------- Modal helpers ---------------- */
   const openChoiceModal = useCallback(
     (threshold) => {
+      // Synchronous idempotency guard — the state-backed ref lags by one
+      // render, which would otherwise let back-to-back timeUpdate events
+      // each open the modal.
+      if (modalActiveRef.current) return;
+      modalActiveRef.current = true;
       // Pause first so the playhead doesn't drift during the user's decision
       // window — keeps the audio cue tight and prevents re-firing while the
       // modal is mid-animation.
@@ -163,6 +179,7 @@ export default function useAutoUnlock({
   );
 
   const closeChoiceModal = useCallback(() => {
+    modalActiveRef.current = false;
     setShowChoiceModal(false);
     setLoadingCurrency(null);
   }, []);
@@ -202,14 +219,22 @@ export default function useAutoUnlock({
       lastSeenTimeRef.current = currentTime;
 
       if (isUnlockingRef.current) return;
-      if (showChoiceModalRef.current) return;
       const threshold = nextThresholdRef.current;
       if (!Number.isFinite(threshold)) return; // permanently unlocked
 
+      // Hard clamp on every tick where the playhead is at/past the
+      // threshold — DO NOT bail just because the modal is already open.
+      // Bailing here was the root cause of the "two modals back-to-back
+      // after one scrub" bug: when the user scrubbed to e.g. 15:00 with
+      // threshold=180s, the initial pause+seek-to-180 didn't always
+      // settle (expo-video's currentTime setter is best-effort), so the
+      // player kept ticking from ~900s. After a star-unlock, the player
+      // resumed from 900s instead of 180s and IMMEDIATELY tripped the
+      // next threshold (780s), forcing the user to dismiss/pay a second
+      // modal for the same scrub action. By re-clamping on every tick
+      // while we're past threshold, the playhead is dragged back to the
+      // boundary regardless of how the underlying native player behaves.
       if (currentTime >= threshold) {
-        // Hard clamp the playhead at the threshold so the user can't
-        // fast-forward past unbilled content. We resume in handleChoice on
-        // success.
         try {
           player.pause();
           if (typeof player.seek === "function") {
@@ -218,6 +243,8 @@ export default function useAutoUnlock({
             player.currentTime = threshold;
           }
         } catch {}
+        // openChoiceModal is internally idempotent (modalActiveRef), so
+        // calling it on subsequent settle ticks is a no-op.
         openChoiceModal(threshold);
       }
     });
@@ -248,8 +275,13 @@ export default function useAutoUnlock({
           // the rest of the function below stays unchanged.
           let rpc;
           try {
+            // Use the canonical Supabase UUID. Legacy Appwrite hex IDs
+            // (still surfaced via `$id` for migrated 541939 videos) get
+            // rejected by unlock_video_threshold's UUID validator before
+            // even hitting Postgres, which would manifest as a silent
+            // "modal opens but won't unlock" UX.
             rpc = await unlockVideoThresholdSupabase({
-              videoId: video.$id,
+              videoId: video.id || video.$id,
               currency,
               thresholdSeconds: safeThreshold,
             });
@@ -364,6 +396,13 @@ export default function useAutoUnlock({
     // User dismissed the modal. Player stays paused (we already paused on
     // open). When they hit play, the timeUpdate listener crosses the
     // threshold again and re-opens the modal — same UX as the web.
+    //
+    // Set the dismiss cooldown so any straggler timeUpdate events caused
+    // by the close gesture / modal exit animation don't immediately
+    // re-pop the modal before the user can react. DISMISS_COOLDOWN_MS is
+    // declared above the listener and was previously read-only — without
+    // arming it here the cooldown was dead code.
+    dismissCooldownUntilRef.current = Date.now() + DISMISS_COOLDOWN_MS;
     closeChoiceModal();
   }, [closeChoiceModal]);
 
@@ -401,38 +440,42 @@ export default function useAutoUnlock({
     closeChoiceModal();
   }, [video?.$id, closeChoiceModal]);
 
-  /* ---------------- Cost rates (per-genre) ---------------- */
-  // Same lookup as before so creators can override default costs per genre.
-  // The modal reads coinCost / starCost from these values.
+  /* ---------------- Cost rates (per-video → per-app default → 1) ---------------- */
+  // Resolution order:
+  //   1. video.unlock_cost_coins / unlock_cost_stars — per-video override
+  //      set in the studio (mirrors web's monetization editor).
+  //   2. globalSettings.default_video_unlock_coins / _stars — app-wide
+  //      defaults from public.app_config (synced via global-settings-supabase).
+  //   3. Last-resort fallback to 1 so the modal still renders something.
+  //
+  // The previous implementation hit Appwrite's coinDeductionCollection
+  // with `databases.listDocuments`. Post-Supabase-auth cutover the
+  // Appwrite session no longer exists, so that call 401s and the
+  // catch silently bottoms out to 1/1 — the modal would show a
+  // misleading "1 coin / 1 star" cost. Reading from Supabase columns
+  // and app_config keeps rates accurate.
   useEffect(() => {
-    const fetchRates = async () => {
-      if (!video?.tags || video?.tags.length === 0) {
-        setStarRate(1);
-        setCoinRate(1);
-        return;
-      }
-      try {
-        const genreTag = (video.tags[video.tags.length - 1] || "others").toLowerCase();
-        let res = await databases.listDocuments(appwriteConfig.databaseId, appwriteConfig.coinDeductionCollectionId, [
-          Query.equal("genre", genreTag),
-        ]);
-
-        if (res.total === 0) {
-          res = await databases.listDocuments(appwriteConfig.databaseId, appwriteConfig.coinDeductionCollectionId, [Query.equal("genre", "others")]);
-        }
-
-        const doc = res.documents?.[0];
-        setStarRate(Number(doc?.starDeduction || 1));
-        setCoinRate(Number(doc?.coinDeduction || 1));
-      } catch (err) {
-        console.error("Failed to fetch deduction rates", err?.message || err);
-        setStarRate(1);
-        setCoinRate(1);
-      }
+    const parseRate = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? n : null;
     };
 
-    fetchRates();
-  }, [video?.tags]);
+    const perVideoCoin = parseRate(video?.unlock_cost_coins);
+    const perVideoStar = parseRate(video?.unlock_cost_stars);
+    const defaultCoin =
+      parseRate(globalSettings?.default_video_unlock_coins) ??
+      parseRate(globalSettings?.["default_video_unlock_coins"]) ??
+      parseRate(globalSettings?.DEFAULT_VIDEO_UNLOCK_COINS) ??
+      1;
+    const defaultStar =
+      parseRate(globalSettings?.default_video_unlock_stars) ??
+      parseRate(globalSettings?.["default_video_unlock_stars"]) ??
+      parseRate(globalSettings?.DEFAULT_VIDEO_UNLOCK_STARS) ??
+      1;
+
+    setCoinRate(perVideoCoin ?? defaultCoin);
+    setStarRate(perVideoStar ?? defaultStar);
+  }, [video?.unlock_cost_coins, video?.unlock_cost_stars, globalSettings]);
 
   const resetUnlockFlow = useCallback(() => {
     closeChoiceModal();

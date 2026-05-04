@@ -29,9 +29,7 @@ import BooksWeeklyFeatured from "./BooksWeeklyFeatured";
 import BookTag from "./BookTag";
 import BottomNavPopup from "./BottomNavPopup";
 import CampaignAdModal from "./CampaignAdModal";
-import ClipCard from "./ClipCard";
-import ClipCommentModal from "./ClipCommentModal";
-import ClipItem from "./ClipItem";
+// Clip* components removed — clips feature retired May 2026.
 import ContentNotFound from "./ContentNotFound";
 import CreatorBadgeIcon from "./CreatorBadgeIcon";
 import CreatorVideoCard from "./CreatorVideoCard";
@@ -56,21 +54,21 @@ import PaymentBreakdownEarnings from "./PaymentBreakdownEarnings";
 import PostBook from "./PostBook";
 import PostCard from "./PostCard";
 import PostCardSkeleton from "./PostCardSkeleton";
-import PostClip from "./PostClip";
+// PostClip removed — clips feature retired May 2026.
 import PostCommentModal from "./PostCommentModal";
 import PostInformation from "./PostInformation";
 import PostLikesModal from "./PostLikesModal";
 import PostNativeAd from "./PostNativeAd";
 import PostNativeAdPlaceholder from "./PostNativeAdPlaceholder";
 import PostShareYourThoughts from "./PostShareYourThoughts";
-import PostSuggestedClips from "./PostSuggestedClips";
+// PostSuggestedClips removed — clips feature retired May 2026.
 import PostSuggestedCreators from "./PostSuggestedCreators";
 import PostSuggestedVideos from "./PostSuggestedVideos";
 import PostVideo from "./PostVideo";
 import Profile from "./Profile";
 import ProfileAboutTab from "./ProfileAboutTab";
 import ProfileBooksTab from "./ProfileBooksTab";
-import ProfileClipsTab from "./ProfileClipsTab";
+// ProfileClipsTab removed — clips feature retired May 2026.
 import ProfilePostTab from "./ProfilePostTab";
 import ProfileVideosTab from "./ProfileVideosTab";
 import ReportModal from "./ReportModal";
@@ -99,7 +97,7 @@ import StyledStarIndicator from "./StyledStarIndicator";
 import StyledTitle from "./StyledTitle";
 import SubmitLoadingOverlay from "./SubmitLoadingOverlay";
 import ThemedStatusBar from "./ThemedStatusBar";
-import UploadClip from "./UploadClips";
+// UploadClip removed — clips feature retired May 2026.
 import UploadVideo from "./UploadVideo";
 import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 import VideoCard from "./VideoCard";
@@ -107,17 +105,24 @@ import VideoCardNew from "./VideoCardNew";
 import VideoCardSmall from "./VideoCardSmall";
 import VideoCommentModal from "./VideoCommentModal";
 import VideoUnlockChoiceModal from "./VideoUnlockChoiceModal";
+import VideosBecauseYouWatched from "./VideosBecauseYouWatched";
+import VideosBingeWorthy from "./VideosBingeWorthy";
 import VideosContinueWatching from "./VideosContinueWatching";
 import VideosDownloadQualityModal from "./VideosDownloadQualityModal";
 import VideosFromFollowing from "./VideosFromFollowing";
+import VideosFromYourFollowers from "./VideosFromYourFollowers";
+import VideosHiddenGems from "./VideosHiddenGems";
 import VideosLatest from "./VideosLatest";
 import VideosMostPeopleWant from "./VideosMostPeopleWant";
 import VideosPerCategory from "./VideosPerCategory";
 import VideosPopularInYourArea from "./VideosPopularInYourArea";
+import VideosQuickPicks from "./VideosQuickPicks";
+import VideosRisingCreators from "./VideosRisingCreators";
 import VideosSectionsSkeleton from "./VideosSectionSkeleton";
 import VideosSectionTitle from "./VideosSectionTitle";
 import VideosSuggestedForYou from "./VideosSuggestedForYou";
 import VideosTrendingWeek from "./VideosTrendingWeek";
+import VideosUnderratedForYou from "./VideosUnderratedForYou";
 import VideosYouMightLike from "./VideosYouMightLike";
 import WithdrawModal from "./WithdrawModal";
 import WriterBadgeIcon from "./WriterBadgeIcon";
@@ -154,9 +159,6 @@ export {
   BookTag,
   BottomNavPopup,
   CampaignAdModal,
-  ClipCard,
-  ClipCommentModal,
-  ClipItem,
   ContentNotFound,
   CreatorBadgeIcon,
   CreatorVideoCard,
@@ -175,21 +177,18 @@ export {
   PostBook,
   PostCard,
   PostCardSkeleton,
-  PostClip,
   PostCommentModal,
   PostInformation,
   PostLikesModal,
   PostNativeAd,
   PostNativeAdPlaceholder,
   PostShareYourThoughts,
-  PostSuggestedClips,
   PostSuggestedCreators,
   PostSuggestedVideos,
   PostVideo,
   Profile,
   ProfileAboutTab,
   ProfileBooksTab,
-  ProfileClipsTab,
   ProfilePostTab,
   ProfileVideosTab,
   ReportModal,
@@ -218,7 +217,6 @@ export {
   StyledTitle,
   SubmitLoadingOverlay,
   ThemedStatusBar,
-  UploadClip,
   UploadVideo,
   UserRoleBadgeIcons,
   VideoCard,
@@ -226,17 +224,24 @@ export {
   VideoCardSmall,
   VideoCommentModal,
   VideoUnlockChoiceModal,
+  VideosBecauseYouWatched,
+  VideosBingeWorthy,
   VideosContinueWatching,
   VideosDownloadQualityModal,
   VideosFromFollowing,
+  VideosFromYourFollowers,
+  VideosHiddenGems,
   VideosLatest,
   VideosMostPeopleWant,
   VideosPerCategory,
   VideosPopularInYourArea,
+  VideosQuickPicks,
+  VideosRisingCreators,
   VideosSectionsSkeleton,
   VideosSectionTitle,
   VideosSuggestedForYou,
   VideosTrendingWeek,
+  VideosUnderratedForYou,
   VideosYouMightLike,
   WithdrawModal,
   WriterBadgeIcon,

@@ -8,6 +8,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useSelector } from "react-redux";
 import { BookChaptersModal, CustomAlertModal, ScrollFadeOverlay, SectionDot, StyledTitle } from "../../components";
 import BookChapterReorderModal from "../../components/BookChapterReorderModal";
+import BookLockPromptBanner from "../../components/BookLockPromptBanner";
+import SegmentedNumberPicker from "../../components/SegmentedNumberPicker";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import {
@@ -42,6 +44,29 @@ const BookEditor = () => {
   const [bookSaving, setBookSaving] = useState(false);
   const [loadingBookChapters, setLoadingBookChapters] = useState(Boolean(book?.$id));
   const [bookLocked, setBookLocked] = useState(book?.isLocked);
+  // Drives the BookLockPromptBanner. We resolve "does this writer
+  // already have at least one paid book?" once on mount via the
+  // has_paid_books_for_author RPC. Cached for the editor session;
+  // every banner-showing surface reads the same flag so we don't
+  // hammer the RPC. The banner itself short-circuits if false, so
+  // we initialize to false (banner hidden) until resolved.
+  const [hasPaidBooks, setHasPaidBooks] = useState(false);
+  // Optimistic banner-hide flag. The banner self-hides after a lock
+  // or dismiss, but if the parent has its own copy of the book it
+  // also flips this so a subsequent re-mount doesn't re-show.
+  const [lockPromptDismissed, setLockPromptDismissed] = useState(false);
+  // Per-book paywall threshold (5–10 inclusive, enforced server-side
+  // by `books_lock_from_chapter_check`). Initial value comes from the
+  // existing books.lock_from_chapter when editing, otherwise the
+  // global default. Authors can pick any value in [5, 10] via the
+  // segmented picker below the Lock toggle.
+  const [bookLockFromChapter, setBookLockFromChapter] = useState(() => {
+    const fromBook = Number(book?.bookChapterLockStart ?? book?.lock_from_chapter);
+    if (Number.isFinite(fromBook) && fromBook >= 5 && fromBook <= 10) return fromBook;
+    const fromGlobal = Number(globalSettings?.["BOOKS_CHAPTER_LOCK_START"]);
+    if (Number.isFinite(fromGlobal) && fromGlobal >= 5 && fromGlobal <= 10) return fromGlobal;
+    return 5; // safe default — the lowest legal value
+  });
   const [contentRating, setContentRating] = useState(book?.contentRating === "Rated 18");
   const [bookStatus, setBookStatus] = useState(book?.status === "Completed");
 
@@ -131,13 +156,47 @@ const BookEditor = () => {
 
     return sortBookChaptersByOrder(dedupedById);
   }, [bookChapters, isEdit, localDraftChapters]);
+  // Inline TOC ordering — newest-uploaded first, by $createdAt DESC.
+  // Falls back to chapter_number DESC when timestamps tie or are
+  // missing (rare; mostly local-draft rows that haven't synced yet).
+  // Returns the FULL list (no slice) so writers can scroll through
+  // every chapter; the wrapping ScrollView caps visible height to
+  // ~10 rows and lets the rest slide into view.
   const latestDisplayedChapters = useMemo(
     () =>
       displayedChapters
         .filter((chapter, index) => !isIntroductionChapter(chapter, index))
-        .sort((a, b) => getBookChapterOrder(b) - getBookChapterOrder(a))
-        .slice(0, 5),
+        .sort((a, b) => {
+          const aTs = a?.$createdAt ? new Date(a.$createdAt).getTime() : 0;
+          const bTs = b?.$createdAt ? new Date(b.$createdAt).getTime() : 0;
+          if (bTs !== aTs) return bTs - aTs;
+          return getBookChapterOrder(b) - getBookChapterOrder(a);
+        }),
     [displayedChapters],
+  );
+
+  // Author-surface lock check. Mirrors the two-signal logic in
+  // BookUnlocksService.isChapterLocked but WITHOUT the owner-bypass
+  // short-circuit — the author viewing their own TOC needs to see
+  // which chapters are locked for readers, even though they themselves
+  // can read everything for free. Reads `chapter.is_locked` (per-chapter
+  // override) OR `chapter_number >= bookChapterLockStart` (book-level
+  // threshold cascade).
+  const isAuthorChapterLocked = useCallback(
+    (chapter, index) => {
+      if (!chapter) return false;
+      if (chapter?.is_locked || chapter?.isLocked) return true;
+      const lockStart =
+        Number(bookForm?.bookChapterLockStart) ||
+        Number(bookForm?.lock_from_chapter) ||
+        Number(book?.bookChapterLockStart) ||
+        Number(book?.lock_from_chapter) ||
+        0;
+      if (!lockStart) return false;
+      const order = getBookChapterOrder(chapter, index);
+      return order >= lockStart;
+    },
+    [bookForm?.bookChapterLockStart, bookForm?.lock_from_chapter, book?.bookChapterLockStart, book?.lock_from_chapter],
   );
   const introductionChapter = useMemo(
     () => displayedChapters.find((chapter, index) => isIntroductionChapter(chapter, index)) || null,
@@ -170,13 +229,22 @@ const BookEditor = () => {
       const fetchBookChapters = async () => {
         try {
           setLoadingBookChapters(true);
-          const bookChapters = await bookService.fetchAllBookChapters({ bookId: book.$id, select: BOOK_CHAPTER_LIST_SELECT });
+          // Pass actorUserId so fetchAllBookChapters can route through
+          // the SECURITY DEFINER RPC and surface draft chapters that the
+          // anon SELECT path RLS-filters out. Without this, a chapter
+          // saved as draft online vanishes from the Table of Contents
+          // until it's republished.
+          const bookChapters = await bookService.fetchAllBookChapters({
+            bookId: book.$id,
+            actorUserId: user?.$id,
+            select: BOOK_CHAPTER_LIST_SELECT,
+          });
           if (!isActive) return;
           const sortedChapters = sortBookChaptersByOrder(bookChapters.documents || []);
           setBookChapters(sortedChapters);
           setBookChapterTotal(bookChapters.total);
         } catch (error) {
-          console.log("fetchBookChapters: error", error);
+          console.error("fetchBookChapters: error", error);
         } finally {
           if (isActive) {
             setLoadingBookChapters(false);
@@ -187,7 +255,7 @@ const BookEditor = () => {
       return () => {
         isActive = false;
       };
-    }, [book?.$id]),
+    }, [book?.$id, user?.$id]),
   );
 
   useEffect(() => {
@@ -198,6 +266,27 @@ const BookEditor = () => {
       : 0;
     setBookChapterTotal(computedTotal);
   }, [isEdit, isLocalDraft, localDraftChapters]);
+
+  // Resolve "does this writer have at least one paid book?" — drives
+  // the BookLockPromptBanner visibility. Single RPC call per editor
+  // mount; result is stable for the session. Skipped for new (unsaved)
+  // books because the banner is only meaningful on existing rows.
+  useEffect(() => {
+    if (!isEdit || !user?.$id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const has = await bookService.hasPaidBooks({ userId: user.$id });
+        if (!cancelled) setHasPaidBooks(Boolean(has));
+      } catch (err) {
+        // Non-fatal — banner just stays hidden.
+        console.error("hasPaidBooks lookup failed:", err?.message);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isEdit, user?.$id]);
 
   const chapterOrderLoading = isEdit && loadingBookChapters;
 
@@ -253,7 +342,7 @@ const BookEditor = () => {
         setBookForm((prev) => ({ ...prev, thumbnail: asset }));
       }
     } catch (error) {
-      console.log("openPicker: error", error);
+      console.error("openPicker: error", error);
     }
   };
 
@@ -317,7 +406,7 @@ const BookEditor = () => {
         },
       });
     } catch (error) {
-      console.log("handleNext: error", error);
+      console.error("handleNext: error", error);
     }
   };
 
@@ -380,9 +469,13 @@ const BookEditor = () => {
     let selectedChapter = item;
     if (item?.$id && !Object.prototype.hasOwnProperty.call(item, "content")) {
       try {
-        selectedChapter = await bookService.fetchBookChapter({ chapterId: item.$id });
+        // Pass actorUserId so the RPC path surfaces the author's own
+        // draft chapters. Without it, opening a draft chapter from the
+        // TOC modal would 404 (anon SELECT returns null for
+        // is_published=false rows).
+        selectedChapter = await bookService.fetchBookChapter({ chapterId: item.$id, actorUserId: user?.$id });
       } catch (error) {
-        console.log("onChapterSelect: error", error);
+        console.error("onChapterSelect: error", error);
         showMessage("Unable to load chapter. Please try again.");
         return;
       }
@@ -451,7 +544,7 @@ const BookEditor = () => {
       setChapterReorderVisible(false);
       showMessage("Chapter order updated.");
     } catch (error) {
-      console.log("handleSaveChapterOrder: error", error);
+      console.error("handleSaveChapterOrder: error", error);
       showMessage("Unable to update chapter order. Please try again.");
     } finally {
       setSavingChapterOrder(false);
@@ -484,7 +577,7 @@ const BookEditor = () => {
 
       showMessage("Successfully save book info!", 300, () => router.dismiss(1));
     } catch (error) {
-      console.log("handleNext: error", error);
+      console.error("handleNext: error", error);
     } finally {
       setBookSaving(false);
     }
@@ -503,7 +596,9 @@ const BookEditor = () => {
           {
             text: "Yes",
             onPress: async () => {
-              await bookService.deleteBook({ ID: bookForm.$id });
+              // Pass userId so deleteBook resolves the Supabase actor for
+              // the SECURITY DEFINER RPC's ownership check.
+              await bookService.deleteBook({ ID: bookForm.$id, userId: user?.$id });
               router.back();
             },
             style: "destructive",
@@ -512,7 +607,7 @@ const BookEditor = () => {
         { cancelable: true },
       );
     } catch (error) {
-      console.log("handleDeleteBook: error", error);
+      console.error("handleDeleteBook: error", error);
     }
   };
 
@@ -521,7 +616,7 @@ const BookEditor = () => {
       setBookLocked(value);
       Alert.alert(
         "Confirm Lock Book",
-        "Are you sure you want to lock this book? There is no going back!",
+        `Are you sure you want to lock this book starting from chapter ${bookLockFromChapter}? There is no going back!`,
         [
           {
             text: "No",
@@ -531,7 +626,13 @@ const BookEditor = () => {
           {
             text: "Yes",
             onPress: async () => {
-              await bookService.updateBook({ ID: book.$id, isLocked: value });
+              // Persist the threshold the author picked. updateBook now
+              // forwards `lockFromChapter` straight to submit_book_update
+              // → books.lock_from_chapter (constraint allows 5–10).
+              await bookService.updateBook({
+                ID: book.$id,
+                lockFromChapter: bookLockFromChapter,
+              });
               showMessage("Successfully locked your book! Expect earnings from stars and coins!");
             },
             style: "destructive",
@@ -540,7 +641,26 @@ const BookEditor = () => {
         { cancelable: true },
       );
     } catch (error) {
-      console.log("handleLockBook", error);
+      console.error("handleLockBook: error", error);
+    }
+  };
+
+  // Author tweaks the paywall start chapter via the segmented picker.
+  // We persist immediately while the book is already locked so the
+  // change is non-destructive: tap 5 → 6 → 7 to find the right value
+  // and the threshold updates each time. If the book hasn't been
+  // locked yet, we just stash the value in local state — it'll be
+  // committed when the author flips the Lock toggle.
+  const handlePickLockThreshold = async (val) => {
+    const next = Number(val);
+    if (!Number.isFinite(next) || next < 5 || next > 10) return;
+    setBookLockFromChapter(next);
+    if (bookLocked && book?.$id) {
+      try {
+        await bookService.updateBook({ ID: book.$id, lockFromChapter: next });
+      } catch (error) {
+        console.error("handlePickLockThreshold: error", error);
+      }
     }
   };
 
@@ -702,6 +822,29 @@ const BookEditor = () => {
           showsVerticalScrollIndicator={false}
           style={{ zIndex: -999, backgroundColor: theme.background }}
         >
+          {/* Lock-prompt banner — only shown for existing books that are
+              currently Free AND owned by writers who already monetize at
+              least one other book. Banner self-renders null when those
+              conditions aren't met, so the surrounding JSX doesn't need
+              any conditional. Locking via the banner persists immediately
+              and the banner unmounts itself; if the writer dismisses,
+              the dismissal is stored server-side so it doesn't reappear
+              for this book until the book is re-unlocked. */}
+          {isEdit && !lockPromptDismissed && (
+            <BookLockPromptBanner
+              book={book}
+              shouldShow={hasPaidBooks}
+              userId={user?.$id}
+              onLocked={() => {
+                // Optimistically reflect the locked state in local UI.
+                // Editor will refetch via useFocusEffect on next focus.
+                setBookLocked(true);
+                setLockPromptDismissed(true);
+              }}
+              onDismissed={() => setLockPromptDismissed(true)}
+            />
+          )}
+
           {/* Hero — premium violet-tinted intro card. Mirrors the UploadVideo
               hero so Create Book and Create Video read as the same family.
               Editorial title + one-line subtitle on a violet-soft chip; no
@@ -906,7 +1049,8 @@ const BookEditor = () => {
                     Lock Book
                   </Text>
                   <Text className="mt-1 text-xs" style={{ color: theme.textSoft }}>
-                    When enabled, this book’s chapters will be locked starting at chapter {bookChapterLockStart}.
+                    When enabled, this book’s chapters will be locked starting at chapter {bookLockFromChapter}.
+                    Chapters before that stay free as a teaser.
                   </Text>
                 </View>
                 <View style={{ transform: [{ scale: 0.8 }] }}>
@@ -919,6 +1063,28 @@ const BookEditor = () => {
                     disabled={bookLocked}
                   />
                 </View>
+              </View>
+
+              {/* Threshold picker — author chooses where the paywall starts.
+                  Range is fixed at 5–10 inclusive (Selebox platform rule,
+                  enforced server-side by books_lock_from_chapter_check).
+                  Picker stays mounted but goes flat (disabled visual) once
+                  the book has been locked beyond editing — bookLocked is
+                  set permanently true after first save, matching the
+                  existing one-way Lock Book switch behavior. While the
+                  book is unlocked the picker is just a parking value;
+                  it becomes the actual threshold the moment the author
+                  flips the Lock toggle. While locked, tapping a different
+                  number persists the new threshold immediately. */}
+              <View className="mt-3">
+                <Text className="text-xs font-semibold" style={{ color: theme.textSoft, marginBottom: 6 }}>
+                  Paywall starts at chapter
+                </Text>
+                <SegmentedNumberPicker
+                  values={[5, 6, 7, 8, 9, 10]}
+                  selected={bookLockFromChapter}
+                  onChange={handlePickLockThreshold}
+                />
               </View>
             </View>
           )}
@@ -1034,8 +1200,28 @@ const BookEditor = () => {
                 </View>
               )}
 
-              <View className="mt-3">
+              {/*
+                Inner scroll pane. maxHeight is sized so ~10 rows fit
+                before the pane starts scrolling — tall enough that
+                short books (<10 chapters) don't gain a useless inner
+                scrollbar, short enough that long books don't push the
+                Save row offscreen on small phones. Each row is roughly
+                ~68px (py-3 padding + 2-line content), so 680 ≈ 10 rows.
+
+                nestedScrollEnabled is required on Android so this inner
+                ScrollView receives touch events instead of forwarding
+                them to the parent ScrollView. iOS handles nested scroll
+                fine without the flag; setting it both places is
+                harmless on iOS and required on Android.
+              */}
+              <ScrollView
+                className="mt-3"
+                style={{ maxHeight: 680 }}
+                nestedScrollEnabled
+                showsVerticalScrollIndicator
+              >
                 {latestDisplayedChapters.map((chapter, index) => {
+                  const locked = isAuthorChapterLocked(chapter, index);
                   return (
                     <TouchableOpacity
                       onPress={() => handleEditChapter(chapter, index)}
@@ -1044,9 +1230,23 @@ const BookEditor = () => {
                       style={{ borderBottomWidth: 1, borderBottomColor: theme.divider }}
                     >
                       <View className="flex-1 pr-3">
-                        <Text className="text-base font-semibold" style={{ color: theme.text }}>
-                          {chapter.title}
-                        </Text>
+                        <View className="flex-row items-center">
+                          {locked && (
+                            <Ionicons
+                              name="lock-closed"
+                              size={14}
+                              color={theme.primary}
+                              style={{ marginRight: 6 }}
+                            />
+                          )}
+                          <Text
+                            className="text-base font-semibold flex-1"
+                            style={{ color: theme.text }}
+                            numberOfLines={1}
+                          >
+                            {chapter.title}
+                          </Text>
+                        </View>
                         <View className="mt-1 flex-row items-center space-x-2">
                           <Text
                             className="rounded-full px-2 py-0.5 text-[10px]"
@@ -1060,6 +1260,14 @@ const BookEditor = () => {
                           >
                             {chapter.status}
                           </Text>
+                          {locked && (
+                            <Text
+                              className="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                              style={{ borderWidth: 1, borderColor: theme.primary, backgroundColor: theme.primarySoft, color: theme.primary }}
+                            >
+                              Locked
+                            </Text>
+                          )}
                           <Text className="text-xs" style={{ color: theme.textSoft }}>
                             {TimeAgo(chapter.$createdAt)}
                           </Text>
@@ -1070,7 +1278,7 @@ const BookEditor = () => {
                     </TouchableOpacity>
                   );
                 })}
-              </View>
+              </ScrollView>
 
               <View className="mt-4 flex-row space-x-3">
                 <TouchableOpacity
@@ -1126,6 +1334,12 @@ const BookEditor = () => {
         book={bookForm}
         chapters={displayedChapters}
         useInitialChaptersOnly
+        // Author surface — split chapters into Published / Drafts tabs.
+        // canManageChapters is true when the screen is in edit mode
+        // (existing book) or local-draft mode (new book being staged).
+        // Both cases mean "this is the author looking at their own
+        // chapters list," which is exactly when the tabs add value.
+        showAuthorTabs={canManageChapters}
       />
       <BookChapterReorderModal
         isVisible={chapterReorderVisible}

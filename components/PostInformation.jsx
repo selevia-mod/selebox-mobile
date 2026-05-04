@@ -5,6 +5,7 @@ import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import FormatNumber from "../lib/utils/format-number";
 import logger from "../lib/utils/logger";
+import { tickGoalUnique } from "../lib/goals-store";
 import { createPostLike, deletePostLike, getPostLike, updatePost } from "../lib/posts";
 import { DEFAULT_REACTION_KEY, getReactionByKey } from "../lib/reactions";
 import { getMyReaction, removeMyReaction, setReaction } from "../lib/reactions-supabase";
@@ -17,6 +18,13 @@ import RepostModal from "./RepostModal";
 // `_supabase`) the picked emoji writes through to the polymorphic `reactions`
 // table; on legacy Appwrite posts it stays a local-only UI flourish over the
 // backend's binary like/unlike model.
+
+// Time-window after an optimistic like during which the resetting
+// effects (count + reaction-readback) skip overriding state. 2.5s
+// covers: 500ms debounce + DB write + parent feed re-render with
+// fresh stats. After this window, server is authoritative again so
+// genuinely-stale state self-corrects.
+const OPTIMISTIC_WINDOW_MS = 2500;
 const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSharePress, onLikeChange, onDarkSurface = false }) => {
   const postID = item?.$id;
   const { user } = useGlobalContext();
@@ -44,6 +52,16 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
   const userReactionKeyRef = useRef(null);
   const debounceRef = useRef(null);
   const likeButtonRef = useRef(null);
+  // "Optimistic-until" timestamp. Set when the user taps Like / picks
+  // a reaction; the resetting effects below skip overriding state while
+  // we're inside this window.
+  //
+  // The bug this fixes: feed refresh re-passes `item` with a stale
+  // `postLikes` count (or stale `isLikedByCurrentUser`), which used to
+  // clobber the just-bumped optimistic state. With this guard, the
+  // user's tap "wins" for OPTIMISTIC_WINDOW_MS so the heart doesn't
+  // flicker. After the window the server is authoritative again.
+  const optimisticUntilRef = useRef(0);
 
   // Web tokens ported: reacted state uses pink/magenta (#f472b6 dark, #db2777
   // light) and the "premium violet" tint for hover/active states.
@@ -54,12 +72,38 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
   likeCountRef.current = likeCount;
   userReactionKeyRef.current = userReactionKey;
 
+  // Reset the optimistic window whenever the post identity changes. Without
+  // this, a FlashList cell recycle (same component instance, new `item`)
+  // would carry the previous post's window into the new post — the readback
+  // effect would skip loading the new post's like state until the timer
+  // expired, briefly showing wrong state.
   useEffect(() => {
+    optimisticUntilRef.current = 0;
+  }, [postID]);
+
+  // Clear the pending debounce on unmount. The setTimeout itself doesn't
+  // crash if it fires post-unmount (syncLike reads refs, not state) but the
+  // timer leak is sloppy.
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Skip stale-prop-driven count overrides during the optimistic
+    // window. The user just tapped; their state is the truth until the
+    // server confirms.
+    if (Date.now() < optimisticUntilRef.current) return;
     setLikeCount(item?.postLikes ?? 0);
   }, [item?.postLikes]);
 
   useEffect(() => {
     let isCancelled = false;
+    // Same optimistic-window guard. Without this, a re-render mid-
+    // debounce caused getMyReaction to return null (the write hadn't
+    // landed yet) and we'd reset liked=false — heart would flicker.
+    if (Date.now() < optimisticUntilRef.current) return undefined;
 
     // Phase C.6 — Supabase posts ALWAYS read their like state from the
     // reactions table. Order matters: this branch runs before the
@@ -73,13 +117,16 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
       const handleGetSupabaseReaction = async () => {
         try {
           const emoji = await getMyReaction({ targetType: "post", targetId: postID });
-          if (!isCancelled) {
+          // Re-check window after the await — the user could have tapped
+          // during the round-trip, in which case the in-flight DB read
+          // is now stale relative to the new optimistic state.
+          if (!isCancelled && Date.now() >= optimisticUntilRef.current) {
             setUserReactionKey(emoji || null);
             setLiked(Boolean(emoji));
           }
         } catch (error) {
           logger.error("PostInformation", "getMyReaction (supabase) failed", error);
-          if (!isCancelled) {
+          if (!isCancelled && Date.now() >= optimisticUntilRef.current) {
             setLiked(false);
             setUserReactionKey(null);
           }
@@ -143,6 +190,12 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
         const currentKey = userReactionKeyRef.current;
         if (currentKey) {
           await setReaction({ targetType: "post", targetId: postID, emoji: currentKey });
+          // ABUSE DEFENSE: tick the like_comment goal on the Supabase
+          // path too. Same dedup key as the legacy createPostLike branch
+          // (`like_comment:${postID}`) so like→unlike→relike on a post
+          // counts at most once per day, AND a like + comment on the
+          // same post still only counts as one engagement.
+          tickGoalUnique("like_comment", `like_comment:${postID}`);
         } else {
           await removeMyReaction({ targetType: "post", targetId: postID });
         }
@@ -151,7 +204,15 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
 
       if (likedRef.current) {
         const existing = await getPostLike({ postId: postID, likeOwner: user?.$id });
-        if (!existing?.documents?.length) await createPostLike({ postId: postID, likeOwner: user?.$id });
+        if (!existing?.documents?.length) {
+          await createPostLike({ postId: postID, likeOwner: user?.$id });
+          // ABUSE DEFENSE: dedup key is `like_comment:${postID}` —
+          // post-level, NOT action-level. A like-unlike-relike cycle
+          // on the same post ticks at most once per day. Same key is
+          // used by the comment hook below, so liking AND commenting
+          // on the same post still only counts as ONE engagement.
+          tickGoalUnique("like_comment", `like_comment:${postID}`);
+        }
       } else {
         const existing = await getPostLike({ postId: postID, likeOwner: user?.$id });
         if (existing?.documents?.[0]) await deletePostLike({ postLikeId: existing.documents[0].$id });
@@ -167,6 +228,11 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
     let nextCount = currentCount;
     if (newLiked && !liked) nextCount = currentCount + 1;
     if (!newLiked && liked) nextCount = Math.max(0, currentCount - 1);
+
+    // Open the optimistic window FIRST so any re-render triggered by
+    // the setState calls below (or the parent's onLikeChange handler)
+    // doesn't clobber the new state via the resetting effects.
+    optimisticUntilRef.current = Date.now() + OPTIMISTIC_WINDOW_MS;
 
     setLiked(newLiked);
     setLikeCount(nextCount);
@@ -198,6 +264,12 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
   const handlePickReaction = (key) => {
     const wasLiked = liked;
     const previousKey = userReactionKey;
+    // Open optimistic window for ANY reaction picker tap — covers both
+    // first-time-like (delegates to applyLikeChange below) AND emoji
+    // change (which doesn't go through applyLikeChange but still
+    // optimistically updates state). Without this, an emoji swap could
+    // be undone by the readback effect during the debounce.
+    optimisticUntilRef.current = Date.now() + OPTIMISTIC_WINDOW_MS;
     setUserReactionKey(key);
 
     if (!wasLiked) {

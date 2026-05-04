@@ -22,6 +22,14 @@ const sharedColors = {
   accentPurpleSoft: "rgba(139,92,246,0.16)",
   accentBlue: "#3ec5ff",
   accentBlueSoft: "rgba(62,197,255,0.16)",
+  // Dedicated, eye-friendly color for @username mentions inside comment
+  // bodies. The previous design used accentBlue (bright cyan) which read
+  // as harsh against the lavender comment-card background. A muted
+  // brand-aligned purple is calmer, on-brand, and still clearly
+  // hyperlink-y. Lives here so all comment surfaces (posts, videos,
+  // books, chapters, inline) render mentions consistently.
+  mention: "#6e5fbe",
+  mentionSoft: "rgba(110,95,190,0.14)",
   accentGreen: "#22c55e",
   accentGreenSoft: "rgba(34,197,94,0.16)",
   accentTeal: "#14b8a6",

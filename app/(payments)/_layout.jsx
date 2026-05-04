@@ -15,6 +15,12 @@ const PaymentsLayout = () => {
             headerShown: false,
           }}
         />
+        <Stack.Screen
+          name="earnings-breakdown"
+          options={{
+            headerShown: false,
+          }}
+        />
       </Stack>
 
       <ThemedStatusBar />

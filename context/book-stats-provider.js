@@ -37,7 +37,11 @@ export const BookStatsProvider = ({ children }) => {
         if (existing?.documents?.length === 0) await bookService.createBookLike({ bookId, likeOwner: userId });
       } else {
         const existing = await bookService.getBookLikeByOwner({ bookId, likeOwner: userId });
-        if (existing?.documents?.length > 0) await bookService.deleteBookLike({ bookLikeId: existing.documents[0].$id });
+        // Pass bookId + likeOwner so the dual-write side can delete by
+        // composite (book_id, user_id). The bookLikeId alone wouldn't help
+        // Supabase since its rows have UUIDs, not Appwrite hex strings.
+        if (existing?.documents?.length > 0)
+          await bookService.deleteBookLike({ bookLikeId: existing.documents[0].$id, bookId, likeOwner: userId });
       }
     } catch (error) {
       console.error("syncBookLike error:", error);

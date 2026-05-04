@@ -94,13 +94,25 @@ const BookCard = ({ item, progress, customWidth, customHeight, customFontSize, h
 
   const rateValue = toFiniteNumber(stats?.averageRating, 0);
   const readsValue = toFiniteNumber(stats?.totalReads, 0);
-  const accessLabel = item?.isLocked ? "Paid" : "Free";
+  // A book is "Paid" if either the book-level lock threshold
+  // (lock_from_chapter > 0 → item.isLocked) is set, OR any chapter on
+  // the row carries the legacy per-chapter `is_locked` flag. Card
+  // views typically don't carry chapter data, so legacy-locked books
+  // (lock set per-chapter, lock_from_chapter still null) will fall
+  // through and render as "Free" until the database is backfilled
+  // (see notes — `lock_from_chapter` should be populated to the
+  // lowest is_locked chapter_number for every legacy book that uses
+  // per-chapter locking). The detail page does have chapters and
+  // computes the correct label.
+  const cardChaptersCheck =
+    Array.isArray(item?.chapters) && item.chapters.some((c) => c?.is_locked || c?.isLocked);
+  const accessLabel = item?.isLocked || cardChaptersCheck ? "Paid" : "Free";
   // Fully opaque so iOS can compute the shadow efficiently. The previous
   // rgba(…, 0.95) made the view non-opaque, which forced the rasterizer to
   // walk the subview tree on every layout pass — that's where the 150+
   // "(ADVICE) View has a shadow set but cannot calculate shadow efficiently"
   // log spam was coming from on the Books tab.
-  const sashBackgroundColor = item?.isLocked ? "#8b5cf6" : "#10b981";
+  const sashBackgroundColor = item?.isLocked || cardChaptersCheck ? "#8b5cf6" : "#10b981";
   const sashTextColor = theme.primaryContrast;
   const rateLabel = rateValue.toFixed(1);
   const readsLabel = FormatNumber(readsValue);

@@ -70,8 +70,7 @@ Backend services use **Appwrite** (BaaS). Key files:
 
 - `appwrite.js` — Core auth: account creation, sign-in/out, session/JWT management, Stream Chat token integration, self-healing user documents
 - `stream.js` / `stream-connection-manager.js` — Stream Chat SDK integration and connection lifecycle
-- `bunny-service.js` / `fetch-bunny-storage.js` — Bunny.net CDN operations
-- `s3-uploads.js` — AWS S3/CloudFront upload services
+- `bunny-service.js` / `fetch-bunny-storage.js` — Bunny.net CDN + storage zone operations (images, videos)
 - `books.js`, `clips.js`, `video.js`, `posts.js`, `follows.js`, `notifications.js`, `messages.js`, `safety.js` — Domain CRUD services
 - `book-comments.js`, `book-chapter-comments.js`, `book-reads.js`, `book-unlocks.js`, `book-rating.js`, `book-downloads.js` — Granular book engagement services
 - `video-downloads.js`, `books-rankings.js` — Downloads and ranking services
@@ -137,7 +136,7 @@ Tailwind class sorting via `prettier-plugin-tailwindcss`.
 
 - **Backend**: Appwrite (`react-native-appwrite`)
 - **Chat**: Stream Chat Expo SDK
-- **CDN**: Bunny.net (video/media hosting), AWS CloudFront (clips/videos)
+- **CDN**: Bunny.net — Bunny Stream for HLS video playback, Bunny Storage zones for images/general media. AWS S3+CloudFront retired May 2026; clips feature also retired May 2026 (replaced by a "Reels coming soon" teaser).
 - **Payments**: `react-native-iap` (in-app purchases)
 - **Ads**: `react-native-google-mobile-ads` (AdMob)
 - **Analytics**: Firebase

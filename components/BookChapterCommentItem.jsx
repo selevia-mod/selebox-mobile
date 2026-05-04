@@ -9,6 +9,7 @@ import { BookChapterCommentsService } from "../lib/book-chapter-comments";
 import TimeAgo from "../lib/utils/time-ago";
 import ReactionPicker from "./ReactionPicker";
 import UserAvatar from "./UserAvatar";
+import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 
 const INITIAL_VISIBLE_REPLIES = 3;
 
@@ -228,9 +229,12 @@ const BookChapterCommentItem = ({
           <View className="flex-1">
             <View className="relative rounded-[8px] px-3 py-2 pr-9" style={commentBubbleStyle}>
               <TouchableOpacity onPress={() => handleUserPress(null)}>
-                <Text className="font-sans text-sm font-semibold" style={{ color: theme.text }}>
-                  {item?.commentOwner?.username || "Deleted User"}
-                </Text>
+                <View className="flex-row items-center">
+                  <Text className="font-sans text-sm font-semibold" style={{ color: theme.text }}>
+                    {item?.commentOwner?.username || "Deleted User"}
+                  </Text>
+                  <UserRoleBadgeIcons user={item?.commentOwner} size={14} />
+                </View>
               </TouchableOpacity>
               {isOwnComment ? (
                 <TouchableOpacity
@@ -243,7 +247,7 @@ const BookChapterCommentItem = ({
               ) : null}
               {renderMentionText?.(item?.comment, "mt-1 font-sans text-sm leading-5", "font-sans font-semibold", {
                 color: theme.textMuted,
-                mentionColor: theme.accentBlue,
+                mentionColor: theme.mention,
               })}
             </View>
 
@@ -307,9 +311,12 @@ const BookChapterCommentItem = ({
                               }}
                             >
                               <TouchableOpacity onPress={() => handleUserPress(reply)}>
-                                <Text className="font-sans text-xs font-semibold" style={{ color: theme.text }}>
-                                  {reply?.commentOwner?.username || "Deleted User"}
-                                </Text>
+                                <View className="flex-row items-center">
+                                  <Text className="font-sans text-xs font-semibold" style={{ color: theme.text }}>
+                                    {reply?.commentOwner?.username || "Deleted User"}
+                                  </Text>
+                                  <UserRoleBadgeIcons user={reply?.commentOwner} size={12} />
+                                </View>
                               </TouchableOpacity>
                               {isOwnReply ? (
                                 <TouchableOpacity
@@ -322,7 +329,7 @@ const BookChapterCommentItem = ({
                               ) : null}
                               {renderMentionText?.(reply?.comment, "mt-0.5 font-sans text-xs leading-5", "font-sans font-semibold", {
                                 color: theme.textMuted,
-                                mentionColor: theme.accentBlue,
+                                mentionColor: theme.mention,
                               })}
                             </View>
                             <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>

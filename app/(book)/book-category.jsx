@@ -173,7 +173,7 @@ const BookCategory = () => {
         persistToRedux(sectionLabel, fetched);
         BOOK_CATEGORY_CACHE.set(sectionLabel, flat);
       } catch (err) {
-        console.log("book-category fetch error", err?.message || err);
+        console.error("book-category fetch error", err?.message || err);
       } finally {
         if (!background) setLoading(false);
       }
@@ -208,7 +208,7 @@ const BookCategory = () => {
       setLastId(next[next.length - 1]?.$id ?? null);
       setHasMore(next.length >= 30);
     } catch (err) {
-      console.log("book-category loadMore error", err?.message || err);
+      console.error("book-category loadMore error", err?.message || err);
     } finally {
       setIsFetchingMore(false);
     }

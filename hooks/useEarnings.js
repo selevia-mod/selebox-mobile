@@ -51,19 +51,20 @@ export function useEarnings(userId, selectedMonth) {
     fetchData();
   }, [fetchData]);
 
-  // Withdraw — branches on flag. Supabase requires payoutMethod +
-  // payoutDetails (server enforces KYC + minimums); legacy Appwrite
-  // path used a separate `usersPaymentInformation` collection looked up
-  // by the service. Callers can pass both shapes; the right one is
-  // forwarded based on the flag.
-  const withdraw = async ({ amount, amountToReceive, amountCoins, payoutMethod, payoutDetails } = {}) => {
+  // Withdraw — branches on flag. Supabase path takes `amountPhpMinor`
+  // (centavos) as of the May 2026 earnings overhaul: the RPC computes
+  // server-side fees (Pioneer-aware) and earmarks across both coin and
+  // star earnings FIFO. Legacy Appwrite path still uses peso `amount`
+  // because the legacy collection-based withdrawal predates the unified
+  // peso ledger.
+  const withdraw = async ({ amount, amountToReceive, amountPhpMinor, payoutMethod, payoutDetails } = {}) => {
     if (!userId) return null;
     try {
       if (USE_SUPABASE_WALLET) {
-        if (!Number.isFinite(amountCoins) || amountCoins <= 0) {
-          throw new Error("amountCoins required for Supabase withdrawal");
+        if (!Number.isFinite(amountPhpMinor) || amountPhpMinor <= 0) {
+          throw new Error("amountPhpMinor required for Supabase withdrawal");
         }
-        const result = await requestAuthorWithdrawal({ amountCoins, payoutMethod, payoutDetails });
+        const result = await requestAuthorWithdrawal({ amountPhpMinor, payoutMethod, payoutDetails });
         await fetchData();
         return result;
       }
@@ -78,7 +79,22 @@ export function useEarnings(userId, selectedMonth) {
 
   // Legacy + Supabase use different timestamp field names. Cover both.
   const sortKey = (w) => new Date(w?.requested_at || w?.$createdAt || 0).getTime();
-  const latestWithdrawal = [...withdrawals].sort((a, b) => sortKey(b) - sortKey(a))[0] || null;
+  const rawLatest = [...withdrawals].sort((a, b) => sortKey(b) - sortKey(a))[0] || null;
+
+  // Adapt the row shape so consumers can render uniformly. Legacy
+  // (Appwrite) rows already carry `amount` + `amountToReceive` in
+  // pesos. Supabase rows carry `amount_php_minor` / `net_php_minor`
+  // in centavos. Without normalizing, the Earnings screen crashes on
+  // `latestWithdrawal.amountToReceive.toFixed(2)` because the field
+  // is undefined on Supabase rows.
+  const latestWithdrawal = rawLatest
+    ? {
+        ...rawLatest,
+        amount: rawLatest.amount ?? (Number(rawLatest.amount_php_minor) || 0) / 100,
+        amountToReceive:
+          rawLatest.amountToReceive ?? (Number(rawLatest.net_php_minor) || 0) / 100,
+      }
+    : null;
 
   return {
     earnings,

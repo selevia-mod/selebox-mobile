@@ -65,7 +65,12 @@ const BottomNavPopup = ({ handlePlusPress }) => {
           </View>
         </TouchableOpacity>
 
-        {/* Create Clip - IN MAINTENANCE MODE (TEMPORARY) */}
+        {/* Create Reels — coming soon. The previous "Create a clip"
+            slot was retired (clips feature deprecated May 2026); this
+            placeholder signals to users that a new short-form format
+            is on the way rather than leaving a hole in the grid.
+            Disabled state styled to match other "coming soon"
+            affordances elsewhere in the app. */}
         <TouchableOpacity
           disabled
           activeOpacity={0.5}
@@ -73,20 +78,29 @@ const BottomNavPopup = ({ handlePlusPress }) => {
           style={{ backgroundColor: theme.surfaceStrong }}
         >
           <View className="relative">
-            <Image source={require("../assets/images/clips_icon.png")} className="h-10 w-10 rounded-lg opacity-50" resizeMode="contain" />
-            <View className="absolute -right-1 -top-1">
-              <MaterialCommunityIcons name="wrench" size={14} color={theme.danger} />
+            <View
+              className="h-10 w-10 items-center justify-center rounded-lg"
+              style={{ backgroundColor: theme.primarySoft, borderWidth: 1, borderColor: theme.primary }}
+            >
+              <MaterialCommunityIcons name="movie-open-play-outline" size={22} color={theme.primary} />
+            </View>
+            <View
+              className="absolute -right-1 -top-1 rounded-full px-1"
+              style={{ backgroundColor: theme.primary }}
+            >
+              <Text className="text-[8px] font-bold" style={{ color: theme.primaryContrast, letterSpacing: 0.3 }}>
+                SOON
+              </Text>
             </View>
           </View>
           <View className="flex-1 pl-2">
             <View className="flex-row items-center space-x-1">
-              <Text className="text-[13px] font-semibold" style={{ color: theme.textSubtle }}>
-                Create a clip
+              <Text className="text-[13px] font-semibold" style={{ color: theme.text }}>
+                Create a reel
               </Text>
-              <MaterialCommunityIcons name="alert-circle" size={12} color={theme.danger} />
             </View>
-            <Text className="text-[10px]" style={{ color: theme.textSubtle }}>
-              In maintenance
+            <Text className="text-[10px]" style={{ color: theme.primary, letterSpacing: 0.3 }}>
+              Coming soon
             </Text>
           </View>
         </TouchableOpacity>

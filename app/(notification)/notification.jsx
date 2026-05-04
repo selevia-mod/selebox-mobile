@@ -16,7 +16,7 @@ import {
   markAllDmNotificationsRead,
   subscribeToDmNotifications,
 } from "../../lib/notifications-supabase";
-import { markNotificationViewed, setNotificationsCache } from "../../store/reducers/notifications";
+import { markNotificationViewed, removeNotification, setNotificationsCache } from "../../store/reducers/notifications";
 
 // Categorize a notification into the All / You / Following tabs.
 // "you" = something happened TO you (someone followed you, commented on
@@ -79,6 +79,19 @@ const Notification = () => {
     [notifications],
   );
 
+  // dismissedIds set — IDs the user has tapped through the private-DM
+  // path. Filtered out at every site that loads notifications so that
+  // even if the server-side DELETE was blocked by RLS or otherwise
+  // failed silently, the row never reappears on this device.
+  const dismissedIdsSet = useMemo(() => {
+    const arr = Array.isArray(notificationCache?.dismissedIds) ? notificationCache.dismissedIds : [];
+    return new Set(arr);
+  }, [notificationCache?.dismissedIds]);
+  const filterOutDismissed = useCallback(
+    (list) => (dismissedIdsSet.size === 0 ? list : list.filter((n) => !dismissedIdsSet.has(n?.$id))),
+    [dismissedIdsSet],
+  );
+
   const filteredNotifications = useMemo(() => {
     if (activeTab === "all") return notifications;
     return notifications.filter((notification) => categorizeNotification(notification) === activeTab);
@@ -95,13 +108,13 @@ const Notification = () => {
 
   useEffect(() => {
     if (!hasCacheForUser || cacheHydratedRef.current) return;
-    setNotifications(notificationCache.items || []);
+    setNotifications(filterOutDismissed(notificationCache.items || []));
     setLastId(notificationCache.lastId || undefined);
     setHasMore(typeof notificationCache.hasMore === "boolean" ? notificationCache.hasMore : false);
     setNotificationsLoading(false);
     hasLoadedRef.current = true;
     cacheHydratedRef.current = true;
-  }, [hasCacheForUser, notificationCache.items, notificationCache.lastId, notificationCache.hasMore]);
+  }, [hasCacheForUser, notificationCache.items, notificationCache.lastId, notificationCache.hasMore, filterOutDismissed]);
 
   useEffect(() => {
     if (!user?.$id || !hasLoadedRef.current) return;
@@ -152,7 +165,7 @@ const Notification = () => {
       ]);
       const documents = notificationData?.documents || [];
       const notificationIDS = documents.map((item) => item.$id);
-      const merged = mergeAcrossBackends(documents, supabaseDms);
+      const merged = filterOutDismissed(mergeAcrossBackends(documents, supabaseDms));
       setNotifications(merged);
       // lastId tracks the Appwrite cursor only — pagination requests more
       // Appwrite docs; Supabase dm_message rows are loaded in full per fetch.
@@ -189,7 +202,7 @@ const Notification = () => {
         // existing rows wouldn't reflect server-side updates.
         const prevAppwrite = prev.filter((n) => n?._backend !== "supabase");
         const mergedAppwrite = mergeNotifications(prevAppwrite, incomingNotifications);
-        const merged = mergeAcrossBackends(mergedAppwrite, supabaseDms);
+        const merged = filterOutDismissed(mergeAcrossBackends(mergedAppwrite, supabaseDms));
         mergedCount = merged.length;
         mergedList = merged;
         return merged;
@@ -330,6 +343,19 @@ const Notification = () => {
           setNotifications((prev) =>
             prev.map((notification) => (notification.$id === notificationId ? { ...notification, isViewed: true } : notification)),
           );
+        }}
+        onDeleted={(notificationId) => {
+          // Private-DM tap path — the card has just kicked off a
+          // server-side deleteNotification(); drop the row from the
+          // local list immediately so the bell reflects the new
+          // privacy floor without waiting for a refetch. Also dispatch
+          // removeNotification so the persisted Redux/MMKV cache loses
+          // the row — without this dispatch, navigating away and
+          // returning would replay the row from cache hydration even
+          // though the server DELETE succeeded.
+          if (!notificationId) return;
+          dispatch(removeNotification({ userId: user?.$id, notificationId }));
+          setNotifications((prev) => prev.filter((notification) => notification?.$id !== notificationId));
         }}
       />
     );

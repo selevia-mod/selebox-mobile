@@ -46,6 +46,7 @@ import {
   VideosDownloadQualityModal,
 } from "../../components";
 import AnimatedSkeleton from "../../components/AnimatedSkeleton";
+import { tickGoal, tickGoalUnique } from "../../lib/goals-store";
 import logger from "../../lib/utils/logger";
 import ReactionPicker from "../../components/ReactionPicker";
 import UserMention from "../../components/UserMention";
@@ -56,6 +57,7 @@ import useAutoUnlock from "../../hooks/useAutoUnlock";
 import useCommentReactionState from "../../hooks/useCommentReactionState";
 import useIsOffline from "../../hooks/useIsOffline";
 import { addToHistory, databases, getCoinDeductionByTags, getCoinPacks, limitVideos, ShuffleVideos } from "../../lib/appwrite";
+import { dualWriteDeleteComment, dualWriteDeleteCommentsBulk } from "../../lib/posts-dual-write";
 import { FollowService } from "../../lib/follows";
 
 import FormatNumber from "../../lib/utils/format-number";
@@ -79,10 +81,13 @@ import {
 import { fetchUsersByQuery, getUserByID } from "../../lib/users";
 import {
   createVideoCommentLike,
+  fetchVideoComments,
   fetchVideoCommentLikesByCommentIds,
   fetchVideoCommentRepliesByParentIds,
+  fetchVideoProgress,
   removeVideoCommentLike,
   resolveVideoCommentCount,
+  tickVideoProgress,
   VideosService,
 } from "../../lib/video";
 import {
@@ -95,6 +100,7 @@ import {
   SUPPORTED_VIDEO_DOWNLOAD_QUALITIES,
 } from "../../lib/video-downloads";
 import { VideoUnlocksService } from "../../lib/video-unlocks";
+import { USE_SUPABASE_WALLET } from "../../lib/feature-flags";
 import secrets from "../../private/secrets";
 import { downloadQuality, upsertVideoDownload } from "../../store/reducers/videos";
 
@@ -221,7 +227,7 @@ const serializePlayedHistoryParam = (history) => {
   return encodeURIComponent(history.join(","));
 };
 
-const Description = ({ item, onOpenComments, onDownloadPress, downloadStatus, downloadDisabled }) => {
+const Description = ({ item, onOpenComments, onDownloadPress, downloadStatus, downloadDisabled, onDescriptionLayout }) => {
   const { user } = useGlobalContext();
   const { getVideoStats, loadVideoStats } = useVideosStats();
   const { globalSettings } = useSelector((state) => state.app);
@@ -233,6 +239,29 @@ const Description = ({ item, onOpenComments, onDownloadPress, downloadStatus, do
 
   const videoId = item?.$id;
   const notificationService = new NotificationService();
+
+  // Measure where the entire Description block ends so the parent
+  // VideoPlayer can use that as the shrink-on-scroll dead-zone. We use
+  // onLayout on the outer wrapper directly because:
+  //   • Description is the first child of the RECOMMENDED ScrollView
+  //     (no paddingTop), so its top is at scrollY=0 and its onLayout
+  //     height is the exact y where the description ends in scroll
+  //     coordinates.
+  //   • onLayout on the wrapper fires reliably once layout settles AND
+  //     re-fires whenever the height changes (e.g., when the user taps
+  //     "See more" to expand description text), so the dead-zone stays
+  //     in sync with the visible content.
+  //   • Earlier we tried measureLayout against the avatar/username row,
+  //     but two issues bit us: (1) "uploader name" in the user's
+  //     mental model includes the action-buttons row + description
+  //     text right below, not just the avatar+label, and (2)
+  //     measureLayout can silently no-op if the ancestor's layout
+  //     hasn't finished by the time the child's onLayout fires.
+  const handleDescriptionLayout = useCallback((e) => {
+    const { height } = e?.nativeEvent?.layout || {};
+    if (!Number.isFinite(height) || height <= 0) return;
+    onDescriptionLayout?.(height);
+  }, [onDescriptionLayout]);
 
   useEffect(() => {
     if (videoId && user?.$id) loadVideoStats(videoId, user.$id);
@@ -246,6 +275,10 @@ const Description = ({ item, onOpenComments, onDownloadPress, downloadStatus, do
 
   const stats = getVideoStats(videoId);
   const likeCount = stats.videoLikes ?? item.videoStats?.totalLikes ?? 0;
+  // viewCount mirrors the likeCount pattern — live via the provider after
+  // loadVideoStats lands, falling back to the static count from
+  // mapRowToVideo until the round-trip resolves.
+  const viewCount = stats.videoViews ?? item.videoStats?.totalViews ?? 0;
   const joinedTags = Array.isArray(item?.tags) ? item.tags.filter(Boolean).join(" • ") : "";
   const postedDate = new Date(item?.$createdAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 
@@ -264,6 +297,9 @@ const Description = ({ item, onOpenComments, onDownloadPress, downloadStatus, do
         } else {
           await FollowService.followUser({ followerId: user?.$id, followingId: item?.uploader?.$id });
           setIsFollowing(true);
+          // ABUSE DEFENSE: dedup by following_id so unfollow→refollow
+          // can't farm. See Profile.jsx for the full rule.
+          if (item?.uploader?.$id) tickGoalUnique("follow_user", `follow:${item.uploader.$id}`);
 
           // Prevent duplicate follow notifications on the same day
           const alreadyNotified = await notificationService.checkFollowNotificationExists({
@@ -302,7 +338,7 @@ const Description = ({ item, onOpenComments, onDownloadPress, downloadStatus, do
         : "Download";
 
   return (
-    <View className="space-y-3 px-2 py-2">
+    <View onLayout={handleDescriptionLayout} className="space-y-3 px-2 py-2">
       <View className="rounded-2xl border p-3" style={{ borderColor: theme.border, backgroundColor: theme.card }}>
         <View className="flex-row justify-between space-x-2">
           <Text className="flex-1 font-sans text-base font-bold" style={{ color: theme.text }}>
@@ -332,7 +368,7 @@ const Description = ({ item, onOpenComments, onDownloadPress, downloadStatus, do
                   {FormatNumber((likeCount || 0) * (Number(globalSettings["LIKES_MULTIPLIER"]) || 1))} {"Likes "}
                 </Text>
                 <Text className="font-sans text-[11px]" style={{ color: theme.textMuted }}>
-                  {FormatNumber((item?.videoStats?.totalViews || 0) * (Number(globalSettings["VIEWS_MULTIPLIER"]) || 1))} {"Views "}
+                  {FormatNumber((viewCount || 0) * (Number(globalSettings["VIEWS_MULTIPLIER"]) || 1))} {"Views "}
                 </Text>
                 <Text className="font-sans text-[11px]" style={{ color: theme.textSoft }} numberOfLines={1}>
                   {postedDate}
@@ -405,6 +441,8 @@ const Description = ({ item, onOpenComments, onDownloadPress, downloadStatus, do
 const RecommendedVideos = React.memo(({ videos, isHidden }) => {
   const { globalSettings } = useSelector((state) => state.app);
   const { theme } = useAppTheme();
+  const { user } = useGlobalContext();
+  const { getVideoStats, batchLoadVideoStats } = useVideosStats();
   const [filteredVideos, setFilteredVideos] = useState([]);
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -425,6 +463,16 @@ const RecommendedVideos = React.memo(({ videos, isHidden }) => {
   useEffect(() => {
     fetchRecommendations();
   }, [fetchRecommendations]);
+
+  // Pre-load engagement counts for the recommended list in a single
+  // batch — same pattern the videos tab uses. The provider's built-in
+  // already-loaded filter dedupes across remounts so re-rendering this
+  // section doesn't fan out duplicate round-trips.
+  useEffect(() => {
+    if (!user?.$id || filteredVideos.length === 0) return;
+    const ids = filteredVideos.map((v) => v?.$id).filter(Boolean);
+    if (ids.length > 0) batchLoadVideoStats(ids, user.$id);
+  }, [filteredVideos, user?.$id, batchLoadVideoStats]);
 
   useEffect(() => {
     setFilteredVideos((prev) =>
@@ -620,7 +668,7 @@ const RecommendedVideos = React.memo(({ videos, isHidden }) => {
                           style={{ color: theme.textSoft, fontSize: 10, fontWeight: "600", letterSpacing: 0.1 }}
                           numberOfLines={1}
                         >
-                          {FormatNumber((item?.videoStats?.totalViews || 0) * (Number(globalSettings?.["VIEWS_MULTIPLIER"]) || 1))}
+                          {FormatNumber(((getVideoStats(item?.$id).videoViews ?? item?.videoStats?.totalViews) || 0) * (Number(globalSettings?.["VIEWS_MULTIPLIER"]) || 1))}
                           {" views"}
                         </Text>
                         <Text className="font-sans" style={{ color: theme.textSoft, fontSize: 10 }}>
@@ -658,6 +706,10 @@ const CommentSection = React.memo(
     suppressMentionOverlay,
     onCloseComments,
     onCommentCountChange,
+    // YouTube-style shrink-on-scroll: parent passes a throttled
+    // scroll-Y handler down so it can blend the comment list's
+    // scroll position into the video container's animated height.
+    onCommentsScroll,
   }) => {
     const insets = useSafeAreaInsets();
     const { theme } = useAppTheme();
@@ -838,6 +890,7 @@ const CommentSection = React.memo(
         if (!commentId || !isOwnedByCurrentUser(comment?.commentOwner)) return;
 
         try {
+          let replyIdsForSupabase = [];
           try {
             const repliesToDelete = await databases.listDocuments(
               secrets.appwriteConfig.databaseId,
@@ -845,18 +898,25 @@ const CommentSection = React.memo(
               [Query.equal("videoComments", commentId), Query.limit(200)],
             );
 
+            replyIdsForSupabase = (repliesToDelete?.documents || []).map((r) => r?.$id).filter(Boolean);
             await Promise.all(
-              (repliesToDelete?.documents || [])
-                .filter((reply) => reply?.$id)
-                .map((reply) =>
-                  databases.deleteDocument(secrets.appwriteConfig.databaseId, secrets.appwriteConfig.videosCommentRepliesCollectionId, reply.$id),
-                ),
+              replyIdsForSupabase.map((replyId) =>
+                databases.deleteDocument(secrets.appwriteConfig.databaseId, secrets.appwriteConfig.videosCommentRepliesCollectionId, replyId),
+              ),
             );
           } catch (replyDeleteErr) {
             console.log("handleDeleteComment (replies): error", replyDeleteErr);
           }
 
           await databases.deleteDocument(secrets.appwriteConfig.databaseId, secrets.appwriteConfig.videosCommentsCollectionId, commentId);
+          // Mirror the delete on Supabase (unified `comments` table). One
+          // bulk call for replies + one for the parent. Best-effort.
+          try {
+            await dualWriteDeleteCommentsBulk(replyIdsForSupabase);
+            await dualWriteDeleteComment({ appwriteDocId: commentId });
+          } catch (sbErr) {
+            console.log("handleDeleteComment: Supabase mirror skipped", sbErr?.message);
+          }
 
           setComments((prev) => prev.filter((existingComment) => String(existingComment?.$id || "") !== commentId));
 
@@ -887,6 +947,12 @@ const CommentSection = React.memo(
 
         try {
           await databases.deleteDocument(secrets.appwriteConfig.databaseId, secrets.appwriteConfig.videosCommentRepliesCollectionId, replyId);
+          // Mirror to Supabase. Best-effort.
+          try {
+            await dualWriteDeleteComment({ appwriteDocId: replyId });
+          } catch (sbErr) {
+            console.log("handleDeleteReply: Supabase mirror skipped", sbErr?.message);
+          }
 
           setComments((prev) =>
             prev.map((commentItem) =>
@@ -1052,13 +1118,17 @@ const CommentSection = React.memo(
       try {
         setCommentsLoading(true);
 
-        const res = await databases.listDocuments(secrets.appwriteConfig.databaseId, secrets.appwriteConfig.videosCommentsCollectionId, [
-          Query.limit(Number(globalSettings["COMMENT_SECTION_QUERY_LIMIT"])),
-          Query.equal("video", videoID),
-          Query.orderDesc("$createdAt"),
-        ]);
+        // Routes through the lib/video dispatcher → Supabase impl when
+        // USE_SUPABASE_VIDEOS is on. The previous direct
+        // databases.listDocuments call still hit Appwrite even after
+        // cutover and threw "not authorized" because the user no longer
+        // has an Appwrite session.
+        const res = await fetchVideoComments({
+          videoId: videoID,
+          limit: Number(globalSettings["COMMENT_SECTION_QUERY_LIMIT"]) || 30,
+        });
 
-        const baseComments = res.documents || [];
+        const baseComments = res?.documents || [];
         const topCommentIds = baseComments.map((comment) => comment?.$id).filter(Boolean);
         let commentsWithReplies = baseComments;
 
@@ -2455,6 +2525,8 @@ const CommentSection = React.memo(
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="none"
+          onScroll={onCommentsScroll}
+          scrollEventThrottle={16}
         >
           {commentsLoading ? (
             <View className="flex-1 items-center justify-center py-10">
@@ -2745,7 +2817,7 @@ const VideoPlayer = () => {
   const shouldOpenCommentsFromNotification = Boolean(focusCommentIdParam || focusReplyIdParam);
   const currentVideoIdentityKey = currentVideoDocId || currentVideoUri;
 
-  const { user, refetchBalance, allVideos, balance, starsData, refetchStars, setStarsData } = useGlobalContext();
+  const { user, chatUserId, refetchBalance, allVideos, balance, starsData, refetchStars, setStarsData } = useGlobalContext();
   const { theme } = useAppTheme();
   const dispatch = useDispatch();
   const { globalSettings } = useSelector((state) => state.app);
@@ -2788,6 +2860,39 @@ const VideoPlayer = () => {
   const [screenKeyboardHeight, setScreenKeyboardHeight] = useState(0);
   const [commentTabCount, setCommentTabCount] = useState(() => resolveVideoCommentCount(video) ?? 0);
   const [androidNativeControlsReady, setAndroidNativeControlsReady] = useState(Platform.OS !== "android");
+  // YouTube-style shrink-on-scroll. Two-phase behavior:
+  //
+  //   1. Dead-zone (scrollY 0..descriptionEndY): the video stays at its
+  //      full 9:16 height. The dead-zone is dynamic — Description
+  //      measures its own height via onLayout and reports it back via
+  //      setDescriptionEndY. So the shrink starts exactly when the
+  //      entire description block (title + uploader + action buttons +
+  //      description text) has scrolled offscreen, regardless of how
+  //      long the title is or whether the user has expanded the
+  //      description text via "See more."
+  //
+  //   2. Active shrink (scrollY descriptionEndY..descriptionEndY + 120):
+  //      the video tracks the finger 1:1 via Animated.Value.setValue()
+  //      — no easing animation. Direct setValue is the only way to
+  //      avoid the visible "wobble" from competing 220ms timing
+  //      animations that the original throttled-state approach created.
+  //
+  // The RETURN to 9:16 is intentionally different from the shrink. When
+  // the user scrolls back UP and crosses the dead-zone boundary, we run
+  // a 220ms eased Animated.timing back to the default height instead of
+  // 1:1 tracking. The eased return reads as a deliberate "snap back to
+  // full" gesture rather than the player chasing the user's finger,
+  // which felt buggy on the way up.
+  //
+  // Keyboard-driven compaction (Android, keyboard-during-commenting) is
+  // unchanged — it has its own infrequent timing animation in the
+  // useEffect below.
+  const [descriptionEndY, setDescriptionEndY] = useState(280);
+  const SCROLL_SHRINK_RANGE_PX = 120;
+  // Track previous scroll position so we only fire the eased "expand
+  // back" animation on the crossing event (above-threshold → below-
+  // threshold) rather than on every scroll tick within the dead-zone.
+  const lastScrollYRef = useRef(0);
 
   const firstLoad = useRef(true);
   const interval = useRef(null);
@@ -2916,6 +3021,8 @@ const VideoPlayer = () => {
 
   const monetizationActive = video?.monetization_enabled && !isUploader;
   const canControlPlayer = !monetizationActive || isUnlocked;
+
+
   const unlockTimeSeconds = useMemo(() => {
     const parsed = Number(globalSettings?.["VIDEO_UNLOCK_TIME"]);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 180;
@@ -3015,14 +3122,31 @@ const VideoPlayer = () => {
 
   // height = width / aspectRatio. Default 16/9 → height = width * 9/16
   // (preserves the original landscape rendering); a portrait video at
-  // 9/16 → height = width * 16/9 (taller player, no letterboxing).
-  const defaultVideoPlayerHeight = useMemo(() => windowWidth / videoAspectRatio, [windowWidth, videoAspectRatio]);
+  // 9/16 → height = width * 16/9 (taller player).
+  //
+  // Cap portrait videos at 60% of screen height — YouTube's behavior.
+  // Without this clamp, a 9:16 short on a 390×844 screen would render
+  // ~693px tall, eating the title row and the entire recommendations
+  // section below. With the clamp, VideoView's default contentFit="contain"
+  // letterboxes the portrait video horizontally inside the wider box,
+  // leaving the rest of the screen for metadata + comments.
+  const MAX_PLAYER_HEIGHT_FRACTION = 0.6;
+  const defaultVideoPlayerHeight = useMemo(() => {
+    const naturalHeight = windowWidth / videoAspectRatio;
+    const cap = screenHeight * MAX_PLAYER_HEIGHT_FRACTION;
+    return Math.min(naturalHeight, cap);
+  }, [windowWidth, videoAspectRatio, screenHeight]);
   const compactVideoPlayerHeight = useMemo(() => {
     const compactFloor = screenHeight < 700 ? 92 : screenHeight < 780 ? 104 : 116;
     const scaledCompactHeight = defaultVideoPlayerHeight * 0.54;
     return Math.max(compactFloor, Math.min(defaultVideoPlayerHeight - 44, scaledCompactHeight));
   }, [defaultVideoPlayerHeight, screenHeight]);
-  const androidKeyboardInset = useMemo(
+  // `getKeyboardViewportInset` is platform-aware — on Android it
+  // subtracts the OS-driven viewport reduction (some OEMs resize the
+  // root view when the IME comes up, which would otherwise double-count
+  // toward the shrink); on iOS it returns the raw keyboard height since
+  // the system doesn't auto-resize the view.
+  const keyboardInset = useMemo(
     () =>
       getKeyboardViewportInset({
         keyboardHeight: screenKeyboardHeight,
@@ -3031,14 +3155,72 @@ const VideoPlayer = () => {
       }),
     [screenKeyboardHeight, windowHeight],
   );
-  const shouldCompressVideoForKeyboard = Platform.OS === "android" && displayComp === "COMMENTS" && androidKeyboardInset > 0;
-  const targetVideoPlayerHeight = useMemo(() => {
-    if (!shouldCompressVideoForKeyboard) return defaultVideoPlayerHeight;
+  // Compress the video on BOTH platforms whenever the keyboard is up
+  // during a comment reply. Originally Android-only because that was
+  // the regression we hit (no native KeyboardAvoidingView push), but
+  // the user wants iOS to shrink too so the comment thread stays
+  // visible while typing — same UX as TikTok/IG.
+  const shouldCompressVideoForKeyboard = displayComp === "COMMENTS" && keyboardInset > 0;
 
+  // Keyboard-driven target — used whenever the keyboard is up during a
+  // comment reply, on both iOS and Android. Easing through
+  // Animated.timing reads as polished here because keyboard events fire
+  // once on open/close, not continuously like scroll.
+  //
+  // Portrait videos get the most aggressive treatment. Math for an
+  // iPhone-13-class device (screen ~844, keyboard ~336) without this
+  // branch:
+  //   visible-with-keyboard ≈ 508px
+  //   - status bar          ≈ 47
+  //   - header              ≈ 44
+  //   - tabs row            ≈ 50
+  //   - composer            ≈ 60
+  //   - portrait video at 0.6×screen-cap, 0.54×compact ≈ 273
+  //   →  remaining for the comment list ≈ 34px
+  // i.e. the user can't actually see any comments while typing — same
+  // bug surfaced in the user's screenshot. Snapping to a flat 130px
+  // brings the comment list to ~177px, which is enough to show two or
+  // three messages and a "more above" affordance. 130 is the same
+  // ballpark as TikTok / IG Reels' inline-mini-player when the
+  // composer is focused.
+  const KEYBOARD_PORTRAIT_VIDEO_HEIGHT = 130;
+  // "Resting" height — what the video sits at when there's no keyboard
+  // and no active scroll-shrink. Branches on the active tab so that a
+  // user opening COMMENTS on a portrait video gets immediate breathing
+  // room for the comment list, even when the list is empty / short and
+  // there's nothing to scroll. Without this, the video stayed at its
+  // full ~60%-of-screen height on a 9:16 source and the comments panel
+  // was squeezed into ~30% of the screen — surfacing as the "0 comments"
+  // strip in the user's first screenshot.
+  //
+  // Target match: the COMMENTS-tab-no-keyboard view should look like the
+  // COMMENTS-tab-with-keyboard view (screenshot 2): video at the
+  // KEYBOARD_PORTRAIT_VIDEO_HEIGHT mini-player size, comment list
+  // taking the full remaining viewport with the empty-state CTA visible.
+  // The earlier compromise (compactVideoPlayerHeight ≈ 273px on iPhone
+  // 13) wasn't aggressive enough — comments still got squeezed below
+  // the fold. Snapping straight to the same 130px mini-player size as
+  // the keyboard path gives a consistent feel: tap the comment button
+  // OR tap the input — same compact video, same comment-first layout.
+  // Landscape / square videos stay full-size (already leave plenty of
+  // room below — see the same gating on the scroll-shrink path).
+  const restingVideoPlayerHeight = useMemo(() => {
+    if (videoAspectRatio < 1 && displayComp === "COMMENTS") {
+      return Math.min(KEYBOARD_PORTRAIT_VIDEO_HEIGHT, defaultVideoPlayerHeight);
+    }
+    return defaultVideoPlayerHeight;
+  }, [videoAspectRatio, displayComp, defaultVideoPlayerHeight]);
+  const targetVideoPlayerHeight = useMemo(() => {
+    if (!shouldCompressVideoForKeyboard) return restingVideoPlayerHeight;
+    if (videoAspectRatio < 1) {
+      // Don't ever go larger than the natural cap (defensive — some
+      // tiny-screen devices could compute a default below 130).
+      return Math.min(KEYBOARD_PORTRAIT_VIDEO_HEIGHT, defaultVideoPlayerHeight);
+    }
     const maxReduction = Math.max(0, defaultVideoPlayerHeight - compactVideoPlayerHeight);
-    const desiredReduction = Math.max(72, androidKeyboardInset * 0.38);
+    const desiredReduction = Math.max(72, keyboardInset * 0.38);
     return Math.max(compactVideoPlayerHeight, defaultVideoPlayerHeight - Math.min(maxReduction, desiredReduction));
-  }, [androidKeyboardInset, compactVideoPlayerHeight, defaultVideoPlayerHeight, shouldCompressVideoForKeyboard]);
+  }, [keyboardInset, compactVideoPlayerHeight, defaultVideoPlayerHeight, shouldCompressVideoForKeyboard, videoAspectRatio, restingVideoPlayerHeight]);
 
   useEffect(() => {
     Animated.timing(playerHeightAnim, {
@@ -3047,6 +3229,134 @@ const VideoPlayer = () => {
       useNativeDriver: false,
     }).start();
   }, [playerHeightAnim, shouldCompressVideoForKeyboard, targetVideoPlayerHeight]);
+
+  // Shrink only applies to portrait sources. 16:9 landscape clips
+  // render at ~26% of screen height by default — they already leave
+  // plenty of room for description + recommendations below, so
+  // shrinking would be both unnecessary and visually distracting.
+  // Square (1:1) videos take ~45% of screen and are borderline; we
+  // keep them stable too since the user explicitly called out that
+  // 16:9 has "enough spaces" — strict-portrait gate matches that
+  // intent. Threshold is < 1.0 (width/height ratio).
+  const isPortraitVideo = videoAspectRatio < 1;
+
+  // Scroll → height. Dead-zone keeps the video full while the user
+  // reads title + uploader; past the dead-zone, direct setValue tracks
+  // the finger; crossing back into the dead-zone triggers a one-shot
+  // eased return-to-default. Keyboard path skips the whole thing,
+  // and so does any non-portrait video (no shrink for 16:9 / square).
+  //
+  // The dead-zone is tab-aware:
+  //   - RECOMMENDED tab: descriptionEndY (the measured Description
+  //     height). Holds the video full while the user reads
+  //     title + uploader + actions + description text.
+  //   - COMMENTS tab: 0. The comments panel has its own header
+  //     (refresh + close + count) above the inner ScrollView, so
+  //     scrollY=0 IS the top of the first comment. Any scroll within
+  //     the comments list signals "I want more room to read," and a
+  //     dead-zone there would mean short comment threads (less than
+  //     descriptionEndY pixels of content) could never trigger the
+  //     shrink at all.
+  const handleContentScroll = useCallback(
+    (e) => {
+      if (shouldCompressVideoForKeyboard) return;
+      if (!isPortraitVideo) return;
+      const y = e?.nativeEvent?.contentOffset?.y || 0;
+      const prev = lastScrollYRef.current;
+      lastScrollYRef.current = y;
+      const shrinkStart = displayComp === "COMMENTS" ? 0 : descriptionEndY;
+
+      if (y <= shrinkStart) {
+        // Inside the dead-zone. Only fire the eased expand on the actual
+        // crossing event (prev was outside the dead-zone). Skipping
+        // setValue here lets either the in-flight expand animation or a
+        // previously-set default height continue uninterrupted. We
+        // expand back to `restingVideoPlayerHeight` (NOT
+        // defaultVideoPlayerHeight) so that on the COMMENTS tab the
+        // tab-mode shrink is preserved — otherwise scrolling back to
+        // top on the comments list would inflate the video back to
+        // full size, undoing the IG-Reels-style auto-shrink the user
+        // explicitly asked for.
+        if (prev > shrinkStart) {
+          Animated.timing(playerHeightAnim, {
+            toValue: restingVideoPlayerHeight,
+            duration: 220,
+            useNativeDriver: false,
+          }).start();
+        }
+        return;
+      }
+
+      // Past the dead-zone — direct 1:1 tracking. stopAnimation cancels
+      // any in-flight expand from a previous dead-zone crossing so the
+      // setValue isn't overwritten by the timing animation's next frame.
+      //
+      // Skip the lerp entirely when resting is already at/below the
+      // compact target. That happens on the COMMENTS tab now that
+      // resting=130 (the keyboard mini-player size) — we'd otherwise
+      // lerp 130 → ~273 and grow the video as the user scrolls, which
+      // is the opposite of the intent. On the RECOMMENDED tab resting
+      // still equals default (~506px) so the original default → compact
+      // shrink lerp runs as before.
+      if (restingVideoPlayerHeight <= compactVideoPlayerHeight) {
+        return;
+      }
+      const effectiveY = y - shrinkStart;
+      const clamped = Math.max(0, Math.min(1, effectiveY / SCROLL_SHRINK_RANGE_PX));
+      const next =
+        restingVideoPlayerHeight + (compactVideoPlayerHeight - restingVideoPlayerHeight) * clamped;
+      playerHeightAnim.stopAnimation(() => {
+        playerHeightAnim.setValue(next);
+      });
+    },
+    [
+      shouldCompressVideoForKeyboard,
+      isPortraitVideo,
+      defaultVideoPlayerHeight,
+      compactVideoPlayerHeight,
+      restingVideoPlayerHeight,
+      playerHeightAnim,
+      descriptionEndY,
+      displayComp,
+    ],
+  );
+
+  // Reset the scroll-position tracker when switching tabs so the dead-
+  // zone crossing logic doesn't carry stale state across tabs (e.g.,
+  // user scrolled to y=400 on RECOMMENDED, switches to COMMENTS where
+  // the new ScrollView mounts at y=0 — without this reset, the next
+  // onScroll would see prev=400 and trigger an expand animation we
+  // don't want).
+  useEffect(() => {
+    lastScrollYRef.current = 0;
+  }, [displayComp]);
+
+  // Tab switch — eased reset back to whatever the resting height is
+  // for the NEW tab. Each tab's ScrollView mounts fresh at scrollY=0,
+  // so this gets us to the unshrunk-for-this-tab size before the user
+  // starts scrolling the new tab. Keyboard useEffect above takes
+  // precedence if the keyboard is up.
+  //
+  // CRITICAL: target is `restingVideoPlayerHeight`, NOT
+  // `defaultVideoPlayerHeight`. Using default forced the video back to
+  // ~506px on every tab change — even when entering COMMENTS where
+  // the new resting target is 130 (the IG-Reels mini-player size).
+  // The targetVideoPlayerHeight useEffect above would then race
+  // against this one with conflicting toValues, and whichever fired
+  // last won. Most of the time this one won (fewer deps → React
+  // schedules it later), which is why the user reported "you need to
+  // scroll down and scroll up the comments to make it going full" —
+  // only the dead-zone scroll-back-to-zero handler animates to
+  // restingVideoPlayerHeight, so manual scroll was the only way to
+  // override the default-clamp this effect kept re-applying.
+  useEffect(() => {
+    if (shouldCompressVideoForKeyboard) return;
+    Animated.timing(playerHeightAnim, {
+      toValue: restingVideoPlayerHeight,
+      duration: 200,
+      useNativeDriver: false,
+    }).start();
+  }, [displayComp, restingVideoPlayerHeight, playerHeightAnim, shouldCompressVideoForKeyboard]);
 
   const enableFeatures = (player, allowed) => {
     if (!player) return;
@@ -3865,6 +4175,113 @@ const VideoPlayer = () => {
     return () => sub?.remove();
   }, [player]);
 
+  // Resume-from-last-position — when the player mounts a new video,
+  // read the user's saved last_watched_seconds for that video and
+  // seek to it. Skipped when:
+  //   • The URL provided an explicit `startAt` query param (caller
+  //     wants a specific time, e.g. timestamp deep-link from a
+  //     comment). The existing startAtSeconds path handles that.
+  //   • The saved position is below 5s (effectively "didn't watch")
+  //     or within 30s of the end (effectively "finished") — same
+  //     boundaries the server-side feed_continue_watching uses.
+  //   • Player isn't ready yet — runs again when player binds.
+  // Only fires once per video.id mount; the playerRef guard
+  // prevents double-seeks if the effect is re-evaluated rapidly.
+  const resumeAttemptedForVideoIdRef = useRef(null);
+  useEffect(() => {
+    const videoUuid = video?.id;
+    if (!player || !videoUuid) return;
+    // Already attempted resume for this exact video — don't loop.
+    if (resumeAttemptedForVideoIdRef.current === videoUuid) return;
+    // Caller requested a specific startAt — defer to that.
+    if (startAtSeconds !== null) {
+      resumeAttemptedForVideoIdRef.current = videoUuid;
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const saved = await fetchVideoProgress({ videoId: videoUuid });
+        if (cancelled) return;
+        const duration = Number(video?.duration);
+        const tail = Number.isFinite(duration) && duration > 0
+          ? Math.max(5, Math.min(30, duration / 10))
+          : 30;
+        // Skip on "barely watched" or "essentially finished".
+        if (saved < 5) {
+          resumeAttemptedForVideoIdRef.current = videoUuid;
+          return;
+        }
+        if (Number.isFinite(duration) && duration > 0 && saved >= duration - tail) {
+          resumeAttemptedForVideoIdRef.current = videoUuid;
+          return;
+        }
+        // Seek. expo-video's currentTime setter is best-effort; no
+        // event ack to await.
+        try {
+          if (typeof player.seek === "function") {
+            player.seek(saved);
+          } else {
+            player.currentTime = saved;
+          }
+        } catch {}
+        resumeAttemptedForVideoIdRef.current = videoUuid;
+      } catch (err) {
+        if (__DEV__) console.log("[player] resume fetch failed:", err?.message);
+        resumeAttemptedForVideoIdRef.current = videoUuid;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [player, video?.id, video?.duration, startAtSeconds]);
+
+  // Watch-progress tick — writes the user's current playback position
+  // to public.video_progress every ~10s while the video is actively
+  // playing. Powers the Continue Watching shelf via
+  // feed_continue_watching (migration_video_shelves_v4.sql).
+  //
+  // Why on a 10s cadence rather than every timeUpdate (which fires
+  // ~10× / second): the RPC is a SECURITY DEFINER upsert and we don't
+  // need second-level resolution. 10s is a reasonable resume-position
+  // granularity — if the user closes the app, the worst-case lost
+  // progress is the last 10s, which they'll naturally re-watch on
+  // resume anyway.
+  //
+  // Skips the legacy Appwrite-hex `$id` and only fires when we have
+  // a real UUID (videos.id), since tick_video_progress validates uuid
+  // server-side. Migrated 541939 videos still tick correctly because
+  // the mapper sets both id (UUID) and $id (legacy hex) — we use id.
+  useEffect(() => {
+    const videoUuid = video?.id;
+    if (!player || !videoUuid) return;
+    // Resolve the writer's user id ONCE per video mount. We prefer
+    // the chat user UUID (already resolved at sign-in to the
+    // Supabase id even on the legacy Appwrite-auth path) over user.$id
+    // (which on Appwrite-auth is the legacy hex). Without an explicit
+    // user id, the SECURITY DEFINER RPC's auth.uid() returns NULL on
+    // the legacy auth path and the function silently no-ops — that's
+    // why production showed video_progress rows with last_watched_seconds=0.
+    const writerUserId = chatUserId || user?.id || user?.$id || null;
+    let lastTickAt = 0;
+    const TICK_INTERVAL_MS = 10_000;
+    const sub = player.addListener("timeUpdate", ({ currentTime }) => {
+      if (playerRef.current !== player) return;
+      if (!playerRef.current?.playing && !lastKnownPlayingRef.current) return;
+      const now = Date.now();
+      if (now - lastTickAt < TICK_INTERVAL_MS) return;
+      lastTickAt = now;
+      // Fire-and-forget; failures are logged in the helper (DEV only)
+      // and don't block playback.
+      void tickVideoProgress({
+        videoId: videoUuid,
+        seconds: currentTime,
+        userId: writerUserId,
+      });
+    });
+    return () => sub?.remove();
+  }, [player, video?.id, chatUserId, user?.$id]);
+
   useFocusEffect(
     useCallback(() => {
       isScreenFocusedRef.current = true;
@@ -4004,6 +4421,40 @@ const VideoPlayer = () => {
     return () => sub?.remove();
   }, [player, monetizationActive, isUnlocked, unlockTimeSeconds]);
 
+  // Goal tracking: tick `watch_video` once per full minute of natural
+  // playback. Skips backward seeks AND large forward jumps (>2s
+  // between time-update ticks = a seek, not real watching) so users
+  // can't farm minutes by scrubbing the timeline. Accumulates
+  // sub-minute progress so a session of 1m20s + 0m45s across two
+  // videos correctly logs 2 minutes total over the day.
+  useEffect(() => {
+    if (!player) return;
+    let lastTime = 0;
+    let initialized = false;
+    let accumulatedSeconds = 0;
+
+    const sub = player.addListener("timeUpdate", ({ currentTime }) => {
+      if (!initialized) {
+        lastTime = currentTime;
+        initialized = true;
+        return;
+      }
+      const delta = currentTime - lastTime;
+      lastTime = currentTime;
+      // Only count natural forward advancement (0 < delta < 2s).
+      // Larger jumps = seek, not watching. Negative delta = rewind.
+      if (delta > 0 && delta < 2) {
+        accumulatedSeconds += delta;
+        while (accumulatedSeconds >= 60) {
+          accumulatedSeconds -= 60;
+          tickGoal("watch_video", 1);
+        }
+      }
+    });
+
+    return () => sub?.remove();
+  }, [player]);
+
   useEffect(() => {
     setLockedProgress({ current: 0, duration: unlockTimeSeconds || 0 });
     setLockedProgressVisible(false);
@@ -4098,7 +4549,12 @@ const VideoPlayer = () => {
         const videoUrl = foundVideo?.videoUrl;
         const guid = typeof videoUrl === "string" ? videoUrl.split("/").filter(Boolean)[2] : null;
         if (guid) {
-          const videoData = await videosService.checkVideoStatus({ videoId: guid });
+          // Selebox spans two Bunny Stream libraries — pass the
+          // per-video library_id so we poll the right one. The DB
+          // populates bunny_library_id on web uploads; legacy mobile
+          // rows fall back to the secret default.
+          const libraryId = foundVideo?.bunny_library_id || foundVideo?.libraryId;
+          const videoData = await videosService.checkVideoStatus({ videoId: guid, libraryId });
           if (videoData?.status === 4) {
             !isCancelled && setSuccess(true);
           } else if (videoData?.status === 2 || videoData?.status === 3) {
@@ -4106,6 +4562,7 @@ const VideoPlayer = () => {
           } else if (videoData?.status === 5 || videoData?.status === 6) {
             !isCancelled && setError(true);
           }
+          // null / 404 = unknown library or deleted; leave UI in default state.
         }
 
         const coinData = await getCoinDeductionByTags(foundVideo.tags);
@@ -4114,11 +4571,22 @@ const VideoPlayer = () => {
         let alreadyUnlocked = !foundVideo?.monetization_enabled || uploaderMatch;
 
         if (!alreadyUnlocked && user?.$id) {
-          try {
-            const unlockedRes = await videoUnlockService.getUserUnlockedVideo({ videoId: foundVideo.$id, userId: user.$id });
-            alreadyUnlocked = unlockedRes?.total > 0;
-          } catch (unlockErr) {
-            console.error("Check unlock failed:", unlockErr?.message || unlockErr);
+          // Skip the legacy Appwrite fast-path check under the new
+          // wallet model. The Supabase `unlock_video_threshold` RPC
+          // writes a sentinel `paid_through_seconds` for permanent
+          // (coin-path) unlocks, and useAutoUnlock reads that on mount
+          // via getPaidThroughSeconds — `computeNextThresholdSeconds`
+          // returns a threshold past the video's duration, so the
+          // modal listener never fires. The Appwrite collection
+          // (`unlockedVideosCollection`) is no longer the source of
+          // truth and the call would 401 with no auth session.
+          if (!USE_SUPABASE_WALLET) {
+            try {
+              const unlockedRes = await videoUnlockService.getUserUnlockedVideo({ videoId: foundVideo.$id, userId: user.$id });
+              alreadyUnlocked = unlockedRes?.total > 0;
+            } catch (unlockErr) {
+              console.error("Check unlock failed:", unlockErr?.message || unlockErr);
+            }
           }
         }
 
@@ -4671,6 +5139,7 @@ const VideoPlayer = () => {
                       setDisplayComp("RECOMMENDED");
                     }}
                     onCommentCountChange={setCommentTabCount}
+                    onCommentsScroll={handleContentScroll}
                   />
                 ) : (
                   <ScrollView
@@ -4683,6 +5152,15 @@ const VideoPlayer = () => {
                     onScrollBeginDrag={handleVideoScrollBeginDrag}
                     onScrollEndDrag={handleVideoScrollSettled}
                     onMomentumScrollEnd={handleVideoScrollSettled}
+                    // Drives the YouTube-style player shrink as the user
+                    // scrolls through description + Up Next. Same handler
+                    // the COMMENTS tab uses, so flipping between tabs and
+                    // scrolling either one keeps the shrink behavior
+                    // consistent. scrollEventThrottle=16 ≈ 60fps native
+                    // scroll events; the handler itself is throttled to
+                    // ~20fps to keep React re-renders reasonable.
+                    onScroll={handleContentScroll}
+                    scrollEventThrottle={16}
                   >
                     {/* DESCRIPTION */}
                     <Description
@@ -4693,6 +5171,7 @@ const VideoPlayer = () => {
                       onDownloadPress={handleDownloadVideo}
                       downloadStatus={currentVideoDownloadStatus}
                       downloadDisabled={isCurrentVideoDownloading || isUnlocking}
+                      onDescriptionLayout={setDescriptionEndY}
                     />
 
                     {/* PLAYBACK ACTIONS + TAB TOGGLES */}

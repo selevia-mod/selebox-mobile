@@ -13,6 +13,7 @@ export const videosPersistConfig = {
   storage: reduxStorage,
   whitelist: [
     "baseVideos",
+    "baseVideosDataVersion",
     "audiobookSectionsCacheVersion",
     "audiobookSectionsLimit",
     "mostPeopleWant",
@@ -25,6 +26,19 @@ export const videosPersistConfig = {
     "youMightLike",
     "popularInYourArea",
     "latestVideos",
+    // v4 shelves — persisted so cold-start hydration doesn't paint
+    // empty slots while the network refetch is in flight. Re-derived
+    // from the cached baseVideos pool on every focus regardless, so
+    // the order rotates between sessions even when the cache is warm.
+    "quickPicks",
+    "hiddenGems",
+    "underratedForYou",
+    "bingeWorthy",
+    // v6/v7 server-driven shelves
+    "risingCreators",
+    "becauseYouWatched",
+    "becauseYouWatchedAnchor",
+    "fromYourFollowers",
     "categoryVideos",
     "downloadedVideos",
     "downloadSettings",

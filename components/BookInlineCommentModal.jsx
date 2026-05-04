@@ -43,6 +43,7 @@ import {
 import { fetchUsersByQuery, getUserByID } from "../lib/users";
 import AnimatedSkeleton from "./AnimatedSkeleton";
 import UserMention from "./UserMention";
+import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 
 const SCREEN_HEIGHT = Dimensions.get("window").height;
 const LIMIT = 20;
@@ -266,9 +267,12 @@ const BookInlineCommentItem = memo(
                 }}
               >
                 <TouchableOpacity onPress={() => onProfilePress?.(item)}>
-                  <Text className="font-sans text-sm font-semibold" style={{ color: palette.ownerText }}>
-                    {item?.commentOwner?.username || "Deleted User"}
-                  </Text>
+                  <View className="flex-row items-center">
+                    <Text className="font-sans text-sm font-semibold" style={{ color: palette.ownerText }}>
+                      {item?.commentOwner?.username || "Deleted User"}
+                    </Text>
+                    <UserRoleBadgeIcons user={item?.commentOwner} size={14} />
+                  </View>
                 </TouchableOpacity>
                 {isOwnComment ? (
                   <TouchableOpacity
@@ -360,9 +364,12 @@ const BookInlineCommentItem = memo(
                               }}
                             >
                               <TouchableOpacity onPress={() => onProfilePress?.(reply)}>
-                                <Text className="font-sans text-xs font-semibold" style={{ color: palette.ownerText }}>
-                                  {reply?.commentOwner?.username || "Deleted User"}
-                                </Text>
+                                <View className="flex-row items-center">
+                                  <Text className="font-sans text-xs font-semibold" style={{ color: palette.ownerText }}>
+                                    {reply?.commentOwner?.username || "Deleted User"}
+                                  </Text>
+                                  <UserRoleBadgeIcons user={reply?.commentOwner} size={12} />
+                                </View>
                               </TouchableOpacity>
                               {!reply?.isPending &&
                               userId &&

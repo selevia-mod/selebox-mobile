@@ -25,6 +25,7 @@ import { Feather, MaterialIcons } from "@expo/vector-icons";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
+import { MMKV } from "react-native-mmkv";
 import { Profile, StyledSafeAreaView, StyledTitle } from "../../components";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
@@ -33,26 +34,112 @@ import { listBlockedUsers, unblockUser } from "../../lib/safety";
 import { getUserByID } from "../../lib/users";
 import { VideosService } from "../../lib/video";
 
-// Module-level so it survives across mounts. 5 minutes is short enough that
-// stale data rarely matters (the most volatile fields here are bio + banner)
-// but long enough that flicking back-and-forth between two creators feels
-// instant.
+// Two-tier cache for creator profiles:
+//   • In-memory Map (fastest, used for back-to-back navigation in same session)
+//   • MMKV-backed disk persistence (survives cold start)
+// Previously this was Map-only at module scope, so every cold start of the
+// app threw away the entire cache and the user saw "loading vibes" on
+// every single creator profile they opened. With MMKV persistence the
+// next-day app launch still hands a cached user to the first paint while
+// a silent refresh runs in the background.
+//
+// Freshness:
+//   - In-memory entries have an inline cachedAt; TTL gates them out.
+//   - Disk entries carry the same cachedAt; TTL also gates them on read.
+//   - 5min is long enough that flicking between creators feels instant,
+//     short enough that bio/banner edits land within one return-to-screen.
 const CREATOR_PROFILE_TTL_MS = 5 * 60 * 1000;
+// Stronger freshness gate for the focus refetch — if disk cache is
+// younger than this, skip the network call entirely. Web-style
+// "load once per minute" semantic.
+const CREATOR_PROFILE_REFRESH_TTL_MS = 60 * 1000;
 const CREATOR_PROFILE_CACHE = new Map();
+const profileStorage = new MMKV({ id: "selebox-profile-cache" });
 
 const readCachedUser = (userId) => {
+  if (!userId) return null;
+  // In-memory first.
   const cached = CREATOR_PROFILE_CACHE.get(userId);
-  if (!cached) return null;
-  if (Date.now() - cached.cachedAt > CREATOR_PROFILE_TTL_MS) {
-    CREATOR_PROFILE_CACHE.delete(userId);
+  if (cached) {
+    if (Date.now() - cached.cachedAt > CREATOR_PROFILE_TTL_MS) {
+      CREATOR_PROFILE_CACHE.delete(userId);
+    } else {
+      return cached.user;
+    }
+  }
+  // Fall through to MMKV. On cold start this is the only layer that has
+  // anything; promote it back into memory so subsequent reads in the
+  // session bypass the JSON parse cost.
+  try {
+    const blob = profileStorage.getString(`user:${userId}`);
+    if (!blob) return null;
+    const parsed = JSON.parse(blob);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (Date.now() - parsed.cachedAt > CREATOR_PROFILE_TTL_MS) {
+      profileStorage.delete(`user:${userId}`);
+      return null;
+    }
+    CREATOR_PROFILE_CACHE.set(userId, parsed);
+    return parsed.user;
+  } catch {
     return null;
   }
-  return cached.user;
+};
+
+const readCachedUserAge = (userId) => {
+  if (!userId) return Infinity;
+  const cached = CREATOR_PROFILE_CACHE.get(userId);
+  if (cached?.cachedAt) return Date.now() - cached.cachedAt;
+  try {
+    const blob = profileStorage.getString(`user:${userId}`);
+    if (!blob) return Infinity;
+    const parsed = JSON.parse(blob);
+    if (!parsed?.cachedAt) return Infinity;
+    return Date.now() - parsed.cachedAt;
+  } catch {
+    return Infinity;
+  }
 };
 
 const writeCachedUser = (userId, user) => {
   if (!userId || !user) return;
-  CREATOR_PROFILE_CACHE.set(userId, { user, cachedAt: Date.now() });
+  const entry = { user, cachedAt: Date.now() };
+  CREATOR_PROFILE_CACHE.set(userId, entry);
+  try {
+    profileStorage.set(`user:${userId}`, JSON.stringify(entry));
+  } catch {
+    // Disk write failure (e.g. storage full) shouldn't poison the
+    // in-memory layer — silent best-effort persistence.
+  }
+};
+
+// Persisted videos list per creator, mirroring the user-level cache.
+// Keyed `videos:<userId>` so it lives alongside the user blob in the
+// same MMKV instance. Same TTL semantics.
+const readCachedCreatorVideos = (userId) => {
+  if (!userId) return null;
+  try {
+    const blob = profileStorage.getString(`videos:${userId}`);
+    if (!blob) return null;
+    const parsed = JSON.parse(blob);
+    if (!parsed || !Array.isArray(parsed.videos)) return null;
+    if (Date.now() - parsed.cachedAt > CREATOR_PROFILE_TTL_MS) {
+      profileStorage.delete(`videos:${userId}`);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const writeCachedCreatorVideos = (userId, videos) => {
+  if (!userId || !Array.isArray(videos)) return;
+  try {
+    profileStorage.set(`videos:${userId}`, JSON.stringify({ videos, cachedAt: Date.now() }));
+  } catch {
+    // Best-effort; same rationale as writeCachedUser.
+  }
 };
 
 // Pulls the richest user payload we already have in memory for this userId,
@@ -84,12 +171,28 @@ const CreatorProfile = () => {
   // paints with the cached creator immediately. The fresh fetch below will
   // replace this placeholder once it resolves.
   const initialUser = useMemo(() => findCachedCreator(userId, allVideos), [userId, allVideos]);
+  // Pre-hydrate videos in this priority order:
+  //   1. allVideos (the global feed cache) — usually has the latest
+  //   2. MMKV-persisted creator videos cache — survives cold start
+  //   3. Empty until the network fetch resolves
+  const initialVideos = useMemo(() => {
+    if (!userId) return [];
+    if (allVideos?.length) {
+      const fromFeed = filterVideosByOwner(allVideos, userId);
+      if (fromFeed.length) return fromFeed;
+    }
+    const persisted = readCachedCreatorVideos(userId);
+    return persisted?.videos || [];
+  }, [allVideos, userId]);
   const [user, setUser] = useState(initialUser);
-  const [videos, setVideos] = useState(() => (allVideos?.length && userId ? filterVideosByOwner(allVideos, userId) : []));
+  const [videos, setVideos] = useState(initialVideos);
   // Only show the loading state if we don't already have *something* to show
   // for the user — i.e. it's a fresh creator we've never opened before AND
-  // none of their videos have hit our feed cache yet.
-  const [loading, setLoading] = useState(!initialUser);
+  // none of their videos have hit our feed cache OR the persisted MMKV
+  // cache yet. With MMKV persistence the loading state is now reserved
+  // for genuinely-first-time-open creators; everything else paints
+  // instantly from cache.
+  const [loading, setLoading] = useState(!initialUser && !initialVideos.length);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
   const videosService = useRef(new VideosService()).current;
@@ -123,7 +226,12 @@ const CreatorProfile = () => {
         setUser(userData);
         writeCachedUser(userId, userData);
       }
-      setVideos(videosData?.documents?.length ? videosData.documents : cachedVideos);
+      const finalVideos = videosData?.documents?.length ? videosData.documents : cachedVideos;
+      setVideos(finalVideos);
+      // Persist the freshly-fetched list so the next cold-start open of
+      // this creator paints videos immediately instead of after the
+      // network round-trip.
+      if (finalVideos?.length) writeCachedCreatorVideos(userId, finalVideos);
     } catch (error) {
       console.log("fetchUserAndVideos: error", error);
       if (!videos.length) {
@@ -138,7 +246,24 @@ const CreatorProfile = () => {
 
   useFocusEffect(
     useCallback(() => {
-      fetchUserAndVideos();
+      // Freshness gate — if we have a cached user younger than the
+      // refresh TTL (60s), skip the network refetch entirely. This
+      // is the main fix for "everytime I go to profile it gives a
+      // loading vibes": back-to-back opens within a minute now reuse
+      // the in-memory + MMKV cache without ANY network call.
+      // First-time-this-session opens still fetch fresh.
+      const cacheAge = readCachedUserAge(userId);
+      if (cacheAge < CREATOR_PROFILE_REFRESH_TTL_MS && hasLoadedOnce.current) {
+        // Cache is fresh AND we've already painted once in this mount
+        // — nothing to do. The on-mount paint already used the cache.
+      } else if (cacheAge < CREATOR_PROFILE_REFRESH_TTL_MS) {
+        // Cache is fresh but this is the first focus of the mount.
+        // Just hydrate from the cache and skip the network.
+        hasLoadedOnce.current = true;
+        setLoading(false);
+      } else {
+        fetchUserAndVideos();
+      }
 
       // Run the blocked-user check non-blocking. Previously this was awaited
       // inline alongside the user fetch, which delayed first paint by a full

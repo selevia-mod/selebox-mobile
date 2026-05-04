@@ -15,7 +15,9 @@ import { memo, useCallback, useEffect, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { useGlobalContext } from "../context/global-provider";
+import { useVideosStats } from "../context/video-stats-provider";
 import useAppTheme from "../hooks/useAppTheme";
+import { getBunnyImageUrl } from "../lib/bunny-image-url";
 import FormatNumber from "../lib/utils/format-number";
 import { formatDurationCompact, getVideoDurationSeconds } from "../lib/utils/video-duration";
 
@@ -29,7 +31,19 @@ const formatTagList = (tags = []) => {
 
 const VideoCardSmall = ({ item, isFlexColumn, customHeight, customWidth, ...props }) => {
   const { theme } = useAppTheme();
-  const { globalSettings } = useGlobalContext();
+  const { globalSettings, user } = useGlobalContext();
+  // Live engagement counts via VideoStatsProvider (same wiring as
+  // VideoCardNew). batchLoadVideoStats dedupes on already-loaded
+  // videos, so opening Profile > Videos doesn't fan out one round-
+  // trip per card. Falls back to the static `videoStats.total*`
+  // baked into mapRowToVideo so first-paint never lags.
+  const { getVideoStats, batchLoadVideoStats } = useVideosStats();
+  const videoId = item?.$id;
+  useEffect(() => {
+    if (!videoId || !user?.$id) return;
+    batchLoadVideoStats([videoId], user.$id);
+  }, [videoId, user?.$id, batchLoadVideoStats]);
+  const liveStats = getVideoStats(videoId);
 
   // Lazy duration — hoisted above the row/column branch so hook order is stable
   // regardless of which mode this card is in. Only the row path actually
@@ -63,15 +77,18 @@ const VideoCardSmall = ({ item, isFlexColumn, customHeight, customWidth, ...prop
   // Row mode (default) — used by Profile > Videos tab
   if (!isFlexColumn) {
     const viewsMultiplier = Number(globalSettings?.["VIEWS_MULTIPLIER"]) || 1;
-    const viewsValue = (item?.videoStats?.totalViews ?? item?.totalViews ?? 0) * viewsMultiplier;
-    const likesValue = item?.videoStats?.totalLikes ?? item?.totalLikes ?? 0;
+    const viewsValue = (liveStats.videoViews ?? item?.videoStats?.totalViews ?? item?.totalViews ?? 0) * viewsMultiplier;
+    const likesValue = liveStats.videoLikes ?? item?.videoStats?.totalLikes ?? item?.totalLikes ?? 0;
     const tagText = formatTagList(item?.tags);
 
     return (
       <TouchableOpacity activeOpacity={0.7} className="m-2 flex-row" onPress={handlePress} {...props}>
         <View style={{ width: ROW_THUMB_WIDTH, height: ROW_THUMB_HEIGHT, borderRadius: 8, overflow: "hidden", backgroundColor: theme.surfaceMuted }}>
           <FastImage
-            source={{ uri: item.thumbnail, priority: FastImage.priority.normal }}
+            source={{
+              uri: getBunnyImageUrl(item.thumbnail, { width: ROW_THUMB_WIDTH }),
+              priority: FastImage.priority.normal,
+            }}
             style={{ width: "100%", height: "100%" }}
             resizeMode={FastImage.resizeMode.cover}
           />
@@ -133,7 +150,10 @@ const VideoCardSmall = ({ item, isFlexColumn, customHeight, customWidth, ...prop
     <TouchableOpacity activeOpacity={0.7} className="mx-2" onPress={handlePress} {...props}>
       <View className="flex-column" style={{ width: customWidth ?? 150 }}>
         <FastImage
-          source={{ uri: item.thumbnail, priority: FastImage.priority.normal }}
+          source={{
+            uri: getBunnyImageUrl(item.thumbnail, { width: customWidth ?? 150 }),
+            priority: FastImage.priority.normal,
+          }}
           className="rounded-md"
           style={{ height: customHeight ?? 100, width: customWidth ?? 150, backgroundColor: theme.surfaceStrong }}
           resizeMode={FastImage.resizeMode.cover}

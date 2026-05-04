@@ -45,13 +45,20 @@ const Catalog = () => {
 
   const fetchUserBooks = async () => {
     try {
-      const booksData = await bookService.fetchBooks({ userId: user.$id });
+      // Pass actorUserId so fetchBooks routes through fetch_author_books
+      // RPC and surfaces drafts. Without this, the self-author detection
+      // depends on the messages-supabase user cache which is null right
+      // after signin (race condition) — drafts would silently fall off.
+      const booksData = await bookService.fetchBooks({
+        userId: user.$id,
+        actorUserId: user.$id,
+      });
       const newestBooks = booksData.documents || [];
       setLastId(newestBooks[newestBooks.length - 1]?.$id);
       setHasMore(newestBooks.length < booksData.total);
       dispatch(setUserBooks(newestBooks));
     } catch (error) {
-      console.log("fetchUserBooks: error", error);
+      console.error("fetchUserBooks: error", error);
     }
   };
 
@@ -59,7 +66,11 @@ const Catalog = () => {
     try {
       if (!lastId || !hasMore) return;
       setIsFetchingMore(true);
-      const booksData = await bookService.fetchBooks({ userId: user.$id, lastId: lastId });
+      const booksData = await bookService.fetchBooks({
+        userId: user.$id,
+        actorUserId: user.$id,
+        lastId: lastId,
+      });
       const uniqueBook = booksData.documents.filter((book) => !userBooks.some((existing) => existing.$id === book.$id));
       if (uniqueBook.length === 0) {
         setHasMore(false);
@@ -71,7 +82,7 @@ const Catalog = () => {
       dispatch(setUserBooks(updatedFetchedUserBooks));
       if (updatedFetchedUserBooks.length >= booksData.total) setHasMore(false);
     } catch (error) {
-      console.log("fetchMoreUserBooks: error", error);
+      console.error("fetchMoreUserBooks: error", error);
     } finally {
       setIsFetchingMore(false);
     }
@@ -101,7 +112,9 @@ const Catalog = () => {
           {
             text: "Yes",
             onPress: async () => {
-              await bookService.deleteBook({ ID: bookId });
+              // Pass userId so deleteBook resolves the Supabase actor for
+              // the SECURITY DEFINER RPC's ownership check.
+              await bookService.deleteBook({ ID: bookId, userId: user?.$id });
               fetchUserBooks();
             },
             style: "destructive",
@@ -110,7 +123,7 @@ const Catalog = () => {
         { cancelable: true },
       );
     } catch (error) {
-      console.log("handleDeleteBook: error", error);
+      console.error("handleDeleteBook: error", error);
     }
   };
 
@@ -150,7 +163,10 @@ const Catalog = () => {
         resolvedBook = userBooks.find((book) => book?.$id === draftBookId) || null;
       }
       if (!resolvedBook && draftBookId) {
-        resolvedBook = await bookService.fetchBook({ bookId: draftBookId });
+        // Pass actorUserId so the RPC path surfaces the user's own draft
+        // book — without it the anon SELECT returns null for is_public=
+        // false rows and "resume draft" silently fails.
+        resolvedBook = await bookService.fetchBook({ bookId: draftBookId, actorUserId: user?.$id });
       }
 
       if (!resolvedBook) {
@@ -166,7 +182,7 @@ const Catalog = () => {
         },
       });
     } catch (error) {
-      console.log("handleResumeLocalDraft: error", error);
+      console.error("handleResumeLocalDraft: error", error);
       Alert.alert("Cannot resume draft", "Unable to open offline draft right now.");
     }
   };

@@ -1,12 +1,8 @@
 import { Stack } from "expo-router";
 import { ThemedStatusBar } from "../../components";
 
-// Phase D — Stream Chat removed. The chat tab is fully Supabase-native;
-// no overlay provider or Stream client wiring is needed at the layout
-// level. The legacy `StreamChatLoader` component still exists in
-// `components/` for now but isn't imported by any active screen, so it
-// can be deleted alongside the `stream-chat-expo` dependency at the next
-// native rebuild.
+// Chat is Supabase-native. No overlay provider or third-party client
+// wiring needed at the layout level.
 const MessageLayout = () => {
   return (
     <>
@@ -19,6 +15,9 @@ const MessageLayout = () => {
         <Stack.Screen name="channel" options={{ headerShown: false }} />
         <Stack.Screen name="new-chat" options={{ headerShown: false }} />
         <Stack.Screen name="new-group" options={{ headerShown: false }} />
+        <Stack.Screen name="group-info" options={{ headerShown: false }} />
+        <Stack.Screen name="group-add-members" options={{ headerShown: false }} />
+        <Stack.Screen name="new-secret-chat" options={{ headerShown: false }} />
       </Stack>
 
       <ThemedStatusBar />

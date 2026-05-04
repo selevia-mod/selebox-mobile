@@ -1,7 +1,7 @@
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { Tabs, useNavigationContainerRef } from "expo-router";
 import { useEffect, useRef, useState } from "react";
-import { Animated, Keyboard, Platform, Pressable } from "react-native";
+import { Alert, Animated, Keyboard, Platform, Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BottomNavPopup, ThemedStatusBar } from "../../components";
 import useAppTheme from "../../hooks/useAppTheme";
@@ -82,7 +82,7 @@ const TabsLayout = () => {
 
       previousRoute.current = currentRoute;
 
-      const TAB_ROUTES = ["home", "clips", "videos", "books", "playlist"];
+      const TAB_ROUTES = ["home", "videos", "books", "playlist"];
 
       const isLeavingTabs = TAB_ROUTES.includes(prevRoute) && !TAB_ROUTES.includes(currentRoute);
       const timeSinceOpen = Date.now() - lastPopupOpenTime.current;
@@ -345,19 +345,50 @@ const TabsLayout = () => {
           })}
         />
 
+        {/* Reels — coming soon. Reuses the route slot left by the
+            retired Clips tab (clips.jsx still exists as a no-op route
+            file; expo-router needs the entry to register the slot).
+            tabPress is intercepted with e.preventDefault() so it never
+            navigates to the underlying clips screen. The user gets a
+            "Coming soon" alert instead. The icon + SOON badge make it
+            visually distinct from the active tabs without breaking the
+            tab bar's geometry. When Reels actually ships, swap the
+            tap handler for a real route push and remove the badge. */}
+
         <Tabs.Screen
           name="clips"
           options={{
-            title: "Clips",
-            tabBarIcon: ({ color, focused }) => <TabIcon outlineName="play-circle-outline" solidName="play-circle" color={color} focused={focused} />,
+            title: "Reels",
+            tabBarIcon: ({ color, focused }) => (
+              <View style={{ width: 30, height: 26, alignItems: "center", justifyContent: "center" }}>
+                <MaterialCommunityIcons name={focused ? "movie-open-play" : "movie-open-play-outline"} size={22} color={color} />
+                <View
+                  style={{
+                    position: "absolute",
+                    top: -4,
+                    right: -10,
+                    paddingHorizontal: 4,
+                    paddingVertical: 1,
+                    borderRadius: 6,
+                    backgroundColor: theme.primary,
+                  }}
+                  pointerEvents="none"
+                >
+                  <Text style={{ fontSize: 7, fontWeight: "700", letterSpacing: 0.3, color: theme.primaryContrast }}>
+                    SOON
+                  </Text>
+                </View>
+              </View>
+            ),
           }}
           listeners={() => ({
             tabPress: (e) => {
-              const currentRoute = navigationRef.current?.getCurrentRoute?.()?.name;
-              if (currentRoute === "clips") {
-                e.preventDefault();
-                handleTabPress("clips");
-              }
+              e.preventDefault();
+              Alert.alert(
+                "Reels is coming soon",
+                "We're building a fresh short-form video experience. Stay tuned — it'll be worth the wait.",
+                [{ text: "Got it" }],
+              );
             },
           })}
         />

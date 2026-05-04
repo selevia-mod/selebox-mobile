@@ -15,7 +15,6 @@ import useAppTheme from "../hooks/useAppTheme";
 import { UploadVideoToBunnyStorage } from "../lib/fetch-bunny-storage";
 import { createNewVideo, initialVideoForm, VideosService } from "../lib/video";
 import secrets from "../private/secrets";
-import ScrollFadeOverlay from "./ScrollFadeOverlay";
 import SectionDot from "./SectionDot";
 
 const UploadVideo = ({ showMessage }) => {
@@ -52,8 +51,11 @@ const UploadVideo = ({ showMessage }) => {
   const sizeLimitVideoUpload = globalSettings["VIDEO_UPLOAD_SIZE_MB"] * 1024 * 1024;
   const sizeLimitThumbnailUpload = globalSettings["THUMBNAIL_UPLOAD_SIZE_MB"] * 1024 * 1024;
   const sizeLimitTitleChars = globalSettings["TITLE_LIMIT_SIZE_CHARS"];
-  const sizeLimitTags = globalSettings["TAGS_LIMIT_MAX"];
-  const tags = JSON.parse(globalSettings["SORTED_CATEGORIES"]);
+  const sizeLimitTags = Number(globalSettings["TAGS_LIMIT_MAX"]) || 10;
+  // Free-typing tags (YouTube-style). Holds the in-flight composer text;
+  // committed tags live on videoForm.tags as before. Tags are now
+  // optional — no SORTED_CATEGORIES picker.
+  const [tagInput, setTagInput] = useState("");
   const MIN_MONETIZATION_DURATION_SECONDS = 180;
 
   const handlePublish = async () => {
@@ -176,11 +178,7 @@ const UploadVideo = ({ showMessage }) => {
       return true;
     }
 
-    if (!videoForm?.tags?.length) {
-      showMessage("Please select at least 1 tag.");
-      return true;
-    }
-
+    // Tags are now optional — only enforce the upper bound.
     if (videoForm?.tags?.length > sizeLimitTags) {
       showMessage(`Please ensure your total tags is under ${sizeLimitTags}.`);
       return true;
@@ -191,12 +189,62 @@ const UploadVideo = ({ showMessage }) => {
   const handleChange = (key, value) => {
     if (key === "title" || key === "description") {
       setVideoForm((prev) => ({ ...prev, [key]: value }));
-    } else if (key === "tags") {
-      setVideoForm((prev) => {
-        const updatedTags = prev.tags.includes(value) ? prev.tags.filter((t) => t !== value) : [...prev.tags, value];
-        return { ...prev, tags: updatedTags };
-      });
     }
+  };
+
+  // Free-typing tag helpers. `addTagFromInput` commits whatever's in
+  // `tagInput` (split on commas/whitespace) as one or more tag chips.
+  // De-dupes case-insensitively but preserves the first-seen casing on
+  // display. `removeTag` drops a chip by index.
+  const addTagFromInput = (rawInput) => {
+    const text = String(rawInput ?? tagInput).trim();
+    if (!text) return;
+    setVideoForm((prev) => {
+      const existing = prev.tags || [];
+      const existingLower = new Set(existing.map((t) => t.toLowerCase()));
+      const candidates = text
+        .split(/[,\n]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const additions = [];
+      for (const candidate of candidates) {
+        const lower = candidate.toLowerCase();
+        if (existingLower.has(lower)) continue;
+        if (existing.length + additions.length >= sizeLimitTags) break;
+        existingLower.add(lower);
+        additions.push(candidate);
+      }
+      if (additions.length === 0) return prev;
+      return { ...prev, tags: [...existing, ...additions] };
+    });
+    setTagInput("");
+  };
+
+  const handleTagInputChange = (text) => {
+    // Auto-commit when the user types a comma — matches YouTube's
+    // "press , to add" behavior. We don't auto-commit on space because
+    // multi-word tags like "true crime" are common.
+    if (text.endsWith(",")) {
+      addTagFromInput(text.slice(0, -1));
+      return;
+    }
+    setTagInput(text);
+  };
+
+  const handleTagInputKeyPress = ({ nativeEvent }) => {
+    // Backspace on empty input removes the last chip — same affordance
+    // YouTube ships. Without this users have to tap the chip's × to
+    // delete, which is a slower flow on mobile.
+    if (nativeEvent.key === "Backspace" && tagInput === "" && (videoForm?.tags?.length || 0) > 0) {
+      setVideoForm((prev) => ({ ...prev, tags: prev.tags.slice(0, -1) }));
+    }
+  };
+
+  const removeTag = (index) => {
+    setVideoForm((prev) => ({
+      ...prev,
+      tags: (prev.tags || []).filter((_, i) => i !== index),
+    }));
   };
 
   // YouTube-style: extract 3 frames at 25%/50%/75% of the video. Default-selects
@@ -630,7 +678,10 @@ const UploadVideo = ({ showMessage }) => {
         />
       </View>
 
-      {/* Tags */}
+      {/* Tags — YouTube-style free typing. Optional. Press space, return,
+          or comma to commit a chip; backspace on empty input removes the
+          last chip. Cap at sizeLimitTags. Tags are case-preserving on
+          display but de-duped case-insensitively, mirroring YouTube. */}
       <View className="mb-4 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
         <View className="flex-row items-center justify-between">
           <View className="flex-row items-center">
@@ -639,60 +690,65 @@ const UploadVideo = ({ showMessage }) => {
               Tags
             </Text>
           </View>
-          <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitTags}`}</Text>
+          <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>
+            {`${videoForm?.tags?.length || 0} / ${sizeLimitTags}`}
+          </Text>
         </View>
         <Text className="mt-2 text-xs" style={{ color: theme.textSoft }}>
-          Select at least 1 tag.
+          Optional. Press return or comma to add. Helps people find your video.
         </Text>
-        {/* Capped to ~3.5 rows of pills + vertical scroll + bottom fade overlay
-            so the user clearly reads "more below" without a scrollbar. Half-row
-            peek + fade together signal scrollability before the user touches.
-            Selected pills carry a subtle violet shadow lift, matching the
-            active-pill language used everywhere else (Books / Videos / Profile). */}
-        <View style={{ position: "relative" }}>
-          <ScrollView
-            style={{ maxHeight: 172 }}
-            nestedScrollEnabled
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={{ paddingTop: 12, paddingBottom: 22 }}
-          >
-            <View className="flex flex-row flex-wrap gap-2">
-              {tags.map((tag, index) => {
-                const isSelected = videoForm?.tags?.includes(tag);
-                const isDisabled = !isSelected && videoForm?.tags?.length >= sizeLimitTags;
-                return (
-                  <TouchableOpacity
-                    onPress={() => handleChange("tags", tag)}
-                    className="h-fit w-fit rounded-full px-4 py-2"
-                    key={index.toString()}
-                    disabled={isDisabled}
-                    style={{
-                      opacity: isDisabled ? 0.35 : 1,
-                      backgroundColor: isSelected ? theme.primary : theme.surfaceMuted,
-                      borderWidth: 1,
-                      borderColor: isSelected ? theme.primary : theme.border,
-                      shadowColor: theme.primary,
-                      shadowOffset: { width: 0, height: 4 },
-                      shadowOpacity: isSelected ? 0.22 : 0,
-                      shadowRadius: 8,
-                      elevation: isSelected ? 2 : 0,
-                    }}
-                  >
-                    <Text
-                      className="text-nowrap text-sm font-medium"
-                      style={{
-                        color: isSelected ? theme.primaryContrast : theme.text,
-                        letterSpacing: 0.1,
-                      }}
-                    >
-                      {tag}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </ScrollView>
-          <ScrollFadeOverlay color={theme.card} />
+
+        <View
+          className="mt-3 rounded-xl px-2 py-2"
+          style={{ borderWidth: 1, borderColor: theme.inputBorder, backgroundColor: theme.inputBackground }}
+        >
+          <View className="flex flex-row flex-wrap items-center" style={{ gap: 6 }}>
+            {(videoForm?.tags || []).map((tag, index) => (
+              <View
+                key={`${tag}-${index}`}
+                className="flex-row items-center rounded-full pl-3 pr-1.5 py-1"
+                style={{
+                  backgroundColor: theme.primary,
+                  shadowColor: theme.primary,
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.18,
+                  shadowRadius: 4,
+                  elevation: 1,
+                }}
+              >
+                <Text
+                  className="text-sm font-medium"
+                  style={{ color: theme.primaryContrast, letterSpacing: 0.1 }}
+                >
+                  {tag}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => removeTag(index)}
+                  hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                  className="ml-1 h-5 w-5 items-center justify-center rounded-full"
+                  style={{ backgroundColor: "rgba(255,255,255,0.22)" }}
+                >
+                  <Ionicons name="close" size={12} color={theme.primaryContrast} />
+                </TouchableOpacity>
+              </View>
+            ))}
+            <TextInput
+              value={tagInput}
+              onChangeText={handleTagInputChange}
+              onSubmitEditing={() => addTagFromInput()}
+              onKeyPress={handleTagInputKeyPress}
+              onBlur={() => addTagFromInput()}
+              blurOnSubmit={false}
+              returnKeyType="done"
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={(videoForm?.tags?.length || 0) < sizeLimitTags}
+              placeholder={(videoForm?.tags?.length || 0) === 0 ? "Add a tag…" : ""}
+              placeholderTextColor={theme.placeholder}
+              className="min-w-[80px] flex-1 px-2 py-1 text-sm"
+              style={{ color: theme.inputText }}
+            />
+          </View>
         </View>
       </View>
 

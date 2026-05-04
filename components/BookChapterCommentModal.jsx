@@ -42,6 +42,7 @@ import { fetchUsersByQuery, getUserByID } from "../lib/users";
 import secrets from "../private/secrets";
 import BookChapterCommentItem from "./BookChapterCommentItem";
 import UserMention from "./UserMention";
+import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 
 const SCREEN_HEIGHT = Dimensions.get("window").height;
 const LIMIT = 10;

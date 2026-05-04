@@ -1,3 +1,4 @@
+import { router } from "expo-router";
 import { useCallback, useMemo } from "react";
 import { FlatList, Platform, View, useWindowDimensions } from "react-native";
 import { getSectionTitleHeight, getVideoCardLayout } from "../utils/videoCardLayout";
@@ -23,9 +24,20 @@ const VideosContinueWatching = ({ videos = [] }) => {
   );
   const keyExtractor = useCallback((item, index) => item?.$id || `${item.type}-${index}`, []);
 
+  // Brand-new column `last_watched_seconds` only starts populating
+  // AFTER the OTA — every user has 0 progress rows at first launch
+  // and feed_continue_watching returns []. Bailing here keeps the
+  // tab from rendering an empty "Continue Watching" header until the
+  // user has actually watched something. Matches the empty-bail
+  // pattern in the seven other v4 shelves.
+  if (!videos.length) return null;
+
   return (
     <View style={{ minHeight: containerHeight }} className="space-y-2">
-      <VideosSectionTitle title={"Continue Watching"} />
+      <VideosSectionTitle
+        title={"Continue Watching"}
+        onSeeAllPress={() => router.push({ pathname: "/(video)/shelf-all", params: { type: "continueWatching" } })}
+      />
       <FlatList
         horizontal
         showsHorizontalScrollIndicator={false}

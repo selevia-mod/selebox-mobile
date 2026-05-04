@@ -8,16 +8,63 @@ import * as SplashScreen from "expo-splash-screen";
 import * as Updates from "expo-updates";
 import { NativeWindStyleSheet } from "nativewind";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { LogBox } from "react-native";
 import "react-native-gesture-handler";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+
+// Silence the four `defaultProps` deprecation warnings that bubble up
+// from inside react-native-render-html v6.x — the library uses old-style
+// defaultProps on its function/memo components, which React's runtime
+// has been deprecating. Cosmetic only (the preview still renders), but
+// the warnings spam the terminal every time RenderHTML mounts.
+//
+// We pin to the four specific patterns instead of a blanket
+// "defaultProps" match so legitimate warnings from our own code still
+// surface. Remove these once react-native-render-html v7+ ships with
+// JavaScript default-parameter syntax.
+LogBox.ignoreLogs([
+  "TRenderEngineProvider: Support for defaultProps",
+  "MemoizedTNodeRenderer: Support for defaultProps",
+  "TNodeChildrenRenderer: Support for defaultProps",
+  "bound renderChildren: Support for defaultProps",
+]);
+
+// LogBox.ignoreLogs only filters the in-app red overlay; on RN 0.76 the
+// Metro terminal still prints the raw `console.error("Warning: …")`
+// strings React emits for deprecated patterns. Patch console.error and
+// console.warn here so the same four render-html defaultProps lines
+// don't spam every time a chapter preview / reader mounts. We match
+// against the same substring list as LogBox.ignoreLogs so any new noise
+// from our own code still surfaces normally.
+const __SILENCED_TERMINAL_WARNINGS__ = [
+  "TRenderEngineProvider: Support for defaultProps",
+  "MemoizedTNodeRenderer: Support for defaultProps",
+  "TNodeChildrenRenderer: Support for defaultProps",
+  "bound renderChildren: Support for defaultProps",
+];
+const __originalConsoleError__ = console.error;
+const __originalConsoleWarn__ = console.warn;
+const __isSilenced__ = (args) => {
+  const first = typeof args?.[0] === "string" ? args[0] : "";
+  return __SILENCED_TERMINAL_WARNINGS__.some((needle) => first.includes(needle));
+};
+console.error = (...args) => {
+  if (__isSilenced__(args)) return;
+  __originalConsoleError__.apply(console, args);
+};
+console.warn = (...args) => {
+  if (__isSilenced__(args)) return;
+  __originalConsoleWarn__.apply(console, args);
+};
 import { Provider } from "react-redux";
 import { PersistGate } from "redux-persist/integration/react";
 import { BookStatsProvider } from "../context/book-stats-provider";
-import { ClipsStatsProvider } from "../context/clip-stats-provider";
+// ClipsStatsProvider import removed — clips feature retired May 2026.
 import GlobalProvider, { useGlobalContext } from "../context/global-provider";
 import { VideosStatsProvider } from "../context/video-stats-provider";
 import { isAppwriteAuthError } from "../lib/appwrite";
 import { initializeCrashlytics, recordCrashlyticsError } from "../lib/crashlytics";
+import { captureReferralFromUrl } from "../lib/referrals";
 import "../lib/setup-default-fonts"; // Must be first — patches Text/TextInput for Android font override
 import {
   buildBookChapterNotificationNavigationParams,
@@ -144,8 +191,12 @@ const resolveNotificationRouteFromPayload = (payload = {}) => {
     return { pathname: "/book-info", params: { bookId: data.resourceId } };
   }
 
+  // Clip notification type retired May 2026. Legacy clip notifications
+  // in the inbox quietly fall through to home — the /clips route is now
+  // a Reels coming-soon teaser tab so a navigation there would surface
+  // an alert rather than usable content.
   if (resolvedType === "clip") {
-    return { pathname: "/clips" };
+    return null;
   }
 
   return null;
@@ -181,8 +232,19 @@ const InnerLayout = () => {
 
   // Handle deep linking
   useEffect(() => {
-    Linking.getInitialURL().then(setInitialUrl);
-    const sub = Linking.addEventListener("url", ({ url }) => setInitialUrl(url));
+    Linking.getInitialURL().then((url) => {
+      setInitialUrl(url);
+      // Referral capture — if the launch URL carries `?ref=<code>`,
+      // stash it in AsyncStorage so the post-signup hook can redeem
+      // it once the new user's profile exists. Best-effort and
+      // idempotent: re-launching the app with the same link a second
+      // time just overwrites the same stash key.
+      void captureReferralFromUrl(url);
+    });
+    const sub = Linking.addEventListener("url", ({ url }) => {
+      setInitialUrl(url);
+      void captureReferralFromUrl(url);
+    });
     return () => sub.remove();
   }, []);
 
@@ -430,13 +492,11 @@ export default function RootLayout() {
     <Provider store={store}>
       <PersistGate persistor={persistor}>
         <GlobalProvider>
-          <ClipsStatsProvider>
-            <BookStatsProvider>
-              <VideosStatsProvider>
-                <InnerLayout />
-              </VideosStatsProvider>
-            </BookStatsProvider>
-          </ClipsStatsProvider>
+          <BookStatsProvider>
+            <VideosStatsProvider>
+              <InnerLayout />
+            </VideosStatsProvider>
+          </BookStatsProvider>
         </GlobalProvider>
       </PersistGate>
     </Provider>

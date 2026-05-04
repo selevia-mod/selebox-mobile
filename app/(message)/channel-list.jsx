@@ -8,7 +8,7 @@
 // old paths and the only chat experience now is Supabase-native.
 
 import { Feather, MaterialIcons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import React from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -23,6 +23,17 @@ const ChannelListScreen = () => {
   // auth path). Use it for chat queries — `user.$id` is the Appwrite hex
   // and won't match `profiles.id`.
   const { chatUserId } = useGlobalContext();
+  // openSecretConversationId is set when this screen is opened via a
+  // private-DM bell tap on a locked Secret tab. The list auto-selects
+  // the Secret tab and (post-unlock) auto-navigates into the
+  // conversation thread.
+  const params = useLocalSearchParams();
+  const openSecretConversationId =
+    typeof params.openSecretConversationId === "string"
+      ? params.openSecretConversationId
+      : Array.isArray(params.openSecretConversationId)
+        ? params.openSecretConversationId[0]
+        : null;
 
   return (
     <SafeAreaView className="flex-1" style={{ backgroundColor: theme.background }}>
@@ -41,6 +52,16 @@ const ChannelListScreen = () => {
           </Text>
         </View>
         <View className="flex-row items-center" style={{ gap: 8 }}>
+          {/* New Secret chat — small lock icon. Routes to the mutuals-only
+              search. Lives next to the regular + buttons so users can
+              always start a Secret chat regardless of which tab is open. */}
+          <TouchableOpacity
+            onPress={() => router.push("/(message)/new-secret-chat")}
+            className="h-10 w-10 items-center justify-center rounded-full border"
+            style={{ borderColor: theme.border, backgroundColor: theme.surfaceMuted }}
+          >
+            <Feather name="lock" size={16} color={theme.icon} />
+          </TouchableOpacity>
           {/* New group — multi-select user search → createGroupConversation. */}
           <TouchableOpacity
             onPress={() => router.push("/(message)/new-group")}
@@ -60,7 +81,10 @@ const ChannelListScreen = () => {
         </View>
       </View>
 
-      <SupabaseConversationsList currentUserId={chatUserId} />
+      <SupabaseConversationsList
+        currentUserId={chatUserId}
+        openSecretConversationId={openSecretConversationId}
+      />
     </SafeAreaView>
   );
 };

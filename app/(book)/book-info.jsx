@@ -2,7 +2,6 @@ import { AntDesign, Ionicons, SimpleLineIcons } from "@expo/vector-icons";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, ScrollView, Text, TouchableOpacity, View } from "react-native";
-import { Query } from "react-native-appwrite";
 import FastImage from "react-native-fast-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Share from "react-native-share";
@@ -22,7 +21,6 @@ import {
 } from "../../components";
 import AnimatedSkeleton, { getRandomSkeletonWidth } from "../../components/AnimatedSkeleton";
 import useAppTheme from "../../hooks/useAppTheme";
-import { appwriteConfig, databases } from "../../lib/appwrite";
 import { getDownloadedBook, isBookDownloaded, saveDownloadedBook } from "../../lib/book-downloads";
 import { BookRatingService } from "../../lib/book-rating";
 import { BookUnlocksService } from "../../lib/book-unlocks";
@@ -89,7 +87,14 @@ const BookInfo = () => {
 
   const bookService = new BookService();
   const bookUnlockService = new BookUnlocksService();
-  const bookChapterLockStart = globalSettings["BOOKS_CHAPTER_LOCK_START"];
+  // Prefer the per-book threshold (mapped from `lock_from_chapter` on
+  // the books row). globalSettings is a fallback for older books that
+  // never wrote their own threshold; relying on it alone caused a
+  // first-render flicker where chapters momentarily showed as free
+  // because globalSettings hadn't rehydrated yet. The static
+  // isChapterLocked also has a defensive fallback now, but resolving
+  // here too makes the very first paint correct (no Paid → Free flash).
+  const bookChapterLockStart = book?.bookChapterLockStart ?? globalSettings?.["BOOKS_CHAPTER_LOCK_START"];
 
   const cachedContinueReading = useMemo(() => {
     return booksState?.continueReading?.find((entry) => entry?.book?.$id === resolvedBookId) || null;
@@ -179,8 +184,18 @@ const BookInfo = () => {
 
       const fetchBook = async () => {
         try {
+          // Both `chaptersData` and `previewChaptersData` previously
+          // queried the same (book, status=Publish) set — chaptersData
+          // through Supabase, previewChaptersData through a stale
+          // direct-Appwrite listDocuments call. Once USE_SUPABASE_BOOKS
+          // flipped on, the chapters live in Supabase, and the Appwrite
+          // call became a hang-forever liability the moment Appwrite
+          // had any incident (Promise.all never resolves → loading stays
+          // true → skeleton sticks). Both now route through Supabase.
           const [booksData, unlocksData, chaptersData, previewChaptersData, bookProgressResponse, averageRes, ratingRes] = await Promise.all([
-            bookService.fetchBook({ bookId: resolvedBookId }),
+            // Pass actorUserId so authors viewing their own draft books
+            // get a real result instead of an RLS-filtered null.
+            bookService.fetchBook({ bookId: resolvedBookId, actorUserId: user?.$id }),
             bookUnlockService.getBookUnlockByUser({ book: resolvedBookId, unlockBy: user?.$id }),
             bookService.fetchBookChapters({
               bookId: resolvedBookId,
@@ -188,13 +203,12 @@ const BookInfo = () => {
               limit: previewChaptersLimit,
               select: BOOK_CHAPTER_LIST_SELECT,
             }),
-            databases.listDocuments(appwriteConfig.databaseId, appwriteConfig.booksChaptersCollectionId, [
-              Query.equal("book", resolvedBookId),
-              Query.equal("status", "Publish"),
-              Query.orderDesc("order"),
-              Query.limit(previewChaptersLimit),
-              Query.select(BOOK_CHAPTER_LIST_SELECT),
-            ]),
+            bookService.fetchBookChapters({
+              bookId: resolvedBookId,
+              status: "Publish",
+              limit: previewChaptersLimit,
+              select: BOOK_CHAPTER_LIST_SELECT,
+            }),
             bookService.getContinueReadingBook({ userId: user?.$id, bookId: resolvedBookId }),
             BookRatingService.getBookRatings({ bookId: resolvedBookId }),
             BookRatingService.getUserRating({ bookId: resolvedBookId, userId: user?.$id }),
@@ -203,13 +217,18 @@ const BookInfo = () => {
           setBook(booksData);
           setAverageRating(averageRes?.averageRating || 0);
           if (ratingRes) setUserRating(ratingRes);
-          if (unlocksData.documents.length > 0) setUnlocks(unlocksData.documents[0]);
-          setChapters(chaptersData.documents);
+          // Defensive null-coalescing on every `.documents` access. During
+          // partial Appwrite outages (or any time a service returns null
+          // instead of { documents: [] }) the destructure above can leave
+          // these as null, and `null.documents` throws synchronously,
+          // bypassing the catch/finally and freezing loading=true again.
+          if ((unlocksData?.documents?.length ?? 0) > 0) setUnlocks(unlocksData.documents[0]);
+          setChapters(chaptersData?.documents || []);
           setPreviewChapters(
             (previewChaptersData?.documents || []).filter((chapter, index) => !isIntroductionChapter(chapter, index)).slice(0, previewChaptersLimit),
           );
-          setChaptersTotal(chaptersData.total);
-          if (bookProgressResponse.documents.length > 0) setContinueReadingChapter(bookProgressResponse.documents[0]);
+          setChaptersTotal(chaptersData?.total ?? 0);
+          if ((bookProgressResponse?.documents?.length ?? 0) > 0) setContinueReadingChapter(bookProgressResponse.documents[0]);
 
           if (booksData?.uploader?.$id) {
             const followingResponse = await FollowService.isFollowing({ followerId: user?.$id, followingId: booksData?.uploader?.$id });
@@ -389,12 +408,29 @@ const BookInfo = () => {
   };
 
   const handleSharePress = async () => {
-    await Share.open({
-      message: `Check out this book!`,
-      url: `${secrets.WEBSITE}/books/${book?.$id}`,
-      title: `${book.title}`,
-      type: "url",
-    });
+    try {
+      const result = await Share.open({
+        message: `Check out this book!`,
+        url: `${secrets.WEBSITE}/books/${book?.$id}`,
+        title: `${book.title}`,
+        type: "url",
+      });
+      // ABUSE DEFENSE (two layers):
+      //  1. iOS throws on dismiss (caught below). Android sometimes
+      //     RESOLVES with { success: false } when the user backs out
+      //     without picking an app — that resolved promise is what was
+      //     letting users farm by opening the sheet and immediately
+      //     dismissing. We now require result?.success === true (the
+      //     field RN-Share sets when an activity actually completed).
+      //  2. Per-book dedup so re-sharing the same book in a session
+      //     counts at most once. Cross-day re-shares legitimately tick.
+      if (result?.success === true && book?.$id) {
+        const { tickGoalUnique } = await import("../../lib/goals-store");
+        tickGoalUnique("share", `share:book:${book.$id}`);
+      }
+    } catch {
+      // User dismissed the share sheet (iOS) — no tick.
+    }
   };
 
   const handleOpenReport = () => {
@@ -475,7 +511,7 @@ const BookInfo = () => {
       if (existing?.documents?.length > 0) return existing.documents[0];
       return await bookService.createBookLibrary({ bookId: book.$id, userId: user.$id });
     } catch (error) {
-      console.log("ensureBookInLibrary: error", error);
+      console.error("ensureBookInLibrary: error", error);
       return null;
     }
   };
@@ -542,7 +578,7 @@ const BookInfo = () => {
       setIsDownloaded(true);
       await ensureBookInLibrary();
     } catch (error) {
-      console.log("handleDownload: error", error);
+      console.error("handleDownload: error", error);
       Alert.alert("Download failed", "We couldn’t download this book. Please try again.");
     } finally {
       setIsDownloading(false);
@@ -574,7 +610,21 @@ const BookInfo = () => {
     }
   };
 
-  const TAGS = [book?.status, book?.contentRating || "Rated PG", book?.isLocked ? "Paid" : "Free", isDownloaded ? "Downloaded" : null].filter(
+  // A book is "Paid" if EITHER the book-level threshold is set
+  // (book.isLocked, i.e. lock_from_chapter > 0) OR ANY chapter we know
+  // about carries the legacy per-chapter `is_locked` flag. Web uses
+  // the same OR (Selebox/js/app.js:7834: `isLockedDef = isAtOrAfterLockPoint || c.is_locked`).
+  // Mobile previously only looked at the book-level field, which made
+  // legacy-locked books (lock set per chapter, not per book) display
+  // as "Free" — leaking the writer's revenue protection on the very
+  // surface readers see first. We check both `chapters` (the preview
+  // list rendered above the fold) and `previewChapters` so the tag is
+  // correct as soon as either has loaded.
+  const hasPerChapterLock =
+    (Array.isArray(chapters) && chapters.some((c) => c?.is_locked || c?.isLocked)) ||
+    (Array.isArray(previewChapters) && previewChapters.some((c) => c?.is_locked || c?.isLocked));
+  const isBookPaid = !!book?.isLocked || hasPerChapterLock;
+  const TAGS = [book?.status, book?.contentRating || "Rated PG", isBookPaid ? "Paid" : "Free", isDownloaded ? "Downloaded" : null].filter(
     Boolean,
   );
 

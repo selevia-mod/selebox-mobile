@@ -16,7 +16,7 @@ const PlayerLayout = () => {
           }}
         />
         <Stack.Screen
-          name="category"
+          name="shelf-all"
           options={{
             headerShown: false,
           }}

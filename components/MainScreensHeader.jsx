@@ -1,19 +1,13 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Notifications from "expo-notifications";
 import { router, useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, AppState, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import useIsOffline from "../hooks/useIsOffline";
-import { subscribeToInbox } from "../lib/messages-supabase";
 import { NotificationService } from "../lib/notifications";
-import {
-  getUnreadDmCount,
-  markAllDmNotificationsRead,
-  subscribeToDmNotifications,
-} from "../lib/notifications-supabase";
 import { useTotalUnreadCount } from "../hooks/useTotalUnreadCount";
 import StyledCoinIndicator from "./StyledCoinIndicator";
 
@@ -24,14 +18,20 @@ const MainScreensHeader = ({ title }) => {
   const { user } = useGlobalContext();
   const { theme } = useAppTheme();
   const isOffline = useIsOffline();
-  // Bell badge sums two backends:
-  //   • appwriteUnread — likes / comments / replies / follows / clips (legacy)
-  //   • supabaseDmUnread — chat dm_message rows (task #201)
-  // Kept as separate state so each updates from its own source / channel
-  // without re-fetching the other one. The badge text is the sum.
-  const [appwriteUnread, setAppwriteUnread] = useState(0);
-  const [supabaseDmUnread, setSupabaseDmUnread] = useState(0);
-  const newNotifications = appwriteUnread + supabaseDmUnread;
+  // Bell badge: total unread count across ALL notification types (likes /
+  // comments / replies / follows / clips / dm_message). Backed by the
+  // Supabase RPC `count_user_unread_notifications`, which counts is_viewed=
+  // false in the unified `notifications` table — so dm_message rows are
+  // already included.
+  //
+  // Historical note: this used to sum two separate counts —
+  // `appwriteUnread` (likes/etc. from Appwrite) plus a dedicated
+  // `supabaseDmUnread` (DMs from Supabase). After USE_SUPABASE_NOTIFICATIONS
+  // flipped to true, both backends consolidated into the same Supabase
+  // count function, and the dual-count math started double-counting every
+  // DM (manifests as the bell stuck at "2" when there's actually 1 DM).
+  // The split state is gone now.
+  const [bellUnread, setBellUnread] = useState(0);
   const { unreadCount, refresh: refreshChatUnread } = useTotalUnreadCount();
 
   useEffect(() => {
@@ -53,68 +53,86 @@ const MainScreensHeader = ({ title }) => {
     }, [refreshChatUnread]),
   );
 
-  // Live updates for the Supabase dm_message side.
+  // Live updates for the bell badge — likes / comments / replies / follows /
+  // clips / dm_message. All types now live in Supabase's unified
+  // `notifications` table, counted via `count_user_unread_notifications`.
   //
-  // We piggyback on the inbox subscription (postgres_changes on `messages`)
-  // rather than `subscribeToDmNotifications` because `notifications` has
-  // restrictive RLS gated on `auth.uid()` — and on the current Appwrite-auth
-  // path there's no Supabase session, so realtime postgres_changes on
-  // `notifications` deliver nothing to anon clients. The `messages` table
-  // is anon-permissive, so its INSERT events DO arrive for everyone.
+  // Realtime on `public.notifications` is gated by the notif_self_read RLS
+  // policy which keys off auth.uid(); under USE_SUPABASE_AUTH=false,
+  // auth.uid() is null and postgres_changes deliver nothing to anon
+  // clients (same architectural reason we built the SECURITY DEFINER read
+  // RPCs). So instead of trying to subscribe, we poll the count every 20s
+  // while the app is in the foreground, plus immediately when AppState
+  // transitions back to active. The recount call uses
+  // count_user_unread_notifications which already bypasses RLS.
   //
-  // When any new message arrives, we recount the bell unread via the
-  // SECURITY DEFINER RPC `get_chat_unread_count` (which works for both
-  // auth modes). The trigger has already written the bell row by the time
-  // we recount, so the count reflects the new state.
-  //
-  // We also keep `subscribeToDmNotifications` mounted for the future
-  // Supabase-auth case — when that flips on, realtime on `notifications`
-  // starts firing and the badge becomes near-instantaneous.
+  // Chat-tab badge: useTotalUnreadCount listens to `messages` INSERTs
+  // (which ARE delivered to anon under the messages-table policy), so the
+  // live path already covers "new DM arrives." The polling here also
+  // refreshes that badge as a safety net for events the INSERT channel
+  // misses — `messages.read_at` UPDATEs from another device, deletions,
+  // or a dropped realtime socket.
+  const appStateRef = useRef(AppState.currentState);
   useEffect(() => {
     if (!user?.$id) return;
-    const recount = () => {
-      getUnreadDmCount().then(setSupabaseDmUnread).catch(() => {});
+    let cancelled = false;
+    const recountBell = async () => {
+      try {
+        const c = await notificationService.getUnreadCount({ userId: user.$id });
+        if (!cancelled) setBellUnread(c || 0);
+      } catch {
+        /* swallow — next tick will retry */
+      }
     };
-    const unsubscribeInbox = subscribeToInbox(() => {
-      recount();
+    const recountAll = () => {
+      recountBell();
+      refreshChatUnread?.();
+    };
+    const intervalId = setInterval(() => {
+      if (appStateRef.current === "active") recountAll();
+    }, 20000);
+    const sub = AppState.addEventListener("change", (next) => {
+      const prev = appStateRef.current;
+      appStateRef.current = next;
+      if (prev !== "active" && next === "active") recountAll();
     });
-    const unsubscribeNotif = subscribeToDmNotifications({
-      onInsert: recount,
-      onUpdate: recount,
-    });
+    // Initial pull so we don't wait 20s for the first sample.
+    recountAll();
     return () => {
-      unsubscribeInbox();
-      unsubscribeNotif();
+      cancelled = true;
+      clearInterval(intervalId);
+      sub.remove();
     };
-  }, [user?.$id]);
+  }, [user?.$id, refreshChatUnread]);
 
   const fetchNewNotificationCount = async () => {
     // Defense-in-depth — getUnreadCount also early-returns 0 on missing userId now,
     // but skipping the call entirely avoids an unnecessary round-trip while logged out.
     if (!user?.$id) {
-      setAppwriteUnread(0);
-      setSupabaseDmUnread(0);
+      setBellUnread(0);
       return;
     }
-    const [appwriteCount, supabaseCount] = await Promise.all([
-      notificationService.getUnreadCount({ userId: user.$id }),
-      getUnreadDmCount().catch(() => 0),
-    ]);
-    setAppwriteUnread(appwriteCount || 0);
-    setSupabaseDmUnread(supabaseCount || 0);
+    const count = await notificationService.getUnreadCount({ userId: user.$id });
+    setBellUnread(count || 0);
   };
 
   const handleChatsPress = () => router.push("channel-list");
   const handleProfilePress = () => router.push("/profile");
   const handleNotificationsPress = async () => {
     // Optimistic clear — opening the bell panel is the same gesture as
-    // "I've seen these," and the panel itself will reconcile from the
-    // server. Mark both backends in parallel.
-    setAppwriteUnread(0);
-    setSupabaseDmUnread(0);
+    // "I've seen these." We flip is_viewed (NOT is_read), because:
+    //   • the bell counter (`count_user_unread_notifications`) reads
+    //     is_viewed = false; flipping is_read here did nothing visible
+    //     and was the root cause of the "stuck at 2" bug.
+    //   • is_read is reserved for "user clicked into the specific item"
+    //     and is set per-card by NotificationCard's tap handler.
+    // markAllAsViewed sets is_viewed=true on every type incl. dm_message,
+    // so we no longer need a separate markAllDmNotificationsRead call —
+    // the actual "I read this DM" step happens when the user opens the
+    // thread (markChatNotificationsRead).
+    setBellUnread(0);
     if (!isOffline && user?.$id) {
-      void notificationService.markAllAsRead({ userId: user.$id });
-      void markAllDmNotificationsRead();
+      void notificationService.markAllAsViewed({ userId: user.$id });
     }
     router.push("/notification");
   };
@@ -164,9 +182,9 @@ const MainScreensHeader = ({ title }) => {
             onPress={handleNotificationsPress}
           >
             <Ionicons name="notifications-outline" size={20} color={theme.icon} />
-            {newNotifications > 0 && (
+            {bellUnread > 0 && (
               <View style={[styles.badge, { backgroundColor: theme.badge, borderColor: theme.badgeBorder }]}>
-                <Text style={[styles.badgeText, { color: theme.primaryContrast }]}>{newNotifications > 99 ? "99+" : newNotifications}</Text>
+                <Text style={[styles.badgeText, { color: theme.primaryContrast }]}>{bellUnread > 99 ? "99+" : bellUnread}</Text>
               </View>
             )}
           </TouchableOpacity>

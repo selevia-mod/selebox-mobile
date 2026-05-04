@@ -1,3 +1,4 @@
+import { router } from "expo-router";
 import { useCallback, useMemo } from "react";
 import { FlatList, Platform, View, useWindowDimensions } from "react-native";
 import { getSectionTitleHeight, getVideoCardLayout } from "../utils/videoCardLayout";
@@ -20,7 +21,10 @@ const VideosTrendingWeek = ({ videos = [] }) => {
 
   return (
     <View style={{ minHeight: containerHeight }} className="space-y-2">
-      <VideosSectionTitle title={"Trending this Week"} />
+      <VideosSectionTitle
+        title={"Trending this Week"}
+        onSeeAllPress={() => router.push({ pathname: "/(video)/shelf-all", params: { type: "trendingWeek" } })}
+      />
       <FlatList
         horizontal
         showsHorizontalScrollIndicator={false}

@@ -12,7 +12,8 @@ import { attachIsLikedByCurrentUser, fetchPosts, hydrateResourcePosts } from "..
 // them through the same adapter the home feed uses, so PostCard renders
 // reposts correctly on profile pages too.
 import { USE_SUPABASE_POSTS } from "../lib/feature-flags";
-import { adaptSupabasePostToAppwriteShape, fetchPostsByUser, fetchPostStats } from "../lib/posts-supabase";
+import { adaptSupabasePostToAppwriteShape, fetchPostsByUser, fetchPostStats, resolveSupabaseUserId } from "../lib/posts-supabase";
+import supabase from "../lib/supabase";
 // Phase E.5 — same tier-tuned FlashList config as the home feed.
 import { getFlashListConfig } from "../lib/device-tier";
 import logger from "../lib/utils/logger";
@@ -23,10 +24,34 @@ import CustomAlertModal from "./CustomAlertModal";
 import ImageViewer from "./ImageViewer";
 import PostBook from "./PostBook";
 import PostCard from "./PostCard";
-import PostClip from "./PostClip";
+// PostClip import removed — clips feature retired May 2026.
 import PostCommentModal from "./PostCommentModal";
 import PostLikesModal from "./PostLikesModal";
 import PostVideo from "./PostVideo";
+
+// Returns a Set of post UUIDs the viewer has reacted to. One round-trip
+// regardless of the number of posts on the page. Returns an empty Set
+// on any failure so PostCard falls back to "not liked" — a safer default
+// than crashing.
+const fetchViewerLikeSet = async (viewerAppwriteOrUuid, postIds) => {
+  if (!viewerAppwriteOrUuid || !Array.isArray(postIds) || postIds.length === 0) {
+    return new Set();
+  }
+  try {
+    const viewerUuid = await resolveSupabaseUserId(viewerAppwriteOrUuid);
+    if (!viewerUuid) return new Set();
+    const { data, error } = await supabase
+      .from("reactions")
+      .select("target_id")
+      .eq("user_id", viewerUuid)
+      .eq("target_type", "post")
+      .in("target_id", postIds);
+    if (error) return new Set();
+    return new Set((data || []).map((r) => r.target_id));
+  } catch {
+    return new Set();
+  }
+};
 
 const ProfilePostTab = ({
   userId,
@@ -101,7 +126,20 @@ const ProfilePostTab = ({
           if (supabasePosts.length > 0) {
             const postIds = supabasePosts.map((p) => p.id).filter(Boolean);
             const stats = await fetchPostStats(postIds);
-            const adapted = supabasePosts.map((p) => adaptSupabasePostToAppwriteShape(p, stats)).filter(Boolean);
+            // Hydrate the viewer's own like state so PostCard's heart shows
+            // filled for already-liked posts. The home feed gets this for free
+            // via attachIsLikedByCurrentUser; the profile tab missed the same
+            // step under the Supabase branch — without it, taps on already-
+            // liked posts behaved like first-time likes (insert conflict +
+            // visual desync).
+            const viewerLikeSet = await fetchViewerLikeSet(user?.$id, postIds);
+            const adapted = supabasePosts
+              .map((p) => {
+                const adaptedPost = adaptSupabasePostToAppwriteShape(p, stats);
+                if (adaptedPost) adaptedPost.isLikedByCurrentUser = viewerLikeSet.has(p.id);
+                return adaptedPost;
+              })
+              .filter(Boolean);
             setPosts(adapted);
             setLastId(supabasePosts[supabasePosts.length - 1].created_at || null);
             // No `total` count on Supabase reads; use page-size heuristic.
@@ -284,7 +322,12 @@ const ProfilePostTab = ({
         nestedScrollEnabled={nestedScrollEnabled}
         ListHeaderComponent={renderListHeader}
         refreshing={refreshing}
-        onRefresh={fetchPosts}
+        // Was `fetchPosts` (the imported library function) by mistake —
+        // FlashList expects the local `onRefresh` handler. The
+        // refreshControl prop below overrides this anyway, but keeping
+        // the prop pointing at a real local function avoids surprises if
+        // someone removes refreshControl later.
+        onRefresh={onRefresh}
         onScroll={handleCombinedScroll}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
@@ -298,10 +341,12 @@ const ProfilePostTab = ({
           // grids, so without this routing the card renders an empty body — exactly the
           // bug visible on the Profile Posts tab. Mirrors the home feed's renderItem.
           if (item?.postResourceId) {
-            const resourceType = item.postResourceType || (item.clip ? "clip" : item.video ? "video" : item.book ? "book" : null);
+            const resourceType = item.postResourceType || (item.video ? "video" : item.book ? "book" : null);
 
+            // Clip-resource posts retired May 2026 — fall through to PostCard
+            // for any remaining clip-typed posts so they render as plain text.
             if (resourceType === "clip") {
-              return <PostClip item={item.clip || item} />;
+              return <PostCard item={item} />;
             }
             if (resourceType === "video") {
               return (

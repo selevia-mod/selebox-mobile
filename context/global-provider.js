@@ -3,8 +3,13 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { InteractionManager } from "react-native";
 import MobileAds from "react-native-google-mobile-ads";
 import { useDispatch, useSelector } from "react-redux";
-import { getCurrentUserWithoutStream, getGlobalSettings, getStars, getUserCoins, updateUserExpoPushToken } from "../lib/appwrite";
-import { FetchAllClipsLength } from "../lib/clips";
+import { getCurrentUserWithoutStream, getStars, getUserCoins, updateUserExpoPushToken } from "../lib/appwrite";
+// global settings now read from Supabase app_config (single source of
+// truth with the admin Settings UI). The function name + shape match
+// the legacy Appwrite reader so loadGlobalSettings below didn't need
+// any other changes.
+import { getGlobalSettings } from "../lib/global-settings-supabase";
+// FetchAllClipsLength removed — clips feature retired May 2026.
 import { setCrashlyticsUser } from "../lib/crashlytics";
 // Phase E.1 — device tier probe. Runs once when the provider mounts so
 // the result is cached + readable from anywhere on the synchronous path.
@@ -70,8 +75,11 @@ export default function GlobalProvider({ children }) {
   const [avatar, setAvatar] = useState(null);
   const [balance, setBalance] = useState(null);
   const [allVideos, setAllVideos] = useState([]);
+  // allClips / allClipsLength state retained as empty arrays for any
+  // remaining consumers; clips feature retired May 2026 so these
+  // never hold real data anymore.
   const [allClips, setAllClips] = useState([]);
-  const [allClipsLength, setAllClipsLength] = useState([]);
+  const [allClipsLength, setAllClipsLength] = useState(0);
   const [allCreators, setAllCreators] = useState([]);
   const [globalSettings, setGlobalSettings] = useState({});
   const [expoPushToken, setExpoPushToken] = useState(null);
@@ -105,6 +113,94 @@ export default function GlobalProvider({ children }) {
     refetchBalance(user?.$id);
     setAvatar(user?.avatar);
     refetchStars();
+
+    // Referral redemption — if this is a brand-new signup that came in
+    // via an `?ref=<code>` link, the deep-link handler in app/_layout
+    // stashed the code in AsyncStorage. Now that the user's Supabase
+    // profile row exists, fire the redeem RPC. Idempotent at every
+    // layer: no pending code = client no-op; UNIQUE(invitee_id) on
+    // public.referrals = server one-shot per account; clearing the
+    // stash on terminal outcomes prevents replay on next sign-in.
+    //
+    // Safe to call on every sign-in (not just signups) because the
+    // server enforces "one referral per invitee_id ever," so a returning
+    // user with no pending code in storage just gets a no-op.
+    //
+    // On a successful first redeem, the server credits the invitee
+    // with a star bonus (current default: 20) — surface a one-shot
+    // alert + force a balance refetch so the topbar pill updates and
+    // the user sees the welcome gift.
+    (async () => {
+      try {
+        const userId = user?.id || user?.$id;
+        if (!userId) return;
+        const { redeemPendingReferral } = await import("../lib/referrals");
+        const result = await redeemPendingReferral(userId);
+        if (result?.ok && result?.redeemed && result?.inviteeStars > 0) {
+          // Refetch the wallet so the topbar pill jumps to the new
+          // balance immediately. Without this the user would see the
+          // welcome alert but wonder where the stars are.
+          try {
+            await refetchStars();
+            await refetchBalance(userId);
+          } catch {
+            /* refetch failures are silent — server is the source of
+               truth and the next focus tick will sync. */
+          }
+          // Welcome alert. Defer one tick so it doesn't fight the
+          // splash-screen handoff on cold start.
+          setTimeout(() => {
+            try {
+              const { Alert } = require("react-native");
+              Alert.alert(
+                "Welcome to Selebox!",
+                `Your friend invited you — enjoy ${result.inviteeStars} ⭐ stars on us.`,
+                [{ text: "Thanks!", style: "default" }],
+              );
+            } catch {
+              /* Alert unavailable in tests / SSR — silently skip. */
+            }
+          }, 600);
+        }
+      } catch (err) {
+        if (__DEV__) console.log("[global-provider] referral redeem error:", err?.message);
+      }
+    })();
+
+    // Self-heal Supabase profile mirror. Older accounts that pre-date the
+    // backfill — or new signups that bypassed it — won't have a profiles
+    // row keyed on legacy_appwrite_id. Without the mirror, every books /
+    // comments / likes dual-write silently skips, and after USE_SUPABASE_*
+    // flips the user's content goes invisible on Supabase reads.
+    //
+    // Routed through the `upsert_profile_mirror` RPC because mobile's
+    // Supabase client uses the anon key (auth.uid() is null), so a direct
+    // .upsert() into `profiles` fails RLS. The RPC is `security definer`
+    // and only inserts when no row exists for the given legacy id —
+    // existing rows are NEVER overwritten, so a profile edited on web
+    // can't be clobbered by a stale Appwrite blob on next signin.
+    //
+    // Best-effort: failures are logged loud but don't block the session.
+    // Skipped under USE_SUPABASE_AUTH=true since that path creates the
+    // profile via the auth-trigger linkage.
+    if (!USE_SUPABASE_AUTH && user?.$id && user?.username) {
+      (async () => {
+        try {
+          const sb = (await import("../lib/supabase")).default;
+          const { error } = await sb.rpc("upsert_profile_mirror", {
+            p_legacy_appwrite_id: user.$id,
+            p_username: user.username,
+            p_email: user.email || null,
+            p_avatar_url: user.avatar || null,
+          });
+          if (error) {
+            console.error("[global-provider] profile mirror self-heal failed:", error.message);
+          }
+        } catch (e) {
+          console.error("[global-provider] profile mirror self-heal threw:", e?.message);
+        }
+      })();
+    }
 
     // Push notification registration — defer 5s after first paint.
     // Native prompt doesn't need to fire instantly on launch.
@@ -175,12 +271,18 @@ export default function GlobalProvider({ children }) {
   useEffect(() => {
     if (isLogged !== true) return;
 
-    // Clips length cache — defer 2s. Used in some UI counters but not for first paint.
-    const cancelClipsFetch = deferredTask(2000, () => {
-      FetchAllClipsLength(setAllClipsLength).catch((error) => {
-        console.warn("FetchAllClipsLength failed:", error?.message || error);
-      });
-    });
+    // Daily-login goal — auto-ticks the "Log in today" quest once per
+    // day on first session boot. Fire-and-forget; tickGoalUnique dedups
+    // per day via the local seen-set so re-launching the app a second
+    // time today doesn't multi-count.
+    import("../lib/goals-store")
+      .then(({ tickGoalUnique }) => {
+        const today = new Date().toISOString().slice(0, 10);
+        tickGoalUnique("login", `daily-login:${today}`);
+      })
+      .catch(() => {});
+
+    // Clips length cache removed — feature retired May 2026.
 
     // AdMob initialization — defer 3s. No ads render in first 3 seconds anyway,
     // and ATT permission prompt doesn't need to interrupt initial flow.
@@ -195,7 +297,6 @@ export default function GlobalProvider({ children }) {
     });
 
     return () => {
-      cancelClipsFetch();
       cancelAdsInit();
     };
   }, [isLogged]);
@@ -345,7 +446,7 @@ export default function GlobalProvider({ children }) {
           stars: wallet?.star_balance ?? 0,
         }));
       } catch (error) {
-        console.log("[global-provider] Supabase getWallet failed:", error?.message);
+        if (__DEV__) console.log("[global-provider] Supabase getWallet failed:", error?.message);
       }
       return;
     }
@@ -355,20 +456,31 @@ export default function GlobalProvider({ children }) {
   };
 
   const refetchStars = async () => {
-    // Phase F.4 — On Supabase, stars come from the same wallet row
-    // refetchBalance already loads. Calling refetchBalance is the
-    // canonical refresh path; this stays as a no-op alias so existing
-    // callers don't break, and pulls a wallet snapshot if it's the
-    // only thing they invoke.
+    // Phase F.4 — On Supabase, the wallet row gives us the live star
+    // balance. But the Store screen also needs `maxAdsPerDay` /
+    // `adsWatchedToday` / `dailyCap` to render the rewarded-ad card,
+    // and those fields ONLY come from `StarService.getStars()`
+    // (= get_stars_summary RPC). The earlier short-circuit only read
+    // the wallet, leaving cap fields undefined → store stuck at "0/0
+    // watched, Limit Reached" even though the configured cap was 10.
+    //
+    // Now we fetch BOTH in parallel and merge: wallet wins for `stars`
+    // (live + RPCs update it through realtime), summary fills in the
+    // ad-cap fields. On legacy Appwrite, the dispatcher's getStars
+    // already returns everything so the wallet fetch is skipped.
     if (USE_SUPABASE_WALLET) {
       try {
-        const wallet = await getWallet();
+        const [wallet, summary] = await Promise.all([
+          getWallet().catch(() => null),
+          getStars().catch(() => null),
+        ]);
         setStarsData((prev) => ({
           ...(prev || {}),
-          stars: wallet?.star_balance ?? 0,
+          ...(summary || {}),
+          stars: wallet?.star_balance ?? summary?.stars ?? 0,
         }));
       } catch (error) {
-        console.log("[global-provider] Supabase getWallet (stars) failed:", error?.message);
+        console.log("[global-provider] Supabase refetchStars failed:", error?.message);
       }
       return;
     }

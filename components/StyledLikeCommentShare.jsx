@@ -99,14 +99,35 @@ export default function StyledLikeCommentShare({
   const handleShare = async () => {
     try {
       if (onSharePress) return onSharePress(item);
-      await Share.open({
+      // Default fallback branch — only ever invoked for VIDEOS in
+      // practice (the message text is video-specific; books and posts
+      // pass an onSharePress that short-circuits above). Books wire
+      // their own goal tick at their share handler. Posts intentionally
+      // do NOT count toward the share goal per product spec.
+      const result = await Share.open({
         message: `Check out this video!`,
         url: `${secrets.WEBSITE}${item.uri}`,
         title: item.title,
         type: "url",
       });
+      // ABUSE DEFENSE (two layers):
+      //  1. We only tick when Share.open resolves with success === true.
+      //     react-native-share's contract is inconsistent across platforms:
+      //     iOS throws "User did not share" on dismiss (caught below), but
+      //     Android sometimes RESOLVES with { success: false, ... } when
+      //     the user backs out of the chooser without picking an app.
+      //     Treating a resolved promise as "shared" was the bug — users
+      //     could open and dismiss to farm the goal. Now we require
+      //     `result?.success === true` (the field set by RN-Share when
+      //     the activity actually completed).
+      //  2. Per-video dedup so re-sharing the same video doesn't farm.
+      //     Cross-day shares of the same video legitimately re-tick.
+      if (result?.success === true && item?.$id) {
+        const { tickGoalUnique } = await import("../lib/goals-store");
+        tickGoalUnique("share", `share:video:${item.$id}`);
+      }
     } catch (e) {
-      // User dismissed the share sheet
+      // User dismissed the share sheet (iOS path throws here) — no tick.
     }
   };
 

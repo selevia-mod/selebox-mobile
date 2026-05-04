@@ -80,13 +80,18 @@ const BookCatalogCard = ({
     }
   };
 
+  // Read count comes straight off the `item` row now — `mapRowToBook`
+  // populates `totalReads` from `views_count` already. Used to fire a
+  // separate `BookReadService.fetchBookRead` call here, but:
+  //   1. It was a redundant round-trip per card on every catalog mount.
+  //   2. For DRAFT books (is_public=false), the anon SELECT in
+  //      fetchBookRead got RLS-filtered to null and the caller's
+  //      `bookReads.totalReads` threw `Cannot read property of null`,
+  //      caught silently by the try/catch — leaving readTotal stuck at 0.
+  // The `?? 0` fallback covers any older cached item that was hydrated
+  // before mapRowToBook started populating the field.
   const fetchBookReads = async () => {
-    try {
-      const bookReads = await BookReadService.fetchBookRead({ bookId: item.$id });
-      setReadTotal(bookReads.totalReads);
-    } catch (error) {
-      console.log("fetchBookReads: error", error);
-    }
+    setReadTotal(item?.totalReads ?? item?.views_count ?? 0);
   };
 
   useEffect(() => {

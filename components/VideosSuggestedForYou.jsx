@@ -1,3 +1,4 @@
+import { router } from "expo-router";
 import { useCallback, useMemo } from "react";
 import { FlatList, Platform, View, useWindowDimensions } from "react-native";
 import { getSectionTitleHeight, getVideoCardLayout } from "../utils/videoCardLayout";
@@ -44,7 +45,10 @@ const VideosSuggestedForYou = ({ videos = [] }) => {
 
   return (
     <View style={{ minHeight: containerHeight }}>
-      <VideosSectionTitle title={"Suggested For You"} />
+      <VideosSectionTitle
+        title={"Suggested For You"}
+        onSeeAllPress={() => router.push({ pathname: "/(video)/shelf-all", params: { type: "suggestedForYou" } })}
+      />
       <FlatList
         horizontal
         showsHorizontalScrollIndicator={false}

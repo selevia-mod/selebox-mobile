@@ -4,18 +4,30 @@ import useAppTheme from "../hooks/useAppTheme";
 const BookTag = ({ tagName }) => {
   const { theme } = useAppTheme();
 
+  // Lowercase keys so the lookup matches `book.status` values from
+  // Supabase (normalized to "ongoing" / "completed" lowercase) AND
+  // historical Appwrite values which were "Ongoing" / "Completed"
+  // capitalized. Either form resolves to the same colored pill.
   const tagStyles = {
-    Ongoing: { bg: theme.accentAmberSoft, text: theme.accentAmber },
-    Completed: { bg: theme.accentGreenSoft, text: theme.accentGreen },
-    "Rated PG": { bg: theme.accentBlueSoft, text: theme.accentBlue },
-    "Rated 18": { bg: theme.dangerSoft, text: theme.danger },
-    Paid: { bg: theme.accentPurpleSoft, text: theme.accentPurple },
-    Free: { bg: theme.accentGreenSoft, text: theme.accentGreen },
-    Downloaded: { bg: theme.primarySoft, text: theme.primary },
-    Draft: { bg: theme.surfaceMuted, text: theme.textSoft },
+    ongoing:    { bg: theme.accentAmberSoft, text: theme.accentAmber },
+    completed:  { bg: theme.accentGreenSoft, text: theme.accentGreen },
+    "rated pg": { bg: theme.accentBlueSoft,  text: theme.accentBlue },
+    "rated 18": { bg: theme.dangerSoft,      text: theme.danger },
+    paid:       { bg: theme.accentPurpleSoft, text: theme.accentPurple },
+    free:       { bg: theme.accentGreenSoft,  text: theme.accentGreen },
+    downloaded: { bg: theme.primarySoft,      text: theme.primary },
+    draft:      { bg: theme.surfaceMuted,     text: theme.textSoft },
   };
 
-  const style = tagStyles[tagName] || {
+  // Display label always uses Title Case for visual consistency,
+  // regardless of how the source field stored it.
+  const titleCase = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const lookup = String(tagName || "").toLowerCase();
+  const style = tagStyles[lookup] || {
     bg: theme.surfaceMuted,
     text: theme.text,
   };
@@ -23,7 +35,7 @@ const BookTag = ({ tagName }) => {
   return (
     <View className="mr-1 self-start rounded-md px-2 py-0.5" style={{ backgroundColor: style.bg }}>
       <Text className="text-xs font-semibold" style={{ color: style.text }}>
-        {tagName}
+        {titleCase(tagName)}
       </Text>
     </View>
   );

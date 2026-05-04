@@ -4,14 +4,33 @@ import { Text, TouchableOpacity, View, useWindowDimensions } from "react-native"
 import FastImage from "react-native-fast-image";
 import useAppTheme from "../hooks/useAppTheme";
 import { useGlobalContext } from "../context/global-provider";
+import { useVideosStats } from "../context/video-stats-provider";
+import { getBunnyImageUrl } from "../lib/bunny-image-url";
 import FormatNumber from "../lib/utils/format-number";
 import TimeAgo from "../lib/utils/time-ago";
 import { formatDurationCompact, getVideoDurationSeconds } from "../lib/utils/video-duration";
 import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 
 const VideoCardNew = ({ item, customWidth, customHeight, customAvatarSize, customFontSize, hideAvatar = false, ...props }) => {
-  const { globalSettings } = useGlobalContext();
+  const { globalSettings, user } = useGlobalContext();
   const { theme } = useAppTheme();
+  // Live engagement counts via the shared VideoStatsProvider (same pattern
+  // PostBookStats.jsx uses with useBookStats). We register interest in this
+  // video's stats once on mount via batchLoadVideoStats — its built-in
+  // already-loaded filter dedupes across the dozens of cards a single
+  // section can mount, so opening the Videos tab fires at most one
+  // round-trip per unseen video, not one per card render. The display
+  // below reads from the provider first and falls back to the static
+  // `item.videoStats.totalViews` from mapRowToVideo so first-paint isn't
+  // blocked on the stats fetch.
+  const { getVideoStats, batchLoadVideoStats } = useVideosStats();
+  const videoId = item?.$id;
+  useEffect(() => {
+    if (!videoId || !user?.$id) return;
+    batchLoadVideoStats([videoId], user.$id);
+  }, [videoId, user?.$id, batchLoadVideoStats]);
+  const liveStats = getVideoStats(videoId);
+  const viewCount = liveStats.videoViews ?? item?.videoStats?.totalViews ?? 0;
   // useWindowDimensions stays in sync with rotation and avoids a Dimensions.get
   // call on every render. Trivial perf win; the bigger one is the useMemo'd
   // layout block below.
@@ -100,7 +119,15 @@ const VideoCardNew = ({ item, customWidth, customHeight, customAvatarSize, custo
               Same pattern YouTube/Instagram use for thumbnail rails. */}
           <FastImage
             style={{ height: "100%", width: "100%" }}
-            source={{ uri: item.thumbnail, priority: FastImage.priority.normal }}
+            source={{
+              // Pass cardWidth only — Bunny scales height proportionally,
+              // which is what we want for `cover` cropping. The helper
+              // applies the device's pixel ratio internally so a 320pt
+              // card on a 3× iPhone fetches a 960px image, not a 320px
+              // one (which would look soft).
+              uri: getBunnyImageUrl(item.thumbnail, { width: cardWidth }),
+              priority: FastImage.priority.normal,
+            }}
             resizeMode={FastImage.resizeMode.cover}
           />
           {/* Duration pill bottom-right of the thumbnail — YouTube-style. */}
@@ -184,7 +211,7 @@ const VideoCardNew = ({ item, customWidth, customHeight, customAvatarSize, custo
                 style={{ fontSize: metaFontSize, lineHeight: metaLineHeight, fontFamily: "Poppins-Regular", color: theme.textMuted }}
                 numberOfLines={1}
               >
-                {FormatNumber((item?.videoStats?.totalViews || 0) * (Number(globalSettings["VIEWS_MULTIPLIER"]) || 1))} Views
+                {FormatNumber((viewCount || 0) * (Number(globalSettings["VIEWS_MULTIPLIER"]) || 1))} Views
                 <Text> • </Text>
                 {TimeAgo(item.publishDate ?? item.$createdAt)}
               </Text>

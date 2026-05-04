@@ -24,6 +24,7 @@ import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { databases } from "../lib/appwrite";
 import { buildPostNotificationResourceId, NotificationService } from "../lib/notifications";
+import { dualWriteDeleteComment, dualWriteDeleteCommentsBulk } from "../lib/posts-dual-write";
 import { consumePostCommentModalDraft, queuePostCommentModalResume } from "../lib/post-comment-modal-resume";
 import {
   createPostComment,
@@ -49,6 +50,7 @@ import {
   fetchCommentReactionCounts,
   adaptCommentTreeToAppwriteShape,
   adaptSupabaseCommentToAppwriteShape,
+  subscribeToComments,
 } from "../lib/comments-supabase";
 import {
   getMyReactionsForTargets as getMySupabaseReactionsForTargets,
@@ -431,7 +433,7 @@ const PostCommentItem = memo(
                 ) : null}
                 {renderMentionText?.(item?.comment, "mt-1 font-sans text-sm leading-5", "font-sans font-semibold", {
                   color: theme.textMuted,
-                  mentionColor: theme.accentBlue,
+                  mentionColor: theme.mention,
                 })}
               </View>
 
@@ -518,7 +520,7 @@ const PostCommentItem = memo(
                               ) : null}
                               {renderMentionText?.(reply?.comment, "mt-0.5 font-sans text-xs leading-5", "font-sans font-semibold", {
                                 color: theme.textMuted,
-                                mentionColor: theme.accentBlue,
+                                mentionColor: theme.mention,
                               })}
                             </View>
                             <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>
@@ -1173,6 +1175,36 @@ const PostCommentModal = ({
     fetchComments(false);
   }, [fetchComments, isVisible, postID]);
 
+  // Stable ref to fetchComments so the realtime effect below doesn't
+  // re-fire (and tear down + recreate the Supabase channel) every
+  // time fetchComments's identity changes due to its deps. We only
+  // want the channel to re-subscribe on actual post-target changes.
+  const fetchCommentsRef = useRef(fetchComments);
+  fetchCommentsRef.current = fetchComments;
+
+  // Realtime — subscribe to comments INSERT/UPDATE/DELETE on this post
+  // (Supabase posts only — Appwrite-shape posts don't have a Supabase
+  // counterpart yet to subscribe to). On any change, re-fetch the
+  // tree. Cheap because it's a single SELECT and posts have small
+  // comment counts. Unsubscribes on modal close + post change.
+  //
+  // Deps deliberately exclude fetchComments — we use the ref above so
+  // an identity change in the callback (which can happen on most
+  // re-renders since it's a useCallback with several deps) doesn't
+  // cause an unsubscribe + resubscribe cycle.
+  useEffect(() => {
+    if (!isVisible || !postID || !isSupabasePost) return undefined;
+    const unsubscribe = subscribeToComments({
+      postId: postID,
+      onInsert: () => fetchCommentsRef.current?.(false),
+      onUpdate: () => fetchCommentsRef.current?.(false),
+      onDelete: () => fetchCommentsRef.current?.(false),
+    });
+    return () => {
+      try { unsubscribe?.(); } catch (_) { /* swallow */ }
+    };
+  }, [isVisible, postID, isSupabasePost]);
+
   useEffect(() => {
     if (isVisible) return;
     if (mentionTimerRef.current) {
@@ -1353,6 +1385,13 @@ const PostCommentModal = ({
             secrets.appwriteConfig.postsCommentRepliesCollectionId,
             secrets.appwriteConfig.postsCommentCollectionId,
           ]);
+          // Mirror to Supabase. The unified comments row would still be
+          // queryable on web until this delete runs.
+          try {
+            await dualWriteDeleteComment({ appwriteDocId: replyId });
+          } catch (sbErr) {
+            console.log("handleDeleteReply: Supabase mirror skipped", sbErr?.message);
+          }
         }
 
         setComments((prev) =>
@@ -1433,6 +1472,18 @@ const PostCommentModal = ({
           }
 
           await databases.deleteDocument(secrets.appwriteConfig.databaseId, secrets.appwriteConfig.postsCommentCollectionId, commentId);
+
+          // Mirror the delete on Supabase. Without this, web users keep
+          // seeing the deleted comment because the unified `comments` row
+          // (with legacy_appwrite_id matching the Appwrite id) lingers.
+          // Fire reply deletes in a single bulk call, then the parent.
+          try {
+            const replyAppwriteIds = (getCommentReplies(comment) || []).map((r) => r?.$id).filter(Boolean);
+            await dualWriteDeleteCommentsBulk(replyAppwriteIds);
+            await dualWriteDeleteComment({ appwriteDocId: commentId });
+          } catch (sbErr) {
+            console.log("handleDeleteComment: Supabase mirror skipped", sbErr?.message);
+          }
         }
 
         setRawCommentsState((prev) => {
@@ -1773,6 +1824,15 @@ const PostCommentModal = ({
           setComments(nextThreadedComments);
           const nextCount = Math.max(0, nextThreadedComments.length);
           onCommentPosted?.(nextCount);
+          // ABUSE DEFENSE: same dedup key as the legacy createPostComment
+          // branch and the like hook — POST-level. Multiple comments on
+          // the same post in one day tick at most once. Cross-action
+          // unification means like+comment on one post still counts as
+          // a single engagement toward the goal.
+          if (postID) {
+            const { tickGoalUnique } = await import("../lib/goals-store");
+            tickGoalUnique("like_comment", `like_comment:${postID}`);
+          }
           // Notification path is Appwrite-only today; skip for Supabase
           // posts. The web project ships its own notification stack on
           // Supabase, and mobile will pick that up in a later phase.
@@ -1782,6 +1842,18 @@ const PostCommentModal = ({
             comment: persistedCommentText,
             commentOwner: user.$id,
           });
+
+          // ABUSE DEFENSE: dedup key is `like_comment:${postID}`,
+          // POST-level — not comment-id-level. Multiple comments on
+          // the same post tick at most once per day. Same key as the
+          // like hook in PostInformation.jsx, so a user who likes AND
+          // comments on the same post counts as a single engagement
+          // (matches the "Like & comment 3 posts" goal spec — 3
+          // distinct posts engaged with, not 3 individual actions).
+          if (postID) {
+            const { tickGoalUnique } = await import("../lib/goals-store");
+            tickGoalUnique("like_comment", `like_comment:${postID}`);
+          }
 
           const nextRawComments = [...rawCommentsRef.current, newComment];
           const nextThreadedComments = await hydrateThreadedComments(nextRawComments);

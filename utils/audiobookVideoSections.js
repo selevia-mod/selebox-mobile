@@ -1,8 +1,23 @@
 import { ShuffleVideos } from "../lib/appwrite";
 
-export const AUDIOBOOK_SECTIONS_CACHE_VERSION = 2;
+// Bumped to 4 (May 2026) — view-count backfill from videos-views landed
+// (37,460 historical view rows imported) and AUDIOBOOK_VIEW_THRESHOLD
+// moved from 0 → 50 to start curating "Most People Want." Cache version
+// bump invalidates payloads cached under the old 0-threshold so the new
+// MPW/SFY split shows up on the next launch instead of waiting for the
+// 12h TTL.
+export const AUDIOBOOK_SECTIONS_CACHE_VERSION = 4;
 export const AUDIOBOOK_TAG = "Audiobook";
-export const AUDIOBOOK_VIEW_THRESHOLD = 100;
+// Threshold for the "Most People Want" shelf. Audiobooks at or above this
+// many unique viewers (videos.views_count) land in MPW; the rest fall
+// into "Suggested For You." With the Appwrite → Supabase view-count
+// backfill complete (37,460 rows), the catalog distribution at the time
+// of cutover was: 47 audiobooks at 100+ views, 130 at 50+, 232 at 20+,
+// 270 at 10+, out of 309 total. 50 was chosen as the sweet spot — gives
+// ~130 items in MPW and ~179 in SFY, balanced enough that neither shelf
+// dominates. Adjust upward (more strict) once the catalog grows and the
+// long tail thickens.
+export const AUDIOBOOK_VIEW_THRESHOLD = 50;
 export const AUDIOBOOK_VIDEOS_LIMIT = 100;
 
 const chunkArray = (array, chunkSize) => {
@@ -44,11 +59,22 @@ export const getVideoViewCount = (video) => {
 export const getAudiobookVideoGroups = (videos = []) => {
   const audiobookVideos = mergeUniqueVideos(videos).filter(hasAudiobookTag);
 
+  // When the threshold is 0 (post-migration / no view data yet), every
+  // audiobook video lands in `mostPeopleWant` and `suggestedForYou`
+  // would otherwise be empty (filter: views < 0 matches nothing). Show
+  // the full list in BOTH buckets in that case — the consuming sections
+  // shuffle + chunk independently, so the user still sees variety
+  // between the two shelves. Once view-count backfill lands and the
+  // threshold goes back to 100, the original split (popular vs less
+  // popular) returns automatically.
+  const noThreshold = AUDIOBOOK_VIEW_THRESHOLD <= 0;
   return {
     mostPeopleWant: audiobookVideos
-      .filter((video) => getVideoViewCount(video) > AUDIOBOOK_VIEW_THRESHOLD)
+      .filter((video) => getVideoViewCount(video) >= AUDIOBOOK_VIEW_THRESHOLD)
       .sort((a, b) => getVideoViewCount(b) - getVideoViewCount(a)),
-    suggestedForYou: audiobookVideos.filter((video) => getVideoViewCount(video) < AUDIOBOOK_VIEW_THRESHOLD),
+    suggestedForYou: noThreshold
+      ? audiobookVideos
+      : audiobookVideos.filter((video) => getVideoViewCount(video) < AUDIOBOOK_VIEW_THRESHOLD),
   };
 };
 

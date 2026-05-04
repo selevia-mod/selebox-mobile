@@ -30,6 +30,7 @@ import { normalizeBookContentToHtml } from "../../lib/book-content";
 import { createInlineCommentDomVisitors, INLINE_COMMENT_ATTRS } from "../../lib/book-inline-comment-anchors";
 import { BookInlineCommentsService } from "../../lib/book-inline-comments";
 import { BookReadService } from "../../lib/book-reads";
+import { tickGoalUnique } from "../../lib/goals-store";
 import { BookUnlocksService } from "../../lib/book-unlocks";
 import { BOOK_CHAPTER_LIST_SELECT, BookService } from "../../lib/books";
 import { THEME_MODES, themeColors } from "../../theme/colors";
@@ -143,7 +144,11 @@ export default function ReadingScreen() {
   const minimumFont = 16;
   const maximumFont = 20;
   const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get("window");
-  const bookChapterLockStart = globalSettings["BOOKS_CHAPTER_LOCK_START"];
+  // Prefer the per-book threshold (mapped from `lock_from_chapter`).
+  // Falling through to globalSettings only if the book row hasn't set
+  // its own. Avoids the Paid → Free flicker we hit when globalSettings
+  // hadn't rehydrated and the gate trivially evaluated to false.
+  const bookChapterLockStart = book?.bookChapterLockStart ?? globalSettings?.["BOOKS_CHAPTER_LOCK_START"];
   const isPagingMode = readingMode === "page";
   const showPagingSwipeIndicator = isPagingMode && allChapters.length > 1;
   const currentPageTheme = bookReadingTheme[pageColor];
@@ -160,14 +165,29 @@ export default function ReadingScreen() {
     u: { textDecorationLine: "underline" },
     s: { textDecorationLine: "underline" },
     span: { color: currentPageTheme.fontColor },
-    img: { marginTop: 10, marginBottom: 16, borderRadius: 12 },
+    // Clamp embedded chapter images to the reader column width and let
+    // height auto-scale so aspect ratio is preserved. tagsStyles wins
+    // over the inline `max-width:100%` in the HTML, so without an
+    // explicit width here intrinsic-sized images blow past the screen
+    // and push body text off-screen.
+    img: {
+      width: "100%",
+      height: "auto",
+      maxWidth: "100%",
+      alignSelf: "center",
+      marginTop: 10,
+      marginBottom: 16,
+      borderRadius: 12,
+    },
   };
 
   useEffect(() => {
     const fetchChapter = async () => {
       try {
         setLoading(true);
-        const doc = await bookService.fetchBookChapter({ chapterId: resolvedChapterId });
+        // Pass actorUserId so authors reading their own draft chapter
+        // get a real result. Readers fall through to the public path.
+        const doc = await bookService.fetchBookChapter({ chapterId: resolvedChapterId, actorUserId: user?.$id });
         if (!doc) throw new Error("Unable to load chapter");
 
         const chapterBookId = doc?.book?.$id || doc?.book;
@@ -202,6 +222,9 @@ export default function ReadingScreen() {
           setChapterUnlockVisible(true);
         } else {
           BookReadService.readBookChapter({ userId: user?.$id, bookId: doc?.book?.$id, chapterId: doc?.$id });
+          // Tick the read_chapters goal (deduped per chapter $id per
+          // day so re-opening doesn't farm the counter).
+          tickGoalUnique("read_chapters", doc?.$id);
         }
       } catch (err) {
         const offlineEntry = findDownloadedBookByChapterId(resolvedChapterId);
@@ -228,6 +251,7 @@ export default function ReadingScreen() {
           bookId: offlineBook?.$id || offlineEntry.bookId,
           chapterId: offlineChapters[safeIndex]?.$id,
         });
+        tickGoalUnique("read_chapters", offlineChapters[safeIndex]?.$id);
       } finally {
         setLoading(false);
       }
@@ -325,7 +349,7 @@ export default function ReadingScreen() {
         if (active) setIsBookInLibrary(existingBookLibrary?.documents?.length > 0);
       } catch (error) {
         if (active) setIsBookInLibrary(false);
-        console.log("checkBookLibraryStatus: error", error);
+        console.error("checkBookLibraryStatus: error", error);
       }
     };
 
@@ -388,7 +412,7 @@ export default function ReadingScreen() {
       proceedPendingExit();
     } catch (error) {
       setSavingToLibrary(false);
-      console.log("handleSaveToLibraryAndExit: error", error);
+      console.error("handleSaveToLibraryAndExit: error", error);
       Alert.alert("Error", "Unable to add this book to your library right now.");
     }
   };
@@ -504,7 +528,7 @@ export default function ReadingScreen() {
 
   const fetchReadableChapter = async (nextChapter) => {
     if (!nextChapter?.$id || Object.prototype.hasOwnProperty.call(nextChapter, "content")) return nextChapter;
-    return bookService.fetchBookChapter({ chapterId: nextChapter.$id });
+    return bookService.fetchBookChapter({ chapterId: nextChapter.$id, actorUserId: user?.$id });
   };
 
   const loadNextChapter = async () => {
@@ -529,8 +553,9 @@ export default function ReadingScreen() {
           const readableChapter = await fetchReadableChapter(nextChapter);
           animateChapterChange(readableChapter, nextIndex);
           BookReadService.readBookChapter({ userId: user?.$id, bookId: book?.$id, chapterId: readableChapter?.$id });
+          tickGoalUnique("read_chapters", readableChapter?.$id);
         } catch (error) {
-          console.log("loadNextChapter: error", error);
+          console.error("loadNextChapter: error", error);
           Alert.alert("Unable to load chapter", "Please try again.");
         }
       }
@@ -560,7 +585,7 @@ export default function ReadingScreen() {
           animateChapterChange(readableChapter, prevIndex);
           BookReadService.readBookChapter({ userId: user?.$id, bookId: book?.$id, chapterId: readableChapter?.$id });
         } catch (error) {
-          console.log("loadPreviousChapter: error", error);
+          console.error("loadPreviousChapter: error", error);
           Alert.alert("Unable to load chapter", "Please try again.");
         }
       }
@@ -700,7 +725,7 @@ export default function ReadingScreen() {
         const readableChapter = await fetchReadableChapter(chapter);
         animateChapterChange(readableChapter, index);
       } catch (error) {
-        console.log("onChapterSelect: error", error);
+        console.error("onChapterSelect: error", error);
         Alert.alert("Unable to load chapter", "Please try again.");
       }
     }
@@ -722,7 +747,7 @@ export default function ReadingScreen() {
       const readableChapter = await fetchReadableChapter(selectedChapter);
       animateChapterChange(readableChapter, idx);
     } catch (error) {
-      console.log("handleProceedToChapter: error", error);
+      console.error("handleProceedToChapter: error", error);
       Alert.alert("Unable to load chapter", "Please try again.");
     }
   };
@@ -1064,10 +1089,24 @@ export default function ReadingScreen() {
               />
             )}
 
-            {/* CONTENT */}
+            {/* CONTENT — locked chapters NEVER hit RenderHTML.
+                Previously the HTML was parsed and rendered into memory
+                even when chapterUnlockVisible was true (the unlock
+                modal merely overlaid the body), which meant the paid
+                text was sitting one screenshot or DevTools tap away.
+                We now feed an empty string into RenderHTML for the
+                duration of the unlock modal so the paywalled body is
+                literally not in the rendered tree until the user pays.
+                Belt-and-suspenders with isChapterLocked as well — even
+                if some future code path forgets to set
+                chapterUnlockVisible, the gate still wins. */}
             <RenderHTML
               contentWidth={Math.max(SCREEN_WIDTH - 32, 0)}
-              source={{ html: stripBackgroundStyles(normalizeBookContentToHtml(chapter?.content ?? "")) }}
+              source={{
+                html: chapterUnlockVisible
+                  ? ""
+                  : stripBackgroundStyles(normalizeBookContentToHtml(chapter?.content ?? "")),
+              }}
               baseStyle={htmlBaseStyle}
               domVisitors={inlineCommentDomVisitors}
               tagsStyles={htmlTagsStyles}

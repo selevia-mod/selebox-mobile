@@ -11,6 +11,7 @@ IOS-Submit-Auth-Key.p8
 .env
 .env.*
 !.env.example
+scripts/run-backfill.sh
 
 # Dependencies
 node_modules/

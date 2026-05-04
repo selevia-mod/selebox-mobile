@@ -1,42 +1,41 @@
 import { View } from "react-native";
-import useAppTheme from "../hooks/useAppTheme";
-import { getBadgeRoleNames, getRoleBadgeBorderColor, getRoleBadgeForegroundColor, getRoleBadgeSurfaceColor } from "../lib/user-roles";
-import RoleBadgeIcon from "./RoleBadgeIcon";
+import { getBadgeRoleNames } from "../lib/user-roles";
+import RoleVerifiedBadge from "./RoleVerifiedBadge";
 
-const UserRoleBadgeIcons = ({ user, size = 12, containerClassName = "ml-1 flex-row items-center", iconSpacing = 4, maxVisible = null }) => {
-  const { isDarkMode } = useAppTheme();
+// Inline verified-badge marker for display names — Facebook-style.
+//
+// One badge per user. When a user qualifies for multiple roles
+// (e.g., moderator + pioneer), we pick the single highest-priority
+// badge per the product spec:
+//
+//   moderator > pioneer > creator > writer > auditor
+//
+// Matches the priority cascade in:
+//   - scripts/backfill-roles.js → resolveRole()
+//   - Selebox/js/app.js → renderRoleSeal()
+//
+// so the same user surfaces the same seal across mobile and web.
+//
+// The actual seal silhouette + per-role color comes from
+// RoleVerifiedBadge (ROLE_VERIFIED_PALETTE). Single source of truth
+// for the visual — palette changes ripple through every surface.
+const ROLE_PRIORITY = ["Moderator", "Pioneer", "Creator", "Writer", "Auditor"];
+
+const pickHighestPriority = (roles) => {
+  for (const candidate of ROLE_PRIORITY) {
+    if (roles.includes(candidate)) return candidate;
+  }
+  return null;
+};
+
+const UserRoleBadgeIcons = ({ user, size = 14, containerClassName = "ml-1 flex-row items-center" }) => {
   const roles = getBadgeRoleNames(user);
-  const visibleRoles = maxVisible ? roles.slice(0, maxVisible) : roles;
-
-  if (!visibleRoles.length) return null;
+  const role = pickHighestPriority(roles);
+  if (!role) return null;
 
   return (
     <View className={containerClassName}>
-      {visibleRoles.map((role, index) => {
-        const badgeBackgroundColor = getRoleBadgeSurfaceColor(role, isDarkMode, "icon");
-        const badgeBorderColor = getRoleBadgeBorderColor(role, isDarkMode, "icon");
-        const foregroundColor = getRoleBadgeForegroundColor(role, isDarkMode);
-        return (
-          <View key={`${role}-${index}`} style={index > 0 ? { marginLeft: iconSpacing } : null}>
-            <View
-              className="items-center justify-center rounded-full"
-              style={
-                isDarkMode
-                  ? null
-                  : {
-                      paddingHorizontal: 4,
-                      paddingVertical: 3,
-                      backgroundColor: badgeBackgroundColor,
-                      borderWidth: badgeBorderColor === "transparent" ? 0 : 1,
-                      borderColor: badgeBorderColor,
-                    }
-              }
-            >
-              <RoleBadgeIcon role={role} size={size} color={foregroundColor} />
-            </View>
-          </View>
-        );
-      })}
+      <RoleVerifiedBadge role={role} size={size} />
     </View>
   );
 };

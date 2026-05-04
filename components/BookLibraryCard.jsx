@@ -53,7 +53,12 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
   const [isDownloaded, setIsDownloaded] = useState(false);
 
   const { user, globalSettings } = useGlobalContext();
-  const bookChapterLockStart = globalSettings["BOOKS_CHAPTER_LOCK_START"];
+  // Prefer the per-book threshold (mapped from `lock_from_chapter` on
+  // the book row) over globalSettings — the latter sometimes hadn't
+  // rehydrated yet, leaving bookChapterLockStart undefined and making
+  // isChapterLocked short-circuit to false (paid chapters appearing
+  // free for a render). The static helper has its own fallback now.
+  const bookChapterLockStart = item?.bookChapterLockStart ?? globalSettings?.["BOOKS_CHAPTER_LOCK_START"];
   const bookService = new BookService();
   const bookUnlockService = useRef(new BookUnlocksService()).current;
 
@@ -110,13 +115,13 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
     }
   };
 
+  // See BookCatalogCard for the same change + rationale. Reads come
+  // off the row directly; the previous per-card fetchBookRead call was
+  // a redundant round-trip that also crashed on drafts (anon RLS
+  // filters is_public=false rows → null → "Cannot read property
+  // 'totalReads' of null").
   const fetchBookReads = async () => {
-    try {
-      const bookReads = await BookReadService.fetchBookRead({ bookId: item.$id });
-      setReadTotal(bookReads.totalReads);
-    } catch (error) {
-      console.log("fetchBookReads: error", error);
-    }
+    setReadTotal(item?.totalReads ?? item?.views_count ?? 0);
   };
 
   const formattedDate = useMemo(() => {

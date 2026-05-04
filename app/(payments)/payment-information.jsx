@@ -204,15 +204,23 @@ const PaymentInformation = () => {
 
     try {
       setSaving(true);
-      const uploadIfNeeded = async (file) =>
-        file?.uri && !file.uri.startsWith("http") ? await UserDocumentsService.uploadFile(file, user.$id) : file?.uri || null;
+
+      // Each attachment goes to its own storage `kind` so admin
+      // review tools can group by type. Pre-existing http(s)/signed
+      // URLs (already-uploaded files re-shown to the user) skip the
+      // upload entirely.
+      const uploadIfNeeded = async (file, field) => {
+        if (!file?.uri) return null;
+        if (file.uri.startsWith("http")) return file.uri;
+        return await UserDocumentsService.uploadFile(file, user.$id, field);
+      };
 
       const payload = {
         ...form,
         dateOfBirth: formatDate(form.dateOfBirth),
-        valid_id: await uploadIfNeeded(form.valid_id),
-        qr_code: await uploadIfNeeded(form.qr_code),
-        signature: await uploadIfNeeded(form.signature),
+        valid_id: await uploadIfNeeded(form.valid_id, "valid_id"),
+        qr_code: await uploadIfNeeded(form.qr_code, "qr_code"),
+        signature: await uploadIfNeeded(form.signature, "signature"),
       };
 
       await UserDocumentsService.savePaymentInfo(user.$id, payload);

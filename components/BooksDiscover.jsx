@@ -10,6 +10,7 @@ import { BookService, hydrateDiscoverStats } from "../lib/books";
 import { BooksRankingService } from "../lib/books-rankings";
 import FormatNumber from "../lib/utils/format-number";
 import tabNavigationEvents from "../lib/tab-navigation-events";
+import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 
 const DISCOVER_TAB_OPTIONS = [
   { key: "popular", label: "Popular" },
@@ -411,9 +412,12 @@ const DiscoverGridCard = memo(({ cardItem, cardWidth, cardHeight, onPressBook })
             <Text className="text-[13px] font-bold" style={{ color: theme.text }} numberOfLines={2}>
               {book?.title || "Untitled"}
             </Text>
-            <Text className="mt-0.5 text-[11px]" style={{ color: theme.textSoft }} numberOfLines={1}>
-              {book?.uploader?.username}
-            </Text>
+            <View className="mt-0.5 flex-row items-center">
+              <Text className="text-[11px]" style={{ color: theme.textSoft }} numberOfLines={1}>
+                {book?.uploader?.username}
+              </Text>
+              <UserRoleBadgeIcons user={book?.uploader} size={10} />
+            </View>
           </View>
 
           <View>

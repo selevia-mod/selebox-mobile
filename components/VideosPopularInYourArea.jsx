@@ -1,3 +1,4 @@
+import { router } from "expo-router";
 import { useCallback, useMemo } from "react";
 import { FlatList, Platform, View, useWindowDimensions } from "react-native";
 import { getSectionTitleHeight, getVideoCardLayout } from "../utils/videoCardLayout";
@@ -20,7 +21,10 @@ const VideosPopularInYourArea = ({ videos = [] }) => {
 
   return (
     <View style={{ minHeight: containerHeight }} className="space-y-2">
-      <VideosSectionTitle title={"Popular in your area"} />
+      <VideosSectionTitle
+        title={"Popular in your area"}
+        onSeeAllPress={() => router.push({ pathname: "/(video)/shelf-all", params: { type: "popularInYourArea" } })}
+      />
       <FlatList
         horizontal
         showsHorizontalScrollIndicator={false}

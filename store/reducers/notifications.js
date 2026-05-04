@@ -20,10 +20,17 @@ const cappedNotificationsTransform = createTransform(
 export const notificationsPersistConfig = {
   key: "notifications",
   storage: reduxStorage,
-  whitelist: ["userId", "items", "lastId", "hasMore", "lastFetchedAt"],
+  whitelist: ["userId", "items", "lastId", "hasMore", "lastFetchedAt", "dismissedIds"],
   throttle: 1000,
   transforms: [cappedNotificationsTransform],
 };
+
+// Cap dismissed-IDs storage so the persisted set doesn't grow unbounded
+// across the app's lifetime. 500 is generous — a user dismissing 500
+// private DMs without ever clearing app data is a corner case, and the
+// keep-most-recent semantics mean older IDs only return if the server
+// row also resurrects (which itself implies the user wants to see it).
+const DISMISSED_IDS_CAP = 500;
 
 const initialState = {
   userId: null,
@@ -31,6 +38,12 @@ const initialState = {
   lastId: null,
   hasMore: true,
   lastFetchedAt: null,
+  // Notification IDs the user has explicitly dismissed (currently:
+  // private-DM tap path). Filtered out at every fetch site so that
+  // even if the server-side DELETE was blocked by RLS or otherwise
+  // failed silently, the user never sees the row again on this
+  // device. The list stays bounded by DISMISSED_IDS_CAP.
+  dismissedIds: [],
 };
 
 const notificationsSlice = createSlice({
@@ -98,6 +111,32 @@ const notificationsSlice = createSlice({
       state.items = state.items.map((item) => (item.$id === notificationId ? { ...item, isViewed: true } : item));
       state.lastFetchedAt = Date.now();
     },
+    // Hard-remove a notification from the persisted cache. Used by the
+    // private-DM tap path so a row that was tapped doesn't get replayed
+    // on the next mount from MMKV. markNotificationViewed only flips
+    // isViewed=true, so without this explicit removeNotification action
+    // the row reappeared in the bell list whenever the screen remounted
+    // — even though the React state had filtered it out.
+    //
+    // Also stamps the ID into `dismissedIds` so subsequent fetches
+    // (Supabase or Appwrite) filter the row out client-side. The
+    // server-side DELETE in deleteNotification() may be silently
+    // blocked by RLS depending on table policies, and waiting for
+    // backend SQL to be deployed is too slow for the OTA — this
+    // dismissedIds filter guarantees the user never sees the row
+    // again on this device regardless of what the server does.
+    removeNotification(state, action) {
+      const { userId, notificationId } = action.payload || {};
+      if (!notificationId) return;
+      if (userId && state.userId && state.userId !== userId) return;
+      state.items = state.items.filter((item) => item?.$id !== notificationId);
+      const existing = Array.isArray(state.dismissedIds) ? state.dismissedIds : [];
+      if (!existing.includes(notificationId)) {
+        const next = [notificationId, ...existing];
+        state.dismissedIds = next.length > DISMISSED_IDS_CAP ? next.slice(0, DISMISSED_IDS_CAP) : next;
+      }
+      state.lastFetchedAt = Date.now();
+    },
     clearNotificationsCache(state, action) {
       const userId = action.payload;
       if (!userId || state.userId === userId) {
@@ -108,6 +147,6 @@ const notificationsSlice = createSlice({
   },
 });
 
-export const { setNotificationsCache, mergeNotificationsCache, markNotificationViewed, clearNotificationsCache } = notificationsSlice.actions;
+export const { setNotificationsCache, mergeNotificationsCache, markNotificationViewed, removeNotification, clearNotificationsCache } = notificationsSlice.actions;
 
 export const notificationsReducer = notificationsSlice.reducer;

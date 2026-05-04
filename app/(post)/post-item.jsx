@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, ScrollView, Text, TouchableOpacity, View } from "react-native";
 import Share from "react-native-share";
 import { ImageViewer, PostCard, PostCommentModal, PostLikesModal, StyledSafeAreaView } from "../../components";
+import useAppTheme from "../../hooks/useAppTheme";
 import { consumePostCommentModalResume } from "../../lib/post-comment-modal-resume";
 import { getPost } from "../../lib/posts";
 import { getUserByID } from "../../lib/users";
@@ -27,6 +28,7 @@ const buildSafePostOwner = (owner, fallbackOwnerId = null) => {
 };
 
 const PostItemScreen = () => {
+  const { theme } = useAppTheme();
   const params = useLocalSearchParams();
   const postId = useMemo(() => normalizeRouteParam(params.postId || params.focusPostId || params.id), [params.focusPostId, params.id, params.postId]);
   const focusCommentIdParam = useMemo(
@@ -246,9 +248,9 @@ const PostItemScreen = () => {
       <View className="h-full w-full">
         <View className="flex-row items-center px-4 py-2">
           <TouchableOpacity onPress={handleBack} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <MaterialIcons name="arrow-back" size={24} color="white" />
+            <MaterialIcons name="arrow-back" size={24} color={theme.text} />
           </TouchableOpacity>
-          <Text className="ml-2 font-sans text-lg font-semibold text-white">Post</Text>
+          <Text className="ml-2 font-sans text-lg font-semibold" style={{ color: theme.text }}>Post</Text>
         </View>
 
         {renderBody()}

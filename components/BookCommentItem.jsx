@@ -222,7 +222,7 @@ const BookCommentItem = ({ item, onReplyPress, onClose, onProfilePress, renderMe
               </TouchableOpacity>
               {renderMentionText?.(item?.comment, "mt-1 font-sans text-sm leading-5", "font-sans font-semibold", {
                 color: theme.textMuted,
-                mentionColor: theme.accentBlue,
+                mentionColor: theme.mention,
               })}
             </View>
 
@@ -294,7 +294,7 @@ const BookCommentItem = ({ item, onReplyPress, onClose, onProfilePress, renderMe
                               </TouchableOpacity>
                               {renderMentionText?.(reply?.comment, "mt-0.5 font-sans text-xs leading-5", "font-sans font-semibold", {
                                 color: theme.textMuted,
-                                mentionColor: theme.accentBlue,
+                                mentionColor: theme.mention,
                               })}
                             </View>
                             <View className="mt-1 flex-row items-center px-1" style={{ gap: 12 }}>

@@ -29,7 +29,7 @@ import {
   PostBook,
   PostCard,
   PostCardSkeleton,
-  PostClip,
+  // PostClip removed — clips feature retired May 2026.
   PostCommentModal,
   PostLikesModal,
   PostNativeAd,
@@ -58,10 +58,13 @@ import { USE_SUPABASE_POSTS } from "../../lib/feature-flags";
 import {
   adaptSupabasePostToAppwriteShape,
   fetchDiscoverFeedPage,
+  fetchFeedDelta,
   fetchFeedPage,
   fetchFollowingFeedPage,
   fetchForYouFeedPage,
   fetchPostStats,
+  loadUserContentFilters,
+  resolveSupabaseUserId,
   trackPostViews,
 } from "../../lib/posts-supabase";
 // Phase E.3 — gate feed video autoplay by device tier. Low-tier devices
@@ -72,7 +75,7 @@ import {
 // pre-rendered window on low-end phones.
 import { getFlashListConfig, isLowTier } from "../../lib/device-tier";
 import { hasRoleKey, SELECTABLE_ROLE_KEYS } from "../../lib/user-roles";
-import { blockUser, hideContent, listBlockedUsers, listHiddenContent, listUserReports, recordEulaAcceptance, reportContent } from "../../lib/safety";
+import { blockUser, hideContent, listBlockedUsers, listHiddenContent, listUserReports, recordEulaAcceptance, reportContent, snoozeUser } from "../../lib/safety";
 import tabNavigationEvents from "../../lib/tab-navigation-events";
 import { useModalMessage } from "../../hooks/useModalMessage";
 import secrets from "../../private/secrets";
@@ -292,6 +295,24 @@ const Home = () => {
   const [lastId, setLastId] = useState();
   const [hasMore, setHasMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Facebook-pattern feed delta. `lastSeenAt` tracks the newest post's
+  // created_at across the rendered list. Pull-to-refresh fetches only
+  // posts created since this timestamp instead of re-running the
+  // expensive feed_for_you ranker. Updated whenever a fresh page lands
+  // (initial load + infinite scroll) and after delta apply.
+  const [lastSeenAt, setLastSeenAt] = useState(null);
+
+  // Background-poll buffer + pill. The poll runs every 60s while the
+  // app is foregrounded and fills `newPostsBuffer` with hydrated post
+  // entries (already adapted to the FlatList's shape). The pill at the
+  // top of the feed shows the count and on tap prepends them to the
+  // list. NO DB call on tap — the data is already hydrated.
+  // (Pill scroll-to-top reuses the existing `flatListRef` declared
+  // elsewhere in this component.)
+  const [newPostsBuffer, setNewPostsBuffer] = useState([]);
+  // Stable id-set for fast dedup against repeat polls and the live feed.
+  const newPostsBufferIdsRef = useRef(new Set());
+  const feedAppStateRef = useRef(AppState.currentState);
   // Active feed tab — "for-you" (personalized via feed generator), "following"
   // (followed users only), or "discover" (newest posts excluding followed).
   const [feedTab, setFeedTab] = useState("for-you");
@@ -302,6 +323,14 @@ const Home = () => {
   // For You also has a redux persist layer below (cachedPosts), this just adds
   // a parallel in-memory snapshot for quick switching during the session.
   const tabCacheRef = useRef({}); // { [tab]: { posts, lastId, hasMore, cursor, followingCount? } }
+  // lastReRankAtRef — timestamp of the last time pull-to-refresh
+  // triggered a feed_for_you re-rank. Throttled to 30s between
+  // re-ranks so a user mashing pull-to-refresh doesn't hammer the
+  // ranker. Used by the rotation strategy: when fetchFeedDelta returns
+  // 0 new posts, fall through to feed_for_you (which excludes posts
+  // seen in the last 24h, per the 3-tier cascade), giving the user
+  // fresh content even when nothing new has been posted.
+  const lastReRankAtRef = useRef(0);
   useResetOnBlur(setRefreshing);
   const [refreshCounter, setRefreshCounter] = useState(0);
   const [localCursor, setLocalCursor] = useState(0);
@@ -356,6 +385,7 @@ const Home = () => {
   const [reportNotes, setReportNotes] = useState("");
   const [submittingReport, setSubmittingReport] = useState(false);
   const [blockingUser, setBlockingUser] = useState(false);
+  const [snoozingUser, setSnoozingUser] = useState(false);
   const [showEulaModal, setShowEulaModal] = useState(false);
   const [hasResolvedEula, setHasResolvedEula] = useState(false);
   const [isVideoMuted, setIsVideoMuted] = useState(true);
@@ -848,14 +878,56 @@ const Home = () => {
     const fetchSafetySignals = async () => {
       if (!user?.$id) return;
       try {
-        const [blocked, reported, hidden] = await Promise.all([
+        // Dual-source the safety lists during the migration window:
+        //   - Appwrite (legacy) — covers historical mobile-only blocks
+        //     and contentReports + hides that haven't been backfilled yet.
+        //     IDs come back as Appwrite hex.
+        //   - Supabase (new) — covers blocks/hides done on web AND
+        //     anything mobile dual-wrote since the safety.js update.
+        //     IDs come back as Supabase UUIDs.
+        // We populate BOTH sets so the in-memory home-feed filter checks
+        // either form. The Supabase filter loaded by posts-supabase.js's
+        // loadUserContentFilters is the authoritative source for the
+        // post-fetch shouldHidePost pass; this state is only the
+        // last-resort UI-side filter for legacy code paths.
+        const [blocked, reported, hidden, supabaseFilters] = await Promise.all([
           listBlockedUsers({ blockerId: user.$id }).catch(() => []),
           listUserReports({ reporterId: user.$id }).catch(() => []),
           listHiddenContent({ userId: user.$id }).catch(() => []),
+          // resolveSupabaseUserId is what posts-supabase uses internally;
+          // we pass user.$id (Appwrite hex) and it resolves through
+          // profiles.legacy_appwrite_id.
+          (async () => {
+            try {
+              const resolved = await resolveSupabaseUserId(user.$id);
+              if (!resolved) return null;
+              return await loadUserContentFilters(resolved);
+            } catch (_) {
+              return null;
+            }
+          })(),
         ]);
 
-        setBlockedUserIds(new Set(blocked));
-        setHiddenContentIds(new Set([...reported, ...hidden]));
+        // Combine Appwrite hex IDs and Supabase UUIDs in the same set so
+        // the in-memory filter at line ~739 catches whichever form the
+        // post happens to carry. Posts coming back from Supabase have
+        // user_id = UUID; posts from the Appwrite fallback path have
+        // user_id = hex. The set holding both means the .has() check
+        // matches in either case.
+        const blockedSet = new Set(blocked);
+        const hiddenSet = new Set([...reported, ...hidden]);
+        if (supabaseFilters) {
+          supabaseFilters.blockedUserIds.forEach((id) => blockedSet.add(id));
+          supabaseFilters.hiddenPostIds.forEach((id) => hiddenSet.add(id));
+          // Snoozes are user-targeted (not post-targeted), so they map
+          // into the blocked set conceptually for the UI-filter pass —
+          // it doesn't distinguish between block and snooze for the
+          // hide effect. (Snooze rows expire; loadUserContentFilters
+          // already filters them by expires_at > now.)
+          supabaseFilters.snoozedUserIds.forEach((id) => blockedSet.add(id));
+        }
+        setBlockedUserIds(blockedSet);
+        setHiddenContentIds(hiddenSet);
       } catch (error) {
         console.log("safety signals error", error);
       }
@@ -899,6 +971,87 @@ const Home = () => {
   useEffect(() => {
     setPosts((prev) => applySafetyFilters(prev));
   }, [blockedUserIds, hiddenContentIds]);
+
+  // Pre-warm Following + Discover tabs in the background ~1s after the
+  // initial For-You load lands. Without this, tapping Following or
+  // Discover for the first time triggered a synchronous network fetch
+  // that took 600–1500ms to paint anything — the "switching tab looks
+  // like bug and has a delay" behavior the user flagged. With pre-warm,
+  // tabCacheRef is populated by the time the user taps, so
+  // handleSwitchTab takes the cached-restore branch and the switch is
+  // instant.
+  //
+  // Guards:
+  //   - Only fires once per mount (prewarmedRef).
+  //   - Skips if the current viewer's id isn't ready yet.
+  //   - Skips if For-You is still loading (we don't want to fight for
+  //     bandwidth with the initial paint).
+  //   - Each tab's pre-warm is best-effort — failure on Following
+  //     doesn't abort Discover and vice versa.
+  const prewarmedRef = useRef(false);
+  useEffect(() => {
+    if (prewarmedRef.current) return;
+    if (!user?.$id) return;
+    if (postsLoading) return;
+    if (!supabaseFeedUserId) return; // Need the resolved Supabase id for the RPCs.
+    prewarmedRef.current = true;
+
+    const handle = setTimeout(async () => {
+      const tasks = [];
+      // Following — chronological from followed creators.
+      if (!tabCacheRef.current.following) {
+        tasks.push(
+          (async () => {
+            try {
+              const result = await loadSupabaseFeedPage(
+                () => fetchFollowingFeedPage({ userId: supabaseFeedUserId, limit: PAGE_SIZE }),
+                PAGE_SIZE,
+              );
+              const filtered = applySafetyFilters(result.entries);
+              const enriched = await enrichEntriesWithLikeState(filtered, user?.$id);
+              tabCacheRef.current.following = {
+                posts: enriched,
+                lastId: result.cursor,
+                hasMore: result.more,
+                cursor: enriched.length,
+                followingCount: null,
+              };
+            } catch (err) {
+              // Best-effort — failure here just means the user gets
+              // the original cold-load on first tap, same as before.
+              console.log("[home] following pre-warm failed:", err?.message);
+            }
+          })(),
+        );
+      }
+      // Discover — trending velocity, last 7 days, excludes followed.
+      if (!tabCacheRef.current.discover) {
+        tasks.push(
+          (async () => {
+            try {
+              const result = await loadSupabaseFeedPage(
+                () => fetchDiscoverFeedPage({ userId: supabaseFeedUserId, limit: PAGE_SIZE, offset: 0 }),
+                PAGE_SIZE,
+              );
+              const filtered = applySafetyFilters(result.entries);
+              const enriched = await enrichEntriesWithLikeState(filtered, user?.$id);
+              tabCacheRef.current.discover = {
+                posts: enriched,
+                lastId: result.cursor,
+                hasMore: result.more,
+                cursor: enriched.length,
+              };
+            } catch (err) {
+              console.log("[home] discover pre-warm failed:", err?.message);
+            }
+          })(),
+        );
+      }
+      await Promise.all(tasks);
+    }, 1000);
+
+    return () => clearTimeout(handle);
+  }, [user?.$id, postsLoading, supabaseFeedUserId, applySafetyFilters, enrichEntriesWithLikeState]);
 
   useEffect(() => {
     seenPostIdsRef.current = new Set();
@@ -1063,6 +1216,19 @@ const Home = () => {
       setLocalCursor(enriched.length); // Reset cursor on fresh load
       setLastId(nextCursor);
       setHasMore(hasMoreRes);
+
+      // Facebook-pattern feed: track newest created_at across the feed
+      // so onRefresh can do an additive delta fetch on the next pull.
+      // We look at the loaded entries' adapted data shape (Appwrite-flavor
+      // $createdAt, set by adaptSupabasePostToAppwriteShape).
+      if (enriched.length > 0) {
+        let newest = null;
+        for (const e of enriched) {
+          const t = e?.data?.$createdAt;
+          if (t && (!newest || t > newest)) newest = t;
+        }
+        if (newest) setLastSeenAt(newest);
+      }
 
       // Only persist For You to redux cache; Following/Discover are ephemeral.
       if (activeTab === "for-you") {
@@ -1478,6 +1644,38 @@ const Home = () => {
     setPendingSafetyTarget(null);
   };
 
+  // Snooze the post's author for 30 days. Web-parity action — same TTL,
+  // same Supabase user_snoozes table. Optimistically adds the owner to
+  // blockedUserIds so the in-memory feed filter hides their content
+  // immediately; the canonical state lives in Supabase and gets re-read
+  // by loadUserContentFilters on next refresh.
+  const handleSnoozeUser = async () => {
+    if (!pendingSafetyTarget?.ownerId || !user?.$id) {
+      closeSafetySheet();
+      return;
+    }
+    setSnoozingUser(true);
+    try {
+      await snoozeUser({
+        userId: user.$id,
+        targetUserId: pendingSafetyTarget.ownerId,
+        durationDays: 30,
+      });
+      setBlockedUserIds((prev) => new Set([...prev, pendingSafetyTarget.ownerId]));
+      if (pendingSafetyTarget.contentId) {
+        setHiddenContentIds((prev) => new Set([...prev, pendingSafetyTarget.contentId]));
+      }
+      pendingAlertMessage.current = "Snoozed for 30 days. We'll bring them back automatically.";
+    } catch (error) {
+      console.log("snoozeUser error", error);
+      pendingAlertMessage.current = "Couldn't snooze right now. Please try again.";
+    } finally {
+      setSnoozingUser(false);
+      setSafetySheetVisible(false);
+      setPendingSafetyTarget(null);
+    }
+  };
+
   const executeBlockUser = async () => {
     if (!pendingSafetyTarget?.ownerId || !user?.$id) return;
     setBlockingUser(true);
@@ -1532,11 +1730,244 @@ const Home = () => {
     Linking.openURL(`${secrets.WEBSITE}/terms-of-service`);
   };
 
+  // Pull-to-refresh is now ADDITIVE (Facebook pattern). Instead of
+  // re-running the expensive feed_for_you ranker every gesture, we fetch
+  // only posts created AFTER the newest one we've seen (lastSeenAt) and
+  // prepend them. ~80% reduction in DB load, scroll position preserved,
+  // feed feels alive.
+  //
+  // The For You tab is the primary beneficiary — its ranker is the
+  // expensive call. Following / Discover tabs still fall back to a full
+  // reload for now since their queries are already cheap.
+  //
+  // First-time refresh (no lastSeenAt yet) and any non-For-You tab fall
+  // through to the legacy full-reload path.
   const onRefresh = async () => {
     videoRefs.current = {};
-    await loadFeed({ refreshMode: true });
-    setRefreshCounter((prev) => prev + 1);
+    if (feedTab !== "for-you" || !lastSeenAt || !user?.$id) {
+      await loadFeed({ refreshMode: true });
+      setRefreshCounter((prev) => prev + 1);
+      return;
+    }
+    // Fast path — the background poller already buffered new posts.
+    // Apply them without another DB roundtrip.
+    if (newPostsBuffer.length > 0) {
+      applyNewPostsBuffer();
+      setRefreshCounter((prev) => prev + 1);
+      return;
+    }
+    try {
+      const newPosts = await fetchFeedDelta({
+        userId: user.$id,
+        sinceTimestamp: lastSeenAt,
+        limit: 30,
+      });
+      if (newPosts.length === 0) {
+        // Empty delta = no chronologically-newer posts. Rather than
+        // showing the user the same feed again (the "seeing the same
+        // post over and over" complaint), re-rank via feed_for_you.
+        // The server's 3-tier cascade naturally rotates content:
+        //   • Tier 1: last 7 days, NOT seen in last 24h
+        //   • Tier 2: last 30 days, NOT seen in last 7 days
+        //   • Tier 3: all-time top engagement (last resort)
+        // This gives the user fresh content on refresh with zero new
+        // posts — exactly matching their "show posts I didn't see
+        // today" twist.
+        //
+        // Throttle: don't re-rank more than once every 30s. Prevents
+        // a user mashing pull-to-refresh from melting the ranker.
+        const now = Date.now();
+        const sinceLastReRank = now - (lastReRankAtRef.current || 0);
+        if (sinceLastReRank > 30_000) {
+          lastReRankAtRef.current = now;
+          await loadFeed({ refreshMode: true });
+        }
+        setRefreshCounter((prev) => prev + 1);
+        return;
+      }
+      // Hydrate stats + adapt to the FlatList's entry shape.
+      const newIds = newPosts.map((p) => p?.id).filter(Boolean);
+      const stats = await fetchPostStats(newIds);
+      const newEntries = newPosts
+        .map((p) => {
+          const adapted = adaptSupabasePostToAppwriteShape(p, stats);
+          if (!adapted?.$id) return null;
+          return { type: "post", data: adapted, key: `post-${adapted.$id}` };
+        })
+        .filter(Boolean);
+      // Prepend, dedup against any race where the same post is already
+      // in the list (e.g. realtime + delta fetch overlap). Capture the
+      // merged list so we can mirror it into Redux cachedPosts in the
+      // same beat — without that mirror, any cache-driven code path
+      // (bootstrap remount, fetchMorePosts seen payload) would see the
+      // stale pre-prepend list.
+      let mergedListForCache = null;
+      setPosts((prev) => {
+        const existingIds = new Set(prev.map((e) => e?.data?.$id).filter(Boolean));
+        const fresh = newEntries.filter((e) => !existingIds.has(e?.data?.$id));
+        const next = fresh.length ? [...fresh, ...prev] : prev;
+        mergedListForCache = next;
+        return next;
+      });
+      if (mergedListForCache) {
+        dispatch(
+          setPost({
+            posts: mergedListForCache,
+            lastId: cachedLastId ?? null,
+            hasMore: cachedHasMore,
+            feedUserId: user?.$id || null,
+            cachedAt: Date.now(),
+          }),
+        );
+      }
+      setLastSeenAt(newPosts[0].created_at);
+      setRefreshCounter((prev) => prev + 1);
+    } catch (err) {
+      // CRITICAL: do NOT fall back to full loadFeed here. The previous
+      // behavior was to call loadFeed({ refreshMode: true }) on any
+      // additive-refresh failure, but loadFeed re-runs the algorithmic
+      // For-You ranker and *replaces* the entire `posts` state with a
+      // fresh server-ordered list. After the user had just tapped the
+      // "↑ N new posts" pill and seen the new top-of-feed, a transient
+      // network blip during pull-to-refresh would yank that fresh view
+      // away and resurface the algorithmic ordering — read by the user
+      // as "refresh goes back to old stale pattern". Best UX: log the
+      // error, leave existing posts intact, let the next refresh /
+      // poller tick try again.
+      console.log("[home] additive refresh failed (preserving current feed):", err?.message);
+      setRefreshCounter((prev) => prev + 1);
+    }
   };
+
+  // Apply buffered posts (from the background poller) to the top of the
+  // feed. Called by the "↑ N new posts" pill tap, and as the fast path
+  // inside onRefresh when the buffer already has data. NO DB call —
+  // these rows were hydrated by the poller; we just dedup and prepend.
+  //
+  // Cache writeback: previously this function only updated local `posts`
+  // state. The Redux `cachedPosts` (the persisted For-You cache that
+  // hydrates on bootstrap + drives `cachedPosts.slice(...)` pagination)
+  // was left untouched, so the new entries were invisible to any path
+  // that read from cache. The user's reported bug — "tap pill, see new
+  // feed, refresh, goes back to old stale pattern" — was the cache-driven
+  // path resurfacing the stale list. Now the cache mirror also gets the
+  // prepended entries, keeping local + persisted views in lockstep.
+  const applyNewPostsBuffer = useCallback(() => {
+    if (!newPostsBuffer.length) return 0;
+    let inserted = 0;
+    let mergedListForCache = null;
+    setPosts((prev) => {
+      const existingIds = new Set(prev.map((e) => e?.data?.$id).filter(Boolean));
+      const toInsert = newPostsBuffer.filter((e) => !existingIds.has(e?.data?.$id));
+      inserted = toInsert.length;
+      const next = toInsert.length ? [...toInsert, ...prev] : prev;
+      mergedListForCache = next;
+      return next;
+    });
+    // Move lastSeenAt forward to the newest applied entry.
+    let newest = lastSeenAt;
+    for (const e of newPostsBuffer) {
+      const t = e?.data?.$createdAt;
+      if (t && (!newest || t > newest)) newest = t;
+    }
+    if (newest && newest !== lastSeenAt) setLastSeenAt(newest);
+    setNewPostsBuffer([]);
+    newPostsBufferIdsRef.current = new Set();
+    // Mirror the new top-of-feed into Redux cachedPosts so any cache-
+    // driven code path (bootstrap on next mount, fetchMorePosts seen
+    // payload) sees the same ordering as the live UI.
+    if (inserted > 0 && mergedListForCache) {
+      dispatch(
+        setPost({
+          posts: mergedListForCache,
+          lastId: cachedLastId ?? null,
+          hasMore: cachedHasMore,
+          feedUserId: user?.$id || null,
+          cachedAt: Date.now(),
+        }),
+      );
+    }
+    if (inserted > 0) {
+      // Bring the user's eye to the new posts.
+      try {
+        flatListRef.current?.scrollToOffset?.({ offset: 0, animated: true });
+      } catch {
+        /* ref not yet ready or unmounted — no-op */
+      }
+    }
+    return inserted;
+  }, [newPostsBuffer, lastSeenAt, dispatch, user?.$id, cachedLastId, cachedHasMore]);
+
+  // Background poller — every 60s while foregrounded, fetch new posts
+  // since lastSeenAt and stash them in newPostsBuffer (hydrated +
+  // adapted, ready to apply). The pill renders count from the buffer
+  // length. Realtime upgrade path: replace the setInterval with a
+  // postgres_changes subscription on `posts` once we've validated it
+  // works for anon clients in production.
+  useEffect(() => {
+    if (!user?.$id || !lastSeenAt || feedTab !== "for-you") return;
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled) return;
+      if (feedAppStateRef.current !== "active") return;
+      try {
+        const newPosts = await fetchFeedDelta({
+          userId: user.$id,
+          sinceTimestamp: lastSeenAt,
+          limit: 30,
+        });
+        if (cancelled || !newPosts.length) return;
+        // Skip ids already buffered or already in the live feed.
+        const liveIds = new Set();
+        // We don't have access to live `posts` array safely from here
+        // (closures capture state at effect-mount time), so use the
+        // buffer-id ref + treat the newPosts list itself as authoritative.
+        const filtered = newPosts.filter(
+          (p) => p?.id && !newPostsBufferIdsRef.current.has(p.id) && !liveIds.has(p.id),
+        );
+        if (!filtered.length) return;
+        const ids = filtered.map((p) => p.id);
+        const stats = await fetchPostStats(ids);
+        const entries = filtered
+          .map((p) => {
+            const adapted = adaptSupabasePostToAppwriteShape(p, stats);
+            if (!adapted?.$id) return null;
+            return { type: "post", data: adapted, key: `post-${adapted.$id}` };
+          })
+          .filter(Boolean);
+        if (cancelled || !entries.length) return;
+        for (const e of entries) {
+          if (e?.data?.$id) newPostsBufferIdsRef.current.add(e.data.$id);
+        }
+        setNewPostsBuffer((prev) => [...entries, ...prev]);
+      } catch (err) {
+        // Polling errors are non-fatal — next tick retries.
+        console.log("[home] poll error:", err?.message);
+      }
+    };
+    const intervalId = setInterval(poll, 60_000);
+    const sub = AppState.addEventListener("change", (next) => {
+      const prev = feedAppStateRef.current;
+      feedAppStateRef.current = next;
+      // On return from background, immediately check for new posts so
+      // the pill shows up right away rather than waiting for the next
+      // 60s tick.
+      if (prev !== "active" && next === "active") poll();
+    });
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+      sub.remove();
+    };
+  }, [user?.$id, lastSeenAt, feedTab]);
+
+  // Reset the buffer when the tab changes — it's For-You-only.
+  useEffect(() => {
+    if (feedTab !== "for-you") {
+      setNewPostsBuffer([]);
+      newPostsBufferIdsRef.current = new Set();
+    }
+  }, [feedTab]);
 
   const updatePostCommentCount = useCallback((postId, newCount) => {
     setPosts((prev) =>
@@ -1884,27 +2315,9 @@ const Home = () => {
         );
       }
 
-      if (type === "clip") {
-        return (
-          <PostClip
-            item={data}
-            onOpenSafetySheet={() => openSafetySheet({ type, data })}
-            ref={(el) => {
-              if (el) {
-                videoRefs.current[key] = el;
-                const isVisible = lastViewableKeysRef.current?.includes?.(key);
-                if (isVisible && (pendingPlaybackKey.current === key || currentlyPlayingKey.current === key)) {
-                  resumeVideoRef(el);
-                  pendingPlaybackKey.current = null;
-                  currentlyPlayingKey.current = key;
-                }
-              } else {
-                delete videoRefs.current[key];
-              }
-            }}
-          />
-        );
-      }
+      // type === "clip" branch removed — clips feature retired May 2026.
+      // Clip-typed feed items are filtered out upstream in lib/posts.js
+      // so this branch is unreachable; kept comment for archaeology.
 
       if (type === "ad") {
         return <PostNativeAd />;
@@ -1912,19 +2325,13 @@ const Home = () => {
 
       // "post" or default
       if (data.postResourceId) {
+        // Clip-resource posts (data.postResourceType === "clip") retired
+        // May 2026. They're filtered upstream in lib/posts.js so we
+        // shouldn't see them here, but keep the type-switch fall-through
+        // simple by treating them as plain text posts if they slip past.
         const isClipPost = data.postResourceType === "clip" || Boolean(data.clip);
-
         if (isClipPost) {
-          return (
-            <PostClip
-              item={data.clip || data}
-              onOpenSafetySheet={() => openSafetySheet({ type: "post", data })}
-              ref={(el) => {
-                if (el) videoRefs.current[key] = el;
-                else delete videoRefs.current[key];
-              }}
-            />
-          );
+          return <PostCard item={data} onOpenSafetySheet={() => openSafetySheet({ type: "post", data })} />;
         }
 
         // if you want posts-with-video to render like videos
@@ -1996,6 +2403,46 @@ const Home = () => {
         <View className="px-4 pt-1.5 pb-2">
           <MainScreensHeader title="Selebox" />
         </View>
+
+        {/* Facebook-pattern "↑ N new posts" pill. Absolute-positioned over
+            the FlashList so it doesn't reflow on scroll. Only renders for
+            the For You tab; visibility tied to the buffer length. Tap →
+            applies buffered posts to the top, no DB call. */}
+        {feedTab === "for-you" && newPostsBuffer.length > 0 ? (
+          <View
+            pointerEvents="box-none"
+            style={{
+              position: "absolute",
+              top: 64,
+              left: 0,
+              right: 0,
+              alignItems: "center",
+              zIndex: 50,
+            }}
+          >
+            <TouchableOpacity
+              onPress={applyNewPostsBuffer}
+              activeOpacity={0.85}
+              style={{
+                paddingHorizontal: 18,
+                paddingVertical: 9,
+                borderRadius: 999,
+                backgroundColor: theme.primary,
+                shadowColor: "#000",
+                shadowOpacity: 0.18,
+                shadowRadius: 8,
+                shadowOffset: { width: 0, height: 4 },
+                elevation: 4,
+              }}
+            >
+              <Text style={{ color: theme.primaryContrast || "#fff", fontWeight: "600", fontSize: 13 }}>
+                {newPostsBuffer.length === 1
+                  ? "↑ 1 new post"
+                  : `↑ ${newPostsBuffer.length} new posts`}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         <FlashList
           ref={flatListRef}
@@ -2220,6 +2667,33 @@ const Home = () => {
                   See fewer like this
                 </Text>
               </View>
+            </View>
+          </TouchableOpacity>
+
+          {/* Snooze for 30 days — softer than block. Web has had this for
+              a while; we're adding it on mobile for cross-platform parity.
+              Only writes to Supabase user_snoozes (no Appwrite equivalent
+              table); the in-memory blockedUserIds set picks it up on next
+              feed refresh via loadUserContentFilters. */}
+          <TouchableOpacity
+            className="mt-2 rounded-xl px-4 py-3"
+            style={{ backgroundColor: theme.surfaceMuted }}
+            onPress={handleSnoozeUser}
+            disabled={snoozingUser || !pendingSafetyTarget?.ownerId}
+          >
+            <View className="flex flex-row items-center justify-between">
+              <View className="flex flex-row items-center">
+                <MaterialIcons name="schedule" size={22} color={theme.icon} style={{ marginRight: 12 }} />
+                <View>
+                  <Text className="text-base font-semibold" style={{ color: theme.text }}>
+                    Snooze for 30 days
+                  </Text>
+                  <Text className="mt-1 text-xs" style={{ color: theme.textSoft }}>
+                    Take a break from this person — auto-undoes after 30 days
+                  </Text>
+                </View>
+              </View>
+              {snoozingUser ? <ActivityIndicator size="small" color={theme.primary} /> : null}
             </View>
           </TouchableOpacity>
 

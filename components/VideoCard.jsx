@@ -1,20 +1,34 @@
 import { router } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import LoaderKit from "react-native-loader-kit";
 import useAppTheme from "../hooks/useAppTheme";
 import { useGlobalContext } from "../context/global-provider";
+import { useVideosStats } from "../context/video-stats-provider";
+import { getBunnyImageUrl } from "../lib/bunny-image-url";
 import FormatNumber from "../lib/utils/format-number";
 import TimeAgo from "../lib/utils/time-ago";
 import StyledLikeCommentShare from "./StyledLikeCommentShare";
 
 const VideoCard = ({ item, ...props }) => {
-  const { globalSettings } = useGlobalContext();
+  const { globalSettings, user } = useGlobalContext();
   const { theme } = useAppTheme();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const avatarUri = item?.uploader?.avatar;
+  // Live engagement counts via the shared provider; identical pattern to
+  // VideoCardNew + VideoCardSmall. Falls back to the static counts on
+  // item.videoStats so first-paint isn't blocked.
+  const { getVideoStats, batchLoadVideoStats } = useVideosStats();
+  const videoId = item?.$id;
+  useEffect(() => {
+    if (!videoId || !user?.$id) return;
+    batchLoadVideoStats([videoId], user.$id);
+  }, [videoId, user?.$id, batchLoadVideoStats]);
+  const liveStats = getVideoStats(videoId);
+  const liveViews = liveStats.videoViews ?? item?.videoStats?.totalViews ?? 0;
+  const liveLikes = liveStats.videoLikes ?? item?.videoStats?.totalLikes ?? 0;
 
   const handlePress = async (view) => {
     try {
@@ -43,7 +57,14 @@ const VideoCard = ({ item, ...props }) => {
     <View className="mx-2 mb-7 space-y-2" {...props}>
       <TouchableOpacity className="space-y-2" activeOpacity={0.7} onPress={() => handlePress("RECOMMENDED")} accessibilityLabel="Play Video">
         <FastImage
-          source={{ uri: item.thumbnail, priority: FastImage.priority.normal }}
+          source={{
+            // VideoCard renders full-width feed thumbnails (16:9). Cap at
+            // 720pt — the helper applies pixel ratio internally so a 3×
+            // device still gets a 2160px source. That's plenty for a
+            // tile that physically renders at most 1080px wide.
+            uri: getBunnyImageUrl(item.thumbnail, { width: 720 }),
+            priority: FastImage.priority.normal,
+          }}
           className="aspect-video rounded-lg"
           style={{ backgroundColor: theme.surfaceMuted }}
           resizeMode={FastImage.resizeMode.contain}
@@ -103,14 +124,14 @@ const VideoCard = ({ item, ...props }) => {
       <View className="flex flex-col items-end space-y-2">
         <View className="flex flex-row items-center">
           <Text className="font-sans text-sm" style={{ color: theme.textMuted }}>
-            {FormatNumber((item?.videoStats?.totalViews || 0) * (Number(globalSettings["VIEWS_MULTIPLIER"]) || 1))} Views
+            {FormatNumber((liveViews || 0) * (Number(globalSettings["VIEWS_MULTIPLIER"]) || 1))} Views
           </Text>
           <Text className="font-sans text-sm" style={{ color: theme.textMuted }}>
             {" "}
             •{" "}
           </Text>
           <Text className="font-sans text-sm" style={{ color: theme.textMuted }}>
-            {FormatNumber((item?.videoStats?.totalLikes || 0) * (Number(globalSettings["LIKES_MULTIPLIER"]) || 1))} Likes
+            {FormatNumber((liveLikes || 0) * (Number(globalSettings["LIKES_MULTIPLIER"]) || 1))} Likes
           </Text>
         </View>
         <StyledLikeCommentShare showCommentButton={true} handleComment={() => handlePress("COMMENTS")} item={item} />

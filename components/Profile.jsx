@@ -17,17 +17,19 @@ import AnimatedSkeleton from "./AnimatedSkeleton";
 import CustomAlertModal from "./CustomAlertModal";
 import ProfileActionsMenu from "./ProfileActionsMenu";
 import ProfileBooksTab from "./ProfileBooksTab";
-import ProfileClipsTab from "./ProfileClipsTab";
+// ProfileClipsTab import removed — clips feature retired May 2026.
 import ProfilePostTab from "./ProfilePostTab";
 import ProfileVideosTab from "./ProfileVideosTab";
 import StyledDivider from "./StyledDivider";
 import UserRoleChips from "./UserRoleChips";
 
+// Clips tab removed — feature retired May 2026. ProfileClipsTab component
+// remains imported but unreferenced; cleanup happens in the dead-code pass
+// once the rest of the clip surfaces are stripped.
 const PROFILE_TABS = [
   { title: "Posts", icon: "article" },
   { title: "Books", icon: "menu-book" },
   { title: "Videos", icon: "play-circle-filled" },
-  { title: "Clips", icon: "movie" },
 ];
 
 const BIO_MAX_LINES = 5;
@@ -151,6 +153,15 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
         await FollowService.followUser({ followerId: loggedInUser?.$id, followingId: user?.$id });
         setIsFollowing(true);
 
+        // ABUSE DEFENSE: dedup key is `follow:${followingId}` per day.
+        // A follow→unfollow→refollow cycle on the same user produces
+        // at most ONE tick. The seen-set is rolled daily, so a user
+        // can refollow on a later day and tick again (legitimate).
+        if (user?.$id) {
+          const { tickGoalUnique } = await import("../lib/goals-store");
+          tickGoalUnique("follow_user", `follow:${user.$id}`);
+        }
+
         // Prevent duplicate follow notifications on the same day
         const alreadyNotified = await notificationService.checkFollowNotificationExists({
           senderId: loggedInUser?.$id,
@@ -249,8 +260,7 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
         return <ProfileBooksTab {...commonProps} />;
       case "Videos":
         return <ProfileVideosTab {...commonProps} userVideos={videos} />;
-      case "Clips":
-        return <ProfileClipsTab {...commonProps} />;
+      // "Clips" case removed — clips feature retired May 2026.
       default:
         return null;
     }
@@ -354,13 +364,16 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
         </View>
       </View>
 
-      {/* Stats row — minimal editorial style, no card, no border, no dividers. Just three
-          centered text columns. Larger numbers (text-xl) carry the visual weight; muted
-          uppercase labels read as captions. The whitespace alone provides the structure. */}
+      {/* Stats row — two columns now (Following + Followers). The third
+          column used to display "Achievements: 0" as a hardcoded
+          placeholder, which leaked to production and made every profile
+          look like the user had zero achievements. Drop it until the
+          achievements feature is real. Two-column layout still fills the
+          width because each TouchableOpacity uses flex-1. */}
       <View className="mt-5 flex-row">
         {isProfileLoading ? (
           <>
-            {[0, 1, 2].map((idx) => (
+            {[0, 1].map((idx) => (
               <View key={`stat-skel-${idx}`} className="flex-1 items-center">
                 <AnimatedSkeleton className="mb-1.5 h-6 w-12 animate-pulse rounded" style={{ backgroundColor: theme.skeletonBase }} />
                 <AnimatedSkeleton className="h-3 w-16 animate-pulse rounded" style={{ backgroundColor: theme.skeletonBase }} />
@@ -388,15 +401,6 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
                 Followers
               </Text>
             </TouchableOpacity>
-
-            <View className="flex-1 items-center">
-              <Text className="text-xl font-bold" style={{ color: theme.text, letterSpacing: 0.2 }}>
-                0
-              </Text>
-              <Text className="mt-1 text-[10px] font-semibold uppercase" style={{ color: theme.textSoft, letterSpacing: 0.8 }}>
-                Achievements
-              </Text>
-            </View>
           </>
         )}
       </View>
@@ -455,6 +459,55 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
           )}
         </View>
       )}
+
+      {/* Profile meta — joined date, location, website. Web shows
+          these in an "About" tab; mobile didn't surface them at all
+          before. Render only the rows the user actually filled in
+          so an empty profile doesn't show three "—" placeholders.
+          Read straight from whatever the user object exposes:
+          Appwrite users docs use $createdAt, Supabase profiles use
+          created_at — handle both. Same for location/website
+          (lowercase keys on both sides). */}
+      {!isProfileLoading && (() => {
+        const joinedAt = user?.$createdAt || user?.created_at;
+        const location = (user?.location || "").trim();
+        const website = (user?.website || "").trim();
+        if (!joinedAt && !location && !website) return null;
+        const joinedLabel = joinedAt
+          ? new Date(joinedAt).toLocaleDateString("en-US", { year: "numeric", month: "long" })
+          : null;
+        return (
+          <View
+            className="mt-4 flex-row flex-wrap rounded-2xl px-4 py-3"
+            style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border, gap: 14 }}
+          >
+            {joinedLabel ? (
+              <View className="flex-row items-center" style={{ gap: 6 }}>
+                <MaterialIcons name="event" size={14} color={theme.iconMuted} />
+                <Text className="text-xs" style={{ color: theme.textMuted }}>
+                  Joined {joinedLabel}
+                </Text>
+              </View>
+            ) : null}
+            {location ? (
+              <View className="flex-row items-center" style={{ gap: 6 }}>
+                <MaterialIcons name="place" size={14} color={theme.iconMuted} />
+                <Text className="text-xs" style={{ color: theme.textMuted }}>
+                  {location}
+                </Text>
+              </View>
+            ) : null}
+            {website ? (
+              <View className="flex-row items-center" style={{ gap: 6 }}>
+                <MaterialIcons name="link" size={14} color={theme.iconMuted} />
+                <Text className="text-xs" style={{ color: theme.primary }} numberOfLines={1}>
+                  {website.replace(/^https?:\/\//i, "")}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        );
+      })()}
 
       {/* Bio block — quieter visual: no "Bio" label, just the text itself with an inline
           edit pencil for own profile. Lighter card surface, padded for breathing room. */}

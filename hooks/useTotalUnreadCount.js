@@ -57,6 +57,10 @@ export function useTotalUnreadCount() {
         // Archived / muted conversations don't contribute to the visible
         // badge — same rule the web uses for its bell-icon counter.
         if (c.archived || c.muted) continue;
+        // Secret conversations are stealth: their unread messages should
+        // never appear in the global badge. The user discovers them by
+        // opening the Secret tab; the rest of the app stays quiet.
+        if (c.is_secret) continue;
         total += c.unread || 0;
       }
       setUnreadCount(total);

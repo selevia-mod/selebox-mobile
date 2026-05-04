@@ -1,3 +1,4 @@
+import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker, { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import * as ImagePicker from "expo-image-picker";
 import { useEffect, useState } from "react";
@@ -6,7 +7,6 @@ import FastImage from "react-native-fast-image";
 import LoaderKit from "react-native-loader-kit";
 import Modal from "react-native-modal";
 import useAppTheme from "../hooks/useAppTheme";
-import ScrollFadeOverlay from "./ScrollFadeOverlay";
 
 export default function EditVideoFormModal({ visible, onClose, initialData = {}, onSubmit, globalSettings = {}, allowScheduleEdit = false }) {
   const { theme, isDarkMode } = useAppTheme();
@@ -19,10 +19,61 @@ export default function EditVideoFormModal({ visible, onClose, initialData = {},
 
   const [saving, setSaving] = useState(false);
   const [thumbnailVersion, setThumbnailVersion] = useState(0);
-  const [tags] = useState(JSON.parse(globalSettings["SORTED_CATEGORIES"] || "[]"));
+  // YouTube-style free-typing tag composer. `tagInput` holds the
+  // in-flight chip text; committed chips live on videoForm.tags. Tags
+  // are optional — no SORTED_CATEGORIES picker.
+  const [tagInput, setTagInput] = useState("");
   const sizeLimitThumbnailUpload = globalSettings["THUMBNAIL_UPLOAD_SIZE_MB"] * 1024 * 1024;
   const sizeLimitTitleChars = globalSettings["TITLE_LIMIT_SIZE_CHARS"];
-  const sizeLimitTags = globalSettings["TAGS_LIMIT_MAX"];
+  const sizeLimitTags = Number(globalSettings["TAGS_LIMIT_MAX"]) || 10;
+
+  // Free-typing tag helpers — see UploadVideo.jsx for the full doc.
+  // Commits whatever is in the composer (split on commas/newlines) as
+  // chips, deduped case-insensitively up to sizeLimitTags.
+  const addTagFromInput = (rawInput) => {
+    const text = String(rawInput ?? tagInput).trim();
+    if (!text) return;
+    setVideoForm((prev) => {
+      const existing = prev.tags || [];
+      const existingLower = new Set(existing.map((t) => t.toLowerCase()));
+      const candidates = text
+        .split(/[,\n]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const additions = [];
+      for (const candidate of candidates) {
+        const lower = candidate.toLowerCase();
+        if (existingLower.has(lower)) continue;
+        if (existing.length + additions.length >= sizeLimitTags) break;
+        existingLower.add(lower);
+        additions.push(candidate);
+      }
+      if (additions.length === 0) return prev;
+      return { ...prev, tags: [...existing, ...additions] };
+    });
+    setTagInput("");
+  };
+
+  const handleTagInputChange = (text) => {
+    if (text.endsWith(",")) {
+      addTagFromInput(text.slice(0, -1));
+      return;
+    }
+    setTagInput(text);
+  };
+
+  const handleTagInputKeyPress = ({ nativeEvent }) => {
+    if (nativeEvent.key === "Backspace" && tagInput === "" && (videoForm?.tags?.length || 0) > 0) {
+      setVideoForm((prev) => ({ ...prev, tags: prev.tags.slice(0, -1) }));
+    }
+  };
+
+  const removeTag = (index) => {
+    setVideoForm((prev) => ({
+      ...prev,
+      tags: (prev.tags || []).filter((_, i) => i !== index),
+    }));
+  };
 
   const [scheduledDate, setScheduledDate] = useState(initialData.scheduled_publish_at);
   const [showPicker, setShowPicker] = useState(false);
@@ -228,45 +279,72 @@ export default function EditVideoFormModal({ visible, onClose, initialData = {},
               />
             </View>
 
-            {/* Tags */}
+            {/* Tags — YouTube-style chips. Optional. Press return or
+                comma to add; backspace on empty composer removes the
+                last chip; tap × on a chip to delete. */}
             <View className="mb-10 mt-6">
               <View className="flex-row items-center justify-between">
                 <Text className="mb-2 font-semibold" style={{ color: theme.text }}>
                   Tags
                 </Text>
-                <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>{`Max ${sizeLimitTags}`}</Text>
+                <Text className="text-[10px] font-medium" style={{ color: theme.textSoft }}>
+                  {`${videoForm?.tags?.length || 0} / ${sizeLimitTags}`}
+                </Text>
               </View>
-              {/* Capped to ~3.5 rows of pills + vertical scroll + bottom fade so
-                  the user clearly reads "more below" without a scrollbar.
-                  Matches the Create Book / Create Video treatment. */}
-              <View style={{ position: "relative" }}>
-                <ScrollView
-                  style={{ maxHeight: 172 }}
-                  nestedScrollEnabled
-                  showsVerticalScrollIndicator={false}
-                  contentContainerStyle={{ paddingBottom: 22 }}
-                >
-                  <View className="flex-row flex-wrap gap-2">
-                    {tags.map((tag) => {
-                      const isSelected = videoForm.tags.includes(tag);
-                      const isDisabled = !isSelected && videoForm.tags.length >= sizeLimitTags;
-                      return (
-                        <TouchableOpacity
-                          key={tag}
-                          onPress={() =>
-                            setVideoForm((p) => ({ ...p, tags: p.tags.includes(tag) ? p.tags.filter((t) => t !== tag) : [...p.tags, tag] }))
-                          }
-                          className="rounded-full px-4 py-2"
-                          disabled={isDisabled}
-                          style={{ backgroundColor: isSelected ? theme.primary : theme.surfaceStrong, opacity: isDisabled ? 0.35 : 1 }}
-                        >
-                          <Text style={{ color: isSelected ? theme.primaryContrast : theme.text }}>{tag}</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </ScrollView>
-                <ScrollFadeOverlay color={theme.surfaceElevated} />
+              <Text className="mb-2 text-xs" style={{ color: theme.textSoft }}>
+                Optional. Press return or comma to add. Helps people find your video.
+              </Text>
+              <View
+                className="rounded-xl px-2 py-2"
+                style={{ borderWidth: 1, borderColor: theme.inputBorder, backgroundColor: theme.inputBackground }}
+              >
+                <View className="flex flex-row flex-wrap items-center" style={{ gap: 6 }}>
+                  {(videoForm?.tags || []).map((tag, index) => (
+                    <View
+                      key={`${tag}-${index}`}
+                      className="flex-row items-center rounded-full pl-3 pr-1.5 py-1"
+                      style={{
+                        backgroundColor: theme.primary,
+                        shadowColor: theme.primary,
+                        shadowOffset: { width: 0, height: 2 },
+                        shadowOpacity: 0.18,
+                        shadowRadius: 4,
+                        elevation: 1,
+                      }}
+                    >
+                      <Text
+                        className="text-sm font-medium"
+                        style={{ color: theme.primaryContrast, letterSpacing: 0.1 }}
+                      >
+                        {tag}
+                      </Text>
+                      <TouchableOpacity
+                        onPress={() => removeTag(index)}
+                        hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                        className="ml-1 h-5 w-5 items-center justify-center rounded-full"
+                        style={{ backgroundColor: "rgba(255,255,255,0.22)" }}
+                      >
+                        <Ionicons name="close" size={12} color={theme.primaryContrast} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  <TextInput
+                    value={tagInput}
+                    onChangeText={handleTagInputChange}
+                    onSubmitEditing={() => addTagFromInput()}
+                    onKeyPress={handleTagInputKeyPress}
+                    onBlur={() => addTagFromInput()}
+                    blurOnSubmit={false}
+                    returnKeyType="done"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={(videoForm?.tags?.length || 0) < sizeLimitTags}
+                    placeholder={(videoForm?.tags?.length || 0) === 0 ? "Add a tag…" : ""}
+                    placeholderTextColor={theme.placeholder}
+                    className="min-w-[80px] flex-1 px-2 py-1 text-sm"
+                    style={{ color: theme.inputText }}
+                  />
+                </View>
               </View>
             </View>
 

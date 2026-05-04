@@ -1,7 +1,6 @@
-// Phase D — Supabase chat: thread (one conversation) view.
+// Supabase chat: thread (one conversation) view.
 //
-// Replaces stream-chat-expo's <Channel> + <MessageList> + <MessageInput> for
-// a single conversation. Reads from lib/messages-supabase.js, subscribes to
+// Reads from lib/messages-supabase.js, subscribes to
 // realtime per-thread events, supports send / edit / delete / reply / react.
 //
 // Visual conventions:
@@ -23,6 +22,7 @@ import RNModal from "react-native-modal";
 import { useGlobalContext } from "../context/global-provider";
 import { reportContent } from "../lib/safety";
 import ReportContentModal from "./ReportContentModal";
+import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 import { Alert, FlatList, Image as RNImage, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -784,7 +784,19 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
 
   const handleViewProfile = useCallback(() => {
     setHeaderMenuOpen(false);
-    if (!conversation || conversation.is_group) return;
+    if (!conversation) return;
+    if (conversation.is_group) {
+      // Kebab → "View members" for a group routes to the dedicated group-
+      // info screen (members list + creator manage actions). Used to be a
+      // dead button: this handler early-returned for groups, which is why
+      // tapping it did nothing visible. Now it pushes to the same surface
+      // as the header tap.
+      router.push({
+        pathname: "/(message)/group-info",
+        params: { conversationId: conversation.id },
+      });
+      return;
+    }
     goToProfile(conversation.otherUser?.id);
   }, [conversation, goToProfile]);
 
@@ -973,22 +985,33 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
   const handleDeleteConversation = useCallback(() => {
     setHeaderMenuOpen(false);
     if (!conversation) return;
-    Alert.alert("Delete conversation?", "This removes the conversation from your inbox. The other person can still see your messages.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            await supabaseSetArchived(conversation, true);
-            if (router.canGoBack && router.canGoBack()) router.back();
-            else router.replace("/(message)/channel-list");
-          } catch (e) {
-            Alert.alert("Couldn't delete", e?.message || "Try again.");
-          }
-        },
-      },
-    ]);
+    // Defer the Alert so the kebab modal's dismiss animation has time
+    // to flush. Without this, iOS swallows the new alert (the user sees
+    // nothing). 80ms covers the kebab's ~200ms dismiss with headroom;
+    // the user-perceived delay is invisible.
+    setTimeout(() => {
+      Alert.alert(
+        "Delete conversation?",
+        "This removes the conversation from your inbox. The other person can still see your messages.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                await supabaseSetArchived(conversation, true);
+                if (router.canGoBack && router.canGoBack()) router.back();
+                else router.replace("/(message)/channel-list");
+              } catch (e) {
+                console.log("[chat] archive failed:", e?.message);
+                Alert.alert("Couldn't delete", e?.message || "Try again.");
+              }
+            },
+          },
+        ],
+      );
+    }, 80);
   }, [conversation]);
 
   // Group-only — leaves the group by removing self from
@@ -1149,6 +1172,31 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
     return map;
   }, [messages]);
 
+  // "Seen" indicator support — 1:1 only for v1.
+  //
+  // Find the most recent own message that the other side has read (i.e.
+  // read_at IS NOT NULL). We render a small "Seen" line directly below
+  // that bubble, matching the Messenger pattern. As newer messages get
+  // sent and stay unread, the indicator naturally hops to the latest
+  // already-read message.
+  //
+  // Groups are skipped because the messages.read_at column is a single
+  // timestamp set by "a recipient" — it doesn't tell us WHO read what.
+  // Per-user receipts would need a message_reads table; out of scope.
+  const lastSeenOwnMessageId = useMemo(() => {
+    if (!conversation || conversation.is_group) return null;
+    // Walk from newest to oldest. messages[] is chronological (oldest
+    // first), so reverse-iterate.
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.sender_id !== currentUserId) continue;
+      if (!m.read_at) continue;
+      if (m._pending) continue; // optimistic — not yet stored, can't be "seen"
+      return m.id;
+    }
+    return null;
+  }, [messages, conversation, currentUserId]);
+
   const renderItem = useCallback(
     ({ item }) => {
       // Two row types — interleaved by buildRowsWithDividers below.
@@ -1158,18 +1206,28 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
         return <DateDivider label={item.label} theme={theme} />;
       }
       const message = item.message;
+      const showSeen = message.id === lastSeenOwnMessageId;
       return (
-        <MessageBubble
-          message={message}
-          isMine={message.sender_id === currentUserId}
-          theme={theme}
-          onLongPress={handleLongPress}
-          reactionList={reactions[message.id]}
-          repliedTo={message.reply_to_id ? messagesById[message.reply_to_id] : null}
-        />
+        <View>
+          <MessageBubble
+            message={message}
+            isMine={message.sender_id === currentUserId}
+            theme={theme}
+            onLongPress={handleLongPress}
+            reactionList={reactions[message.id]}
+            repliedTo={message.reply_to_id ? messagesById[message.reply_to_id] : null}
+          />
+          {showSeen ? (
+            <View className="self-end pr-3 pb-1">
+              <Text className="text-[10px]" style={{ color: theme.textSoft }}>
+                Seen
+              </Text>
+            </View>
+          ) : null}
+        </View>
       );
     },
-    [currentUserId, theme, reactions, handleLongPress, messagesById],
+    [currentUserId, theme, reactions, handleLongPress, messagesById, lastSeenOwnMessageId],
   );
 
   // Build rows with section dividers, then reverse for the inverted
@@ -1234,7 +1292,15 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
         <TouchableOpacity
           activeOpacity={0.85}
           onPress={() => {
-            if (!conversation || conversation.is_group) return;
+            if (!conversation) return;
+            if (conversation.is_group) {
+              // Group conversations route to the dedicated members + manage
+              // screen. Non-creators land on the same screen but see a
+              // read-only / leave-only variant; the screen renders the
+              // manage affordances conditionally based on created_by.
+              router.push({ pathname: "/(message)/group-info", params: { conversationId: conversation.id } });
+              return;
+            }
             // Same Appwrite-ID resolution as the kebab "View profile" entry —
             // creator-profile's getUserByID expects an Appwrite hex ID, not
             // the Supabase UUID we have here.
@@ -1242,11 +1308,19 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
           }}
           className="ml-3 flex-1 flex-row items-center"
         >
-          {/* Avatar with online dot overlay */}
+          {/* Avatar with online dot overlay.
+              Resolution order:
+                group + conversation.avatar_url → creator-set group photo
+                group + no avatar_url → initials of group name
+                1:1 + otherUser.avatar_url → other user's photo
+                1:1 + no avatar_url → initials
+              Without the conversation.avatar_url branch the group-photo
+              edit feature was invisible in the chat header — same root
+              cause as the chat-list bug. */}
           <View style={{ width: 36, height: 36, position: "relative" }}>
-            {headerOtherUser?.avatar_url ? (
+            {(conversation?.is_group ? conversation.avatar_url : headerOtherUser?.avatar_url) ? (
               <FastImage
-                source={{ uri: headerOtherUser.avatar_url }}
+                source={{ uri: conversation?.is_group ? conversation.avatar_url : headerOtherUser.avatar_url }}
                 style={{ width: 36, height: 36, borderRadius: 999, backgroundColor: theme.surfaceMuted }}
               />
             ) : (
@@ -1287,9 +1361,12 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
           </View>
 
           <View className="ml-2.5 flex-1">
-            <Text className="font-pbold text-base" style={{ color: theme.text }} numberOfLines={1}>
-              {headerTitle}
-            </Text>
+            <View className="flex-row items-center">
+              <Text className="font-pbold text-base" style={{ color: theme.text }} numberOfLines={1}>
+                {headerTitle}
+              </Text>
+              {headerOtherUser && <UserRoleBadgeIcons user={headerOtherUser} size={14} />}
+            </View>
             {headerStatus ? (
               <Text className="text-xs" style={{ color: headerOtherIsOnline ? "#22c55e" : theme.textSoft }} numberOfLines={1}>
                 {headerStatus}
@@ -1346,7 +1423,17 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
       <KeyboardAvoidingView
         className="flex-1"
         // iOS: pad the content above the keyboard.
-        // Android: shrink the wrapper so the input stays visible.
+        // Android: leave behavior `undefined` so the OS's
+        // `windowSoftInputMode="adjustResize"` (set in
+        // AndroidManifest.xml + app.json `softwareKeyboardLayoutMode`)
+        // handles keyboard avoidance natively. When we used
+        // `behavior="height"` on Android the window got shrunk twice —
+        // once by the OS resize and again by KAV — and the composer
+        // ended up pushed below the visible viewport, leaving a big
+        // empty area between the header and the keyboard with no
+        // input visible. Reproduced consistently on stock Android 14;
+        // matches the known interaction documented in
+        // facebook/react-native#23874 and the Expo docs.
         //
         // keyboardVerticalOffset stays at 0 — SafeAreaView handles the
         // status-bar / home-indicator insets, and the custom header is
@@ -1355,7 +1442,7 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
         // (which we tried first) caused a visible gap between the
         // input box and the top of the keyboard on iPhones with a home
         // indicator.
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={0}
       >
         {/* Empty state rendered as a sibling — NOT as ListEmptyComponent —

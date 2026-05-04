@@ -7,11 +7,13 @@ import { ActivityIndicator, Alert, Animated, FlatList, Platform, Text, Touchable
 import { useIAP, withIAPContext } from "react-native-iap";
 import { CustomAlertModal, StarIcon, StyledDivider, StyledSafeAreaView } from "../../components";
 import AnimatedSkeleton from "../../components/AnimatedSkeleton";
+import GoalsTab from "../../components/GoalsTab";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import { useRewardedStar } from "../../hooks/useRewardedStars";
 import { getCoinPacks, updateUserCoins } from "../../lib/appwrite";
 import { USE_SUPABASE_WALLET } from "../../lib/feature-flags";
+import supabase from "../../lib/supabase";
 import secrets from "../../private/secrets";
 
 const StoreSkeleton = () => {
@@ -110,11 +112,17 @@ const StoreSkeleton = () => {
   );
 };
 
+// Two-section screen: Goals (daily/weekly/monthly engagement targets,
+// formerly called "Quests" on web) and Store (coin packs + rewarded
+// ads). Tab toggle at the top lets the user swing between them without
+// leaving the screen — keeps the wallet balance visible above both
+// sections so users always see their current Stars / Coins.
 const Store = () => {
+  const [activeStoreTab, setActiveStoreTab] = useState("goals");
   const { theme } = useAppTheme();
   const { products, finishTransaction, getProducts, requestPurchase } = useIAP();
   const [coinPacks, setCoinPacks] = useState([]);
-  const { globalSettings, user, balance, refetchBalance, expoPushToken, refetchStars, starsData, setStarsData } = useGlobalContext();
+  const { globalSettings, user, balance, refetchBalance, refetchStars, starsData, setStarsData } = useGlobalContext();
   const { showAd, starLoading, showPlusOne, cooldownMessageOpen, remainingTime, setCooldownMessageOpen, plusOneAnim } = useRewardedStar({
     userId: user?.$id,
     cooldownSeconds: globalSettings["WATCH_AD_COOLDOWN_TIMER"],
@@ -156,7 +164,39 @@ const Store = () => {
 
   const fetchCoinPacks = useCallback(async () => {
     try {
-      const response = await getCoinPacks();
+      // Wallet flag drives the catalog source. Under USE_SUPABASE_WALLET,
+      // packs come from public.coin_packages — that's the same table the
+      // IAP webhooks (apple-iap-webhook + hitpay-webhook) resolve via
+      // package_id, so the on-screen `$id` matches the UUID we embed in
+      // HitPay's `reference_number`. Legacy Appwrite path remains as a
+      // rollback option until the flag retires.
+      let response;
+      if (USE_SUPABASE_WALLET) {
+        const { data, error } = await supabase
+          .from("coin_packages")
+          .select(
+            "id, name, base_coins, bonus_coins, price_minor, currency, is_active, is_best_value, sort_order, iap_ios_product_id, iap_android_product_id",
+          )
+          .eq("is_active", true)
+          .order("sort_order", { ascending: true });
+        if (error) throw error;
+        response = (data || []).map((row) => ({
+          $id: row.id,
+          name: row.name,
+          coins: row.base_coins ?? 0,
+          free: row.bonus_coins ?? 0,
+          // price_minor is in centavos; the UI + HitPay payment-request
+          // both want the whole-peso amount.
+          price: Math.round((row.price_minor ?? 0) / 100),
+          currency: row.currency || "PHP",
+          isBestValue: !!row.is_best_value,
+          sortOrder: row.sort_order ?? 0,
+          iapIOSProductID: row.iap_ios_product_id || null,
+          iapAndroidProductID: row.iap_android_product_id || null,
+        }));
+      } else {
+        response = await getCoinPacks();
+      }
       if (osName === "ios") {
         handleGetProductsIOS(response);
         setCoinPacks(response);
@@ -182,7 +222,16 @@ const Store = () => {
   const submitPaymentIOS = async (coins, iapIOSProductID) => {
     setLoading(true);
     try {
-      const purchase = await requestPurchase({ sku: iapIOSProductID });
+      // appAccountToken — Apple includes this in the signed
+      // transactionInfo it pushes to our App Store Server
+      // Notifications V2 webhook (apple-iap-webhook). Without it,
+      // the webhook can't tell which Selebox user to credit, and
+      // every purchase silently drops on the server side. Must be
+      // a UUID.
+      const purchase = await requestPurchase({
+        sku: iapIOSProductID,
+        appAccountToken: user?.$id,
+      });
       if (purchase.transactionId || purchase.transactionReceipt) {
         await finishTransaction({
           purchase: purchase,
@@ -198,34 +247,61 @@ const Store = () => {
           await updateUserCoins(user.$id, balance + coins);
         }
         await refetchBalance(user.$id);
+
+        // ABUSE DEFENSE: tick the purchase_coin goal AFTER
+        // finishTransaction succeeded. The transactionId is the
+        // canonical idempotency key — same purchase replayed (e.g.,
+        // "restore purchases") returns the same transactionId so
+        // dedup blocks. Each fresh successful IAP ticks once.
+        const { tickGoalUnique } = await import("../../lib/goals-store");
+        tickGoalUnique("purchase_coin", `iap:${purchase.transactionId || purchase.transactionReceipt}`);
       }
     } catch (error) {
-      console.error(error.message);
+      // SKErrorDomain code 2 (SKErrorPaymentCancelled) and StoreKit's
+      // "user cancelled" / "E_USER_CANCELLED" are normal cancel paths
+      // — the user dismissed the Apple purchase sheet or password
+      // prompt. We silence those so the dev terminal doesn't fill with
+      // red error logs every time someone backs out of a purchase.
+      const msg = String(error?.message || "");
+      const code = String(error?.code || "");
+      const isCancel =
+        code === "E_USER_CANCELLED" ||
+        msg.includes("SKErrorDomain error 2") ||
+        msg.toLowerCase().includes("cancel");
+      if (!isCancel) {
+        console.error(error.message);
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const submitPaymentAndroid = async (coins, price) => {
+  const submitPaymentAndroid = async (coins, price, packId) => {
     setLoading(true);
     try {
       if (price < 20) {
         Alert.alert("Invalid Price", "The price must be greater than ₱20 to process the payment.");
         return;
       }
-      // Phase F.7 caveat — Android HitPay flow points at an Appwrite
-      // webhook URL. When USE_SUPABASE_WALLET is on but the webhook
-      // hasn't been migrated to credit Supabase wallets, paid coins
-      // would land in Appwrite where the topbar pill no longer reads
-      // from. Until the webhook is migrated, surface a clear error
-      // instead of letting the user pay and then see no balance.
-      if (USE_SUPABASE_WALLET) {
+      if (!packId) {
+        // Defensive: the Edge Function resolves the credit by packId.
+        // Without it the webhook can't credit and the user's payment
+        // would silently drop. Refusing here is preferable to charging
+        // them and stranding the coins.
         Alert.alert(
-          "Android coin top-up coming soon",
-          "We're upgrading the payment flow on Android. Please check back shortly — your existing balance is unaffected.",
+          "Coin pack unavailable",
+          "We couldn't identify which coin pack to charge. Try reopening the store and tapping the pack again.",
         );
         return;
       }
+      // HitPay payment-request → server-authoritative credit via the
+      // Supabase Edge Function (supabase/functions/hitpay-webhook).
+      // The webhook URL is configured once in the HitPay dashboard
+      // (Settings → API Keys → Webhook URL pointing at
+      // /functions/v1/hitpay-webhook), so we don't pass a per-request
+      // override here. The Edge Function reads `reference_number` to
+      // route the credit; convention is `${userId}:${packId}` where
+      // packId is the coin_packages.id UUID.
       const response = await axios.post(
         "https://api.hit-pay.com/v1/payment-requests",
         {
@@ -234,13 +310,17 @@ const Store = () => {
           email: user.email,
           purpose: `You will receive ${coins} Coins`,
           send_email: true,
-          webhook: `https://673a3a1162eb53830d78.appwrite.global?userID=${user.$id}&userToken=${expoPushToken}&coins=${coins}`,
+          reference_number: `${user.$id}:${packId}`,
         },
         { headers: { "X-BUSINESS-API-KEY": secrets.HITPAY_SECRET_KEY, "Content-Type": "application/json" } },
       );
 
       const { url } = response.data;
       await WebBrowser.openBrowserAsync(url);
+      // The wallet realtime subscription in global-provider picks up
+      // the webhook-driven credit automatically; this nudge is a
+      // belt-and-suspenders refresh for users who return to the app
+      // before the realtime event fires (e.g. cold-start race).
       await refetchBalance(user.$id);
       router.dismissTo("/home");
     } catch (error) {
@@ -260,7 +340,7 @@ const Store = () => {
     return (
       <TouchableOpacity
         activeOpacity={0.8}
-        onPress={() => (osName === "ios" ? submitPaymentIOS(totalCoins, item.iapIOSProductID) : submitPaymentAndroid(totalCoins, item.price))}
+        onPress={() => (osName === "ios" ? submitPaymentIOS(totalCoins, item.iapIOSProductID) : submitPaymentAndroid(totalCoins, item.price, item.$id))}
         className="my-2 rounded-2xl border p-4"
         style={{
           borderColor: isBestValue ? theme.accentAmber : theme.border,
@@ -348,11 +428,48 @@ const Store = () => {
             </TouchableOpacity>
             <View className="ml-3 flex-1">
               <Text className="font-pbold text-2xl" style={{ color: theme.text }}>
-                Store
+                Goals and Store
               </Text>
             </View>
           </View>
 
+          {/* [Goals][Store] tab toggle. Pill-style segmented control,
+              matches the visual language of other in-app toggles
+              (For You / Following on home, etc.). The active pill picks
+              up theme.primary; inactive sits flat on theme.surfaceMuted. */}
+          <View
+            className="mt-4 flex-row rounded-2xl p-1"
+            style={{ backgroundColor: theme.surfaceMuted, borderWidth: 1, borderColor: theme.border }}
+          >
+            {[
+              { key: "goals", label: "Goals" },
+              { key: "store", label: "Store" },
+            ].map((tab) => {
+              const isActive = activeStoreTab === tab.key;
+              return (
+                <TouchableOpacity
+                  key={tab.key}
+                  activeOpacity={0.85}
+                  onPress={() => setActiveStoreTab(tab.key)}
+                  className="flex-1 items-center justify-center rounded-xl py-2.5"
+                  style={{
+                    backgroundColor: isActive ? theme.primary : "transparent",
+                  }}
+                >
+                  <Text
+                    className="font-psemibold text-sm"
+                    style={{ color: isActive ? theme.primaryContrast || "#FFFFFF" : theme.textSoft }}
+                  >
+                    {tab.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {activeStoreTab === "goals" && <GoalsTab />}
+
+          {activeStoreTab === "store" && (
           <FlatList
             data={coinPacks}
             renderItem={renderCoinPacks}
@@ -473,6 +590,7 @@ const Store = () => {
               </View>
             }
           />
+          )}
         </View>
       )}
       {starLoading && (
