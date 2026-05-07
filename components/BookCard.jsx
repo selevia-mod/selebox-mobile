@@ -9,8 +9,35 @@ import FormatNumber from "../lib/utils/format-number";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
+// 5min TTL + 500-entry LRU cap. Previously bare `new Map()` that never
+// expired — author publishes a new chapter, average rating updates from
+// new readers, but cards rendered from the cache stayed stuck at the
+// pre-OTA snapshot until app relaunch. 5min matches BookCatalogCard so
+// the two card types feel consistent.
+const STATS_TTL_MS = 5 * 60 * 1000;
+const STATS_CACHE_MAX = 500;
 const BOOK_STATS_CACHE = new Map();
 const BOOK_STATS_INFLIGHT = new Map();
+
+const readStatsCache = (bookId) => {
+  if (!bookId) return null;
+  const entry = BOOK_STATS_CACHE.get(bookId);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > STATS_TTL_MS) {
+    BOOK_STATS_CACHE.delete(bookId);
+    return null;
+  }
+  return entry.value;
+};
+
+const writeStatsCache = (bookId, value) => {
+  if (!bookId) return;
+  if (BOOK_STATS_CACHE.size >= STATS_CACHE_MAX) {
+    const oldest = BOOK_STATS_CACHE.keys().next().value;
+    if (oldest !== undefined) BOOK_STATS_CACHE.delete(oldest);
+  }
+  BOOK_STATS_CACHE.set(bookId, { ts: Date.now(), value });
+};
 
 const toFiniteNumber = (value, fallback = 0) => {
   const parsed = Number(value);
@@ -24,7 +51,8 @@ const getInlineStats = (book) => ({
 
 const fetchBookStatsCached = async (bookId) => {
   if (!bookId) return { averageRating: 0, totalReads: 0 };
-  if (BOOK_STATS_CACHE.has(bookId)) return BOOK_STATS_CACHE.get(bookId);
+  const cached = readStatsCache(bookId);
+  if (cached) return cached;
 
   if (BOOK_STATS_INFLIGHT.has(bookId)) {
     return BOOK_STATS_INFLIGHT.get(bookId);
@@ -37,7 +65,7 @@ const fetchBookStatsCached = async (bookId) => {
         averageRating: toFiniteNumber(statsDoc?.averageRating, 0),
         totalReads: toFiniteNumber(statsDoc?.totalReads, 0),
       };
-      BOOK_STATS_CACHE.set(bookId, payload);
+      writeStatsCache(bookId, payload);
       return payload;
     } catch (error) {
       return { averageRating: 0, totalReads: 0 };
@@ -76,8 +104,8 @@ const BookCard = ({ item, progress, customWidth, customHeight, customFontSize, h
     if (!bookId) return;
 
     const hasInlineStats = inlineStats.averageRating > 0 || inlineStats.totalReads > 0;
-    if (hasInlineStats && !BOOK_STATS_CACHE.has(bookId)) {
-      BOOK_STATS_CACHE.set(bookId, inlineStats);
+    if (hasInlineStats && !readStatsCache(bookId)) {
+      writeStatsCache(bookId, inlineStats);
     }
 
     if (hasInlineStats) return;

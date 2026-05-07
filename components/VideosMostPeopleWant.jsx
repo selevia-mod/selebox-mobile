@@ -18,6 +18,21 @@ const VideosMostPeopleWant = ({ videos = [] }) => {
     [cardWidth, imageHeight],
   );
   const keyExtractor = useCallback((item, index) => item?.$id || `${item.type}-${index}`, []);
+  // getItemLayout lets FlatList skip the measurement pass for off-screen
+  // cards on first scroll. Without it, the recycler measures every card
+  // before painting — visible as a stutter the first time a user swipes
+  // a horizontal shelf.
+  //
+  // CRITICAL: VideoCardNew has `mr-3` (Tailwind = 12px) on its outer
+  // wrapper, so each cell occupies cardWidth + 12. Forgetting to include
+  // the margin makes FlatList think items are 12px narrower than they
+  // actually are — by card N, the predicted offset is 12*N pixels off
+  // from reality, so FlatList re-measures + relayouts on every scroll
+  // frame, which the user sees as a stutter / "the app got slower."
+  const getItemLayout = useCallback(
+    (_data, index) => ({ length: cardWidth + 12, offset: (cardWidth + 12) * index, index }),
+    [cardWidth],
+  );
 
   return (
     <View style={{ minHeight: containerHeight }} className="space-y-2">
@@ -31,6 +46,7 @@ const VideosMostPeopleWant = ({ videos = [] }) => {
         keyExtractor={keyExtractor}
         data={videos}
         renderItem={renderItem}
+        getItemLayout={getItemLayout}
         initialNumToRender={4}
         maxToRenderPerBatch={4}
         windowSize={3}

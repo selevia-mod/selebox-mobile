@@ -30,10 +30,15 @@ const ProfileVideosTab = ({
   const videosService = new VideosService();
   const isLoggedInUser = user?.$id === userId;
 
+  // PERF: previously had `allVideos` in deps, which meant ANY user's video
+  // upload globally would re-trigger this profile's fetch — including
+  // strangers uploading on Home. The fetch is gated by userId; if the user
+  // wants fresh data they pull-to-refresh, and the upload-then-navigate
+  // flow already routes through this screen on focus.
   useFocusEffect(
     useCallback(() => {
       fetchUserVideos();
-    }, [userId, allVideos]),
+    }, [userId]),
   );
 
   const fetchUserVideos = async () => {

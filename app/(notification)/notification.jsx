@@ -166,16 +166,26 @@ const Notification = () => {
       const documents = notificationData?.documents || [];
       const notificationIDS = documents.map((item) => item.$id);
       const merged = filterOutDismissed(mergeAcrossBackends(documents, supabaseDms));
-      setNotifications(merged);
+      // Optimistically mark everything we just fetched as viewed locally so
+      // the badge clears the instant the bell opens — the awaited backend
+      // calls below confirm the same state on the server. Without this,
+      // closing the bell before the markAsRead RPC resolved left rows in
+      // an "unread" state and the next fetch re-painted the badge.
+      const optimistic = merged.map((n) => (n?.isViewed === false ? { ...n, isViewed: true } : n));
+      setNotifications(optimistic);
       // lastId tracks the Appwrite cursor only — pagination requests more
       // Appwrite docs; Supabase dm_message rows are loaded in full per fetch.
       setLastId(documents.length ? documents[documents.length - 1].$id : undefined);
       setHasMore(documents.length < notificationData.total);
       setNotificationsLoading(false);
       hasLoadedRef.current = true;
-      if (notificationIDS.length) {
-        await notificationService.markAsRead({ notificationIds: notificationIDS });
-      }
+      // Mark BOTH backends in parallel — previously only Appwrite IDs were
+      // marked, which left Supabase dm_message rows unread server-side and
+      // re-surfaced their badges on next fetch.
+      await Promise.all([
+        notificationIDS.length ? notificationService.markAsRead({ notificationIds: notificationIDS }) : Promise.resolve(),
+        supabaseDms.length ? markAllDmNotificationsRead().catch(() => null) : Promise.resolve(),
+      ]);
     } catch (error) {
       setNotificationsLoading(false);
       console.log("fetchUserNotification: error", error);
@@ -280,22 +290,45 @@ const Notification = () => {
   // Realtime — prepend / patch Supabase dm_message rows live so the bell
   // panel stays current while it's open. Appwrite types still rely on
   // poll-on-focus (their service has no realtime channel today).
+  //
+  // PERF: previously every onInsert/onUpdate fired `.sort(sortByCreatedAtDesc)`
+  // on the full notifications array. In an active DM thread (10+ messages/
+  // minute), that's 10× O(n log n) per minute over a list that's already
+  // sorted descending. Now we patch in place and only re-sort defensively
+  // when an OUT-OF-ORDER insert lands (older doc than current head — happens
+  // on backfills or clock skew). 99% of the time the array stays sorted by
+  // construction since the newest doc always has the latest created_at.
   useEffect(() => {
     if (!user?.$id) return;
     const unsubscribe = subscribeToDmNotifications({
       onInsert: (doc) => {
         setNotifications((prev) => {
-          const exists = prev.some((n) => n.$id === doc.$id);
-          if (exists) {
-            return prev.map((n) => (n.$id === doc.$id ? doc : n)).sort(sortByCreatedAtDesc);
+          const existingIdx = prev.findIndex((n) => n.$id === doc.$id);
+          if (existingIdx !== -1) {
+            // Replace in place — same timestamp position assumed.
+            const next = prev.slice();
+            next[existingIdx] = doc;
+            return next;
           }
+          // Fast path: doc is newer than head → just prepend, no sort.
+          const headTs = prev[0]?.$createdAt || prev[0]?.created_at;
+          const docTs = doc?.$createdAt || doc?.created_at;
+          if (!headTs || !docTs || docTs >= headTs) {
+            return [doc, ...prev];
+          }
+          // Out-of-order insert (backfill / clock skew) — defensive sort.
           return [doc, ...prev].sort(sortByCreatedAtDesc);
         });
       },
       onUpdate: (doc) => {
-        setNotifications((prev) =>
-          prev.map((n) => (n.$id === doc.$id ? doc : n)).sort(sortByCreatedAtDesc),
-        );
+        setNotifications((prev) => {
+          const idx = prev.findIndex((n) => n.$id === doc.$id);
+          if (idx === -1) return prev;
+          // Updates rarely change created_at, so position is preserved.
+          const next = prev.slice();
+          next[idx] = doc;
+          return next;
+        });
       },
     });
     return unsubscribe;

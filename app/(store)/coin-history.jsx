@@ -15,13 +15,16 @@
 //   • Purchases  — status in ('credited', 'completed')
 //   • Refunds    — status in ('refunded')
 //
-// Pagination: simple — fetch up to 100 most-recent rows. If usage
-// grows beyond that, swap to lastId-cursor (same pattern as the
-// notification list).
+// Pagination: cursor-based off `created_at`. Initial fetch grabs
+// PAGE_SIZE most-recent rows, then onEndReached fetches older rows
+// using the oldest visible row's created_at as a strict-less-than
+// cursor. Filter changes reset the cursor (the SQL WHERE includes the
+// filter, so a page of "refunds" never wastes a slot on a credited row).
+// hasMore goes false when a page returns fewer than PAGE_SIZE rows.
 
 import { FontAwesome5, Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -40,6 +43,20 @@ const FILTERS = [
   { key: "purchases", label: "Purchases" },
   { key: "refunds",   label: "Refunds" },
 ];
+
+// 20 fits comfortably above the fold on a phone screen and is small
+// enough that initial paint feels instant; older pages stream in on
+// scroll. Matches the page size pattern used elsewhere (notifications,
+// books library).
+const PAGE_SIZE = 20;
+
+// Translate a filter chip into the array of `status` values to ask
+// Postgres for. `all` returns null (no filter applied at the SQL level).
+const statusFilterFor = (filter) => {
+  if (filter === "purchases") return ["credited", "completed"];
+  if (filter === "refunds")   return ["refunded"];
+  return null;
+};
 
 // Date label formatter — "Today" / "Yesterday" / "Mon, May 5" / etc.
 const dayLabel = (isoString) => {
@@ -67,13 +84,28 @@ export default function CoinHistory() {
   const [refreshing, setRefreshing] = useState(false);
   const [rows, setRows] = useState([]);
   const [filter, setFilter] = useState("all");
+  // Pagination state machine. cursor = null means "fetch from the top
+  // (no `created_at <` filter)"; subsequent pages set it to the oldest
+  // visible row's created_at. hasMore goes false once a page returns
+  // fewer than PAGE_SIZE rows. loadingMore is a re-entrancy guard so
+  // a fast scroll-end can't fan out duplicate requests.
+  const [cursor, setCursor] = useState(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Ref-mirrored copies the loadMore closure can read without retriggering
+  // useCallback every time these flip. Without these, onEndReached would
+  // keep getting fresh function identities and FlashList could fire it
+  // multiple times mid-scroll.
+  const cursorRef = useRef(null);
+  const hasMoreRef = useRef(true);
+  const loadingMoreRef = useRef(false);
 
-  const fetchHistory = useCallback(async () => {
-    if (!user?.$id) return;
-    try {
-      // Join coin_packages so each row carries the pack's
-      // base_coins + bonus_coins for displaying the total.
-      const { data, error } = await supabase
+  // Build the base query once per call. Both initial load and loadMore
+  // run through here; only the cursor (`before`) changes between them.
+  const runQuery = useCallback(
+    async ({ before = null, currentFilter }) => {
+      const statuses = statusFilterFor(currentFilter);
+      let q = supabase
         .from("coin_purchases")
         .select(`
           id,
@@ -90,52 +122,141 @@ export default function CoinHistory() {
         `)
         .eq("user_id", user.$id)
         .order("created_at", { ascending: false })
-        .limit(100);
-      if (error) {
-        console.warn("[coin-history] fetch failed:", error.message);
+        .limit(PAGE_SIZE);
+      if (statuses) q = q.in("status", statuses);
+      if (before) q = q.lt("created_at", before); // strict-less so we never re-fetch the cursor row
+      const { data, error } = await q;
+      if (error) throw error;
+      return data || [];
+    },
+    [user?.$id],
+  );
+
+  // Initial / refresh / filter-change fetch — wipes everything and starts
+  // from the most-recent row. The "filter" arg defaults to current state
+  // but lets a filter-change handler pass the new filter synchronously
+  // (otherwise the closure would still see the previous filter on the
+  // first call after switching chips).
+  const fetchInitial = useCallback(
+    async (overrideFilter) => {
+      if (!user?.$id) return;
+      const currentFilter = overrideFilter ?? filter;
+      try {
+        const data = await runQuery({ before: null, currentFilter });
+        setRows(data);
+        const nextHasMore = data.length >= PAGE_SIZE;
+        const nextCursor = data.length > 0 ? data[data.length - 1].created_at : null;
+        setHasMore(nextHasMore);
+        setCursor(nextCursor);
+        hasMoreRef.current = nextHasMore;
+        cursorRef.current = nextCursor;
+      } catch (e) {
+        console.warn("[coin-history] initial fetch failed:", e?.message);
         setRows([]);
-        return;
+        setHasMore(false);
+        hasMoreRef.current = false;
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
       }
-      setRows(data || []);
+    },
+    [user?.$id, filter, runQuery],
+  );
+
+  // Append a page of older rows. Guards: bail if no cursor (means we
+  // haven't even loaded page 1), if we already know there's no more, or
+  // if a loadMore is already in flight.
+  const fetchMore = useCallback(async () => {
+    if (loadingMoreRef.current) return;
+    if (!hasMoreRef.current) return;
+    if (!cursorRef.current) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const data = await runQuery({ before: cursorRef.current, currentFilter: filter });
+      // Defensive dedupe — if a refetch raced us, drop any rows we
+      // already have. Worst case we just append fewer rows.
+      setRows((prev) => {
+        const seen = new Set(prev.map((r) => r.id));
+        const fresh = data.filter((r) => !seen.has(r.id));
+        if (fresh.length === 0) {
+          hasMoreRef.current = false;
+          setHasMore(false);
+          return prev;
+        }
+        const merged = [...prev, ...fresh];
+        const nextHasMore = data.length >= PAGE_SIZE;
+        const nextCursor = data[data.length - 1].created_at;
+        hasMoreRef.current = nextHasMore;
+        cursorRef.current = nextCursor;
+        setHasMore(nextHasMore);
+        setCursor(nextCursor);
+        return merged;
+      });
     } catch (e) {
-      console.warn("[coin-history] fetch threw:", e?.message);
-      setRows([]);
+      console.warn("[coin-history] loadMore failed:", e?.message);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
     }
-  }, [user?.$id]);
+  }, [filter, runQuery]);
 
   useEffect(() => {
-    fetchHistory();
-  }, [fetchHistory]);
+    // Initial mount → load page 1 with whatever filter is current.
+    fetchInitial();
+    // We deliberately do NOT include `filter` in deps here — the chip-
+    // change handler below calls fetchInitial(newFilter) explicitly so
+    // the new filter applies to the SQL on the very first call without
+    // a render cycle in between.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.$id]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    fetchHistory();
-  }, [fetchHistory]);
+    setRows([]);
+    setCursor(null);
+    setHasMore(true);
+    cursorRef.current = null;
+    hasMoreRef.current = true;
+    fetchInitial();
+  }, [fetchInitial]);
 
-  // Apply filter, then group by day.
+  // Chip handler — wipes current page state and fetches page 1 with the
+  // newly-selected filter. Bypasses the deps-driven re-fetch by passing
+  // the filter explicitly so we don't paint a stale list briefly.
+  const onChangeFilter = useCallback(
+    (nextFilter) => {
+      if (nextFilter === filter) return;
+      setFilter(nextFilter);
+      setLoading(true);
+      setRows([]);
+      setCursor(null);
+      setHasMore(true);
+      cursorRef.current = null;
+      hasMoreRef.current = true;
+      fetchInitial(nextFilter);
+    },
+    [filter, fetchInitial],
+  );
+
+  // Group by day. Filter is now SQL-side (see runQuery + statusFilterFor)
+  // so this purely re-shapes rows into [header, ...rows, header, ...]
+  // for the FlatList. Insertion-ordered Map preserves the descending
+  // chronology of the underlying SELECT.
   const grouped = useMemo(() => {
-    const filtered = rows.filter((r) => {
-      if (filter === "purchases") return r.status === "credited" || r.status === "completed";
-      if (filter === "refunds")   return r.status === "refunded";
-      return true;
-    });
     const groups = new Map();
-    for (const r of filtered) {
+    for (const r of rows) {
       const label = dayLabel(r.created_at);
       if (!groups.has(label)) groups.set(label, []);
       groups.get(label).push(r);
     }
-    // Flatten into FlatList-friendly array of { type: 'header'|'row', ... }
     const flat = [];
     for (const [label, items] of groups) {
       flat.push({ type: "header", id: `h-${label}`, label });
       for (const it of items) flat.push({ type: "row", id: it.id, item: it });
     }
     return flat;
-  }, [rows, filter]);
+  }, [rows]);
 
   const renderItem = ({ item }) => {
     if (item.type === "header") {
@@ -152,7 +273,14 @@ export default function CoinHistory() {
 
   return (
     <StyledSafeAreaView>
-      <View style={{ flex: 1, backgroundColor: theme.background }}>
+      {/* width: "100%" overrides StyledSafeAreaView's items-center
+          (align-items: center) which would otherwise size this View to
+          its intrinsic content width and leave gutters on each side.
+          Matches the same pattern store.jsx uses (`w-full`). Without
+          this, paddingHorizontal changes on the balance card below had
+          no visible effect because the card was already maxed at the
+          content's natural width — the bug Charles spotted at 12:40. */}
+      <View style={{ flex: 1, width: "100%", backgroundColor: theme.background }}>
         {/* Header */}
         <View
           style={{
@@ -172,13 +300,20 @@ export default function CoinHistory() {
           </Text>
         </View>
 
-        {/* Balance summary card */}
+        {/* Balance summary card.
+            paddingHorizontal: 8 (was 16) — on iOS the wider card padding
+            squeezed the middle text column hard enough to truncate
+            "Current b…" and "548 c…" even with numberOfLines+adjustsFont.
+            8pt on each side reclaims 16pt of width which is plenty.
+            adjustsFontSizeToFit removed — it was racing the layout pass
+            and producing inconsistent results; numberOfLines={1} alone
+            handles overflow gracefully now that the column has room. */}
         <View
           style={{
             flexDirection: "row",
             alignItems: "center",
-            paddingHorizontal: 16,
-            paddingVertical: 14,
+            paddingHorizontal: 8,
+            paddingVertical: 16,
             backgroundColor: theme.accentPurpleSoft,
           }}
         >
@@ -194,10 +329,18 @@ export default function CoinHistory() {
           >
             <FontAwesome5 name="coins" size={20} color={theme.coin} />
           </View>
-          <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text style={{ fontSize: 11, color: theme.textSoft }}>Current balance</Text>
-            <Text style={{ fontSize: 22, fontWeight: "700", color: theme.text }}>
-              {balance ?? 0} coins
+          <View style={{ flex: 1, marginLeft: 10, marginRight: 8, minWidth: 0 }}>
+            <Text
+              numberOfLines={1}
+              style={{ fontSize: 11, color: theme.textSoft }}
+            >
+              Current balance
+            </Text>
+            <Text
+              numberOfLines={1}
+              style={{ fontSize: 22, fontWeight: "700", color: theme.text, marginTop: 2 }}
+            >
+              {(balance ?? 0).toLocaleString()} {balance === 1 ? "coin" : "coins"}
             </Text>
           </View>
           <TouchableOpacity
@@ -231,7 +374,7 @@ export default function CoinHistory() {
             return (
               <TouchableOpacity
                 key={f.key}
-                onPress={() => setFilter(f.key)}
+                onPress={() => onChangeFilter(f.key)}
                 style={{
                   paddingHorizontal: 12,
                   paddingVertical: 5,
@@ -285,6 +428,19 @@ export default function CoinHistory() {
             renderItem={renderItem}
             refreshControl={
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.accentPurple} />
+            }
+            onEndReached={fetchMore}
+            onEndReachedThreshold={0.4}
+            ListFooterComponent={
+              loadingMore ? (
+                <View style={{ paddingVertical: 16, alignItems: "center" }}>
+                  <ActivityIndicator color={theme.accentPurple} />
+                </View>
+              ) : !hasMore && rows.length >= PAGE_SIZE ? (
+                <View style={{ paddingVertical: 16, alignItems: "center" }}>
+                  <Text style={{ fontSize: 11, color: theme.textSoft }}>No more history</Text>
+                </View>
+              ) : null
             }
           />
         )}

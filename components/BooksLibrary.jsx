@@ -20,7 +20,15 @@ const BooksLibrary = ({ isActive = false }) => {
   const [hasMore, setHasMore] = useState(false);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   useResetOnBlur(setRefreshing, setIsFetchingMore);
-  const [localCursor, setLocalCursor] = useState();
+  // Track how many items from the Redux `library` cache we've already
+  // surfaced into `userLibrary`. Starts at 0; bumped to PAGE_SIZE when
+  // we hydrate the initial slice in useFocusEffect, then bumped again
+  // each time fetchMoreUserLibrary drains another slice. Previously this
+  // was `useState()` which left it undefined — `undefined < library.length`
+  // always evaluated false (NaN coercion), so the local-cache branch was
+  // never entered and `setLocalCursor(undefined + PAGE_SIZE)` set it to
+  // NaN forever, permanently bypassing the cache-drain optimization.
+  const [localCursor, setLocalCursor] = useState(0);
   const library = useSelector((state) => state.books.library);
   const lastScrollY = useRef(0);
   const navHiddenRef = useRef(false);
@@ -49,6 +57,7 @@ const BooksLibrary = ({ isActive = false }) => {
       // web and mobile finally share the same backing table.
       if (library.length > 0) {
         setUserLibrary(library.slice(0, PAGE_SIZE));
+        setLocalCursor(Math.min(PAGE_SIZE, library.length));
       }
       fetchUserLibrary();
     }, []),
@@ -66,6 +75,10 @@ const BooksLibrary = ({ isActive = false }) => {
       const cursor = docs.length > 0 ? docs[docs.length - 1].$id : null;
       setLastId(cursor);
       setHasMore(docs.length < total);
+      // Reset local cache cursor — userLibrary now holds the same docs as
+      // the Redux `library`, so further loadMore should skip the cache-
+      // drain branch and go straight to the network for older items.
+      setLocalCursor(docs.length);
       dispatch(setLibraryLastId(cursor));
       dispatch(setLibraryHasMore(docs.length < total));
       dispatch(setLibrary(docs));
@@ -75,11 +88,15 @@ const BooksLibrary = ({ isActive = false }) => {
   };
 
   const fetchMoreUserLibrary = async () => {
-    if (localCursor < library.length) {
-      const nextSlice = library.slice(localCursor, localCursor + PAGE_SIZE);
+    // Drain Redux cache first if we still have un-rendered items. Belt-and-
+    // suspenders Number guard so a stale undefined/NaN cursor never silently
+    // skips this branch and sends us to the network unnecessarily.
+    const cursor = Number.isFinite(localCursor) ? localCursor : 0;
+    if (cursor < library.length) {
+      const nextSlice = library.slice(cursor, cursor + PAGE_SIZE);
 
       setUserLibrary((prev) => [...prev, ...nextSlice]);
-      setLocalCursor(localCursor + PAGE_SIZE);
+      setLocalCursor(cursor + PAGE_SIZE);
       return;
     }
 

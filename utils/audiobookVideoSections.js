@@ -93,6 +93,15 @@ export const getAudiobookSections = (videos = [], limit = AUDIOBOOK_VIDEOS_LIMIT
   };
 };
 
+// Hard cap on pagination — protects against catalogs where lots of
+// audiobook-tagged videos exist but the per-call `filterVideos` (e.g.,
+// safety blocks, hidden content) trims most of them. Without the cap we'd
+// keep fanning out 50-row pages until offset > total even though neither
+// shelf will ever fill, burning 10-15 wasted RPCs on Videos tab open.
+// 6 pages × 50 = 300 candidates is plenty for a 30-row shelf even after
+// aggressive filtering.
+const MAX_AUDIOBOOK_PAGES = 6;
+
 export const fetchAudiobookVideosForSectionLimit = async ({ videosService, sectionLimit = AUDIOBOOK_VIDEOS_LIMIT, filterVideos } = {}) => {
   if (!videosService?.fetchVideos) return [];
 
@@ -100,14 +109,16 @@ export const fetchAudiobookVideosForSectionLimit = async ({ videosService, secti
   const collectedVideos = [];
   let offset = 0;
   let total = null;
+  let pagesFetched = 0;
 
-  while (total === null || offset < total) {
+  while ((total === null || offset < total) && pagesFetched < MAX_AUDIOBOOK_PAGES) {
     const response = await videosService.fetchVideos({
       category: AUDIOBOOK_TAG,
       limit: AUDIOBOOK_VIDEOS_LIMIT,
       status: "published",
       offset,
     });
+    pagesFetched += 1;
     const pageVideos = Array.isArray(response?.documents) ? response.documents : [];
     if (pageVideos.length === 0) break;
 

@@ -4,9 +4,42 @@ import { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import useAppTheme from "../hooks/useAppTheme";
-import { BookReadService } from "../lib/book-reads";
 import { BookService } from "../lib/books";
 import BookTag from "./BookTag";
+
+// Module-level TTL cache for per-card stat fetches (bookmarks/comments/
+// chapters). Without this, a 30-card catalog screen fired ~90 concurrent
+// requests every time it mounted — and re-mounted between tab switches
+// because the parent FlashList recycler bails after 3 screens. 5min TTL
+// is conservative enough that a creator publishing a new chapter sees the
+// updated count within a few minutes via natural navigation, but tight
+// enough to dedup the burst of identical reads when scrolling a catalog.
+const STATS_TTL_MS = 5 * 60 * 1000;
+const STATS_CACHE_MAX = 500;
+const bookStatsCache = new Map();
+
+const readBookStatsCache = (bookId) => {
+  if (!bookId) return null;
+  const entry = bookStatsCache.get(bookId);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > STATS_TTL_MS) {
+    bookStatsCache.delete(bookId);
+    return null;
+  }
+  return entry.value;
+};
+
+const writeBookStatsCache = (bookId, value) => {
+  if (!bookId) return;
+  // LRU-ish eviction — drop the oldest insertion when over budget. Map
+  // iteration order is insertion order in JS, so the first key is the
+  // earliest-inserted (effectively oldest unread).
+  if (bookStatsCache.size >= STATS_CACHE_MAX) {
+    const oldest = bookStatsCache.keys().next().value;
+    if (oldest !== undefined) bookStatsCache.delete(oldest);
+  }
+  bookStatsCache.set(bookId, { ts: Date.now(), value });
+};
 
 const BookCatalogCard = ({
   item,
@@ -33,6 +66,7 @@ const BookCatalogCard = ({
 
   useEffect(() => {
     if (hideStats || !item?.$id) return;
+    let cancelled = false;
 
     // Likes come straight off the `item` row — `mapRowToBook` populates
     // `totalLikes` / `likes` from `books.likes_count` (denormalized
@@ -42,63 +76,56 @@ const BookCatalogCard = ({
     // as 1 (the author's own like) instead of the real total. Same
     // pattern as `fetchBookReads` below.
     setLikeTotal(item?.totalLikes ?? item?.likes ?? item?.likes_count ?? 0);
+    setReadTotal(item?.totalReads ?? item?.views_count ?? 0);
+
+    // Cache hit — paint immediately, no network. The 5min TTL is enforced
+    // inside readBookStatsCache.
+    const cached = readBookStatsCache(item.$id);
+    if (cached) {
+      setBookmarkTotal(cached.bookmarks);
+      setCommentTotal(cached.comments);
+      setChaptersTotal(cached.chapters);
+      return () => {
+        cancelled = true;
+      };
+    }
 
     const fetchData = async () => {
       try {
-        await Promise.all([fetchBookBookmarks(), fetchBookComments(), fetchBookChapters(), fetchBookReads()]);
+        const [bookmarksRes, commentsRes, chaptersRes] = await Promise.all([
+          bookService.getBookLibraries({ bookId: item.$id }).catch(() => ({ total: 0 })),
+          bookService.getBookComments({ bookId: item.$id }).catch(() => ({ total: 0 })),
+          bookService.fetchBookChapters({ bookId: item.$id }).catch(() => ({ total: 0 })),
+        ]);
+        if (cancelled) return;
+        const bookmarks = bookmarksRes?.total ?? 0;
+        const comments = commentsRes?.total ?? 0;
+        const chapters = chaptersRes?.total ?? 0;
+        setBookmarkTotal(bookmarks);
+        setCommentTotal(comments);
+        setChaptersTotal(chapters);
+        writeBookStatsCache(item.$id, { bookmarks, comments, chapters });
       } catch (error) {
-        console.log("fetchData error", error);
+        console.log("BookCatalogCard fetchData error", error);
       }
     };
     fetchData();
-  }, [hideStats, item?.$id, item?.totalLikes, item?.likes, item?.likes_count]);
 
-  // fetchBookLikes removed — see useEffect above. The denormalized
-  // `books.likes_count` (exposed as item.totalLikes by mapRowToBook) is
-  // the source of truth; the earlier per-card SELECT on book_likes was
-  // shadowed by RLS to only the caller's own row, so authors saw "1
-  // like" on their own books even when the real total was hundreds.
+    return () => {
+      cancelled = true;
+    };
+  }, [hideStats, item?.$id, item?.totalLikes, item?.likes, item?.likes_count, item?.totalReads, item?.views_count]);
 
-  const fetchBookBookmarks = async () => {
-    try {
-      const bookBookmarks = await bookService.getBookLibraries({ bookId: item.$id });
-      setBookmarkTotal(bookBookmarks.total);
-    } catch (error) {
-      console.log("fetchBookBookmarks: error", error);
-    }
-  };
-
-  const fetchBookComments = async () => {
-    try {
-      const bookComments = await bookService.getBookComments({ bookId: item.$id });
-      setCommentTotal(bookComments.total);
-    } catch (error) {
-      console.log("fetchBookComments: error", error);
-    }
-  };
-
-  const fetchBookChapters = async () => {
-    try {
-      const bookChapters = await bookService.fetchBookChapters({ bookId: item.$id });
-      setChaptersTotal(bookChapters.total);
-    } catch (error) {
-      console.log("fetchBookChapters: error", error);
-    }
-  };
-
-  // Read count comes straight off the `item` row now — `mapRowToBook`
-  // populates `totalReads` from `views_count` already. Used to fire a
-  // separate `BookReadService.fetchBookRead` call here, but:
-  //   1. It was a redundant round-trip per card on every catalog mount.
-  //   2. For DRAFT books (is_public=false), the anon SELECT in
-  //      fetchBookRead got RLS-filtered to null and the caller's
-  //      `bookReads.totalReads` threw `Cannot read property of null`,
-  //      caught silently by the try/catch — leaving readTotal stuck at 0.
-  // The `?? 0` fallback covers any older cached item that was hydrated
-  // before mapRowToBook started populating the field.
-  const fetchBookReads = async () => {
-    setReadTotal(item?.totalReads ?? item?.views_count ?? 0);
-  };
+  // fetchBookLikes / fetchBookReads removed — see useEffect above.
+  // - likes_count is denormalized on `books` (kept fresh by triggers); the
+  //   earlier per-card SELECT on book_likes was RLS-shadowed to only the
+  //   caller's own row, so authors saw "1 like" on their own books.
+  // - views_count likewise lives on `books`; the prior fetchBookRead call
+  //   was both a wasted round-trip and crashed on draft books (RLS-filtered
+  //   to null, caller deref'd null.totalReads inside a silent try/catch).
+  // - bookmarks / comments / chapters now go through the bookStatsCache
+  //   above so a 30-card catalog only fans out once per stat per 5min
+  //   instead of every mount.
 
   useEffect(() => {
     Animated.timing(animation, {

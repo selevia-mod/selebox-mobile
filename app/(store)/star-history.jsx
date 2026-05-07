@@ -14,12 +14,16 @@
 //   • This week  — last 7 days
 //   • Today      — only today
 //
-// Pagination: simple cap at 60 days. Far enough back for most users
-// to see their pattern; further back can be a phase-2 cursor read.
+// Pagination: cursor-based off `reward_date`. Initial fetch grabs
+// PAGE_SIZE most-recent days; older days stream in via onEndReached
+// using the oldest visible day as a strict-less-than cursor. Filter
+// chips (today/week/all) constrain BOTH the initial query and the
+// load-more query so we never waste a page slot on a row outside the
+// active window.
 
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -39,6 +43,26 @@ const FILTERS = [
   { key: "week",   label: "This week" },
   { key: "today",  label: "Today" },
 ];
+
+// 30 days fits a full month above the fold; load-more pulls another 30.
+const PAGE_SIZE = 30;
+
+// "today" / "week" filters constrain to a date range; "all" is unbounded.
+// Returns the lower bound (>=) as a YYYY-MM-DD string, or null for all-time.
+// We compute today off the device clock — the rows store local-day
+// reward_date, so a UTC-anchored comparison would skew at midnight.
+const lowerBoundFor = (filter) => {
+  if (filter === "today") {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  if (filter === "week") {
+    const d = new Date();
+    d.setDate(d.getDate() - 6);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  return null;
+};
 
 const dayLabel = (dateString) => {
   if (!dateString) return "";
@@ -70,67 +94,154 @@ export default function StarHistory() {
   const [days, setDays] = useState([]);
   const [filter, setFilter] = useState("all");
   const [stars, setStars] = useState(0);
+  // Pagination state machine — cursor is the oldest loaded reward_date
+  // string (YYYY-MM-DD). Same shape as coin-history; refs mirror
+  // hot-path values so the loadMore closure doesn't churn identity.
+  const [cursor, setCursor] = useState(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const cursorRef = useRef(null);
+  const hasMoreRef = useRef(true);
+  const loadingMoreRef = useRef(false);
 
-  const fetchHistory = useCallback(async () => {
-    if (!user?.$id) return;
-    try {
-      // Daily aggregate read — one row per (user, day).
-      const { data, error } = await supabase
+  // Build the base ad_rewards query. Both initial load and loadMore
+  // call this; only the cursor (`before`) changes.
+  const runQuery = useCallback(
+    async ({ before = null, currentFilter }) => {
+      const lower = lowerBoundFor(currentFilter);
+      let q = supabase
         .from("ad_rewards")
         .select("reward_date, ads_watched, last_watched_at")
         .eq("user_id", user.$id)
         .order("reward_date", { ascending: false })
-        .limit(60);
-      if (error) {
-        console.warn("[star-history] fetch failed:", error.message);
-        setDays([]);
-      } else {
-        setDays(data || []);
-      }
+        .limit(PAGE_SIZE);
+      if (lower)  q = q.gte("reward_date", lower);
+      if (before) q = q.lt("reward_date", before);
+      const { data, error } = await q;
+      if (error) throw error;
+      return data || [];
+    },
+    [user?.$id],
+  );
 
-      // Pull current star balance for the summary card. Falls back
-      // gracefully if the read errors — empty / 0 is a valid state.
-      try {
-        const summary = await StarService.getStars(user.$id);
-        setStars(summary?.stars ?? 0);
-      } catch (e) {
-        console.warn("[star-history] stars read failed:", e?.message);
-      }
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+  // Star balance is independent of the page state — fetch it alongside
+  // page 1 so the header card paints with the real number.
+  const fetchStarsBalance = useCallback(async () => {
+    if (!user?.$id) return;
+    try {
+      const summary = await StarService.getStars(user.$id);
+      setStars(summary?.stars ?? 0);
+    } catch (e) {
+      console.warn("[star-history] stars read failed:", e?.message);
     }
   }, [user?.$id]);
 
+  const fetchInitial = useCallback(
+    async (overrideFilter) => {
+      if (!user?.$id) return;
+      const currentFilter = overrideFilter ?? filter;
+      try {
+        const data = await runQuery({ before: null, currentFilter });
+        setDays(data);
+        const nextHasMore = data.length >= PAGE_SIZE;
+        const nextCursor = data.length > 0 ? data[data.length - 1].reward_date : null;
+        setHasMore(nextHasMore);
+        setCursor(nextCursor);
+        hasMoreRef.current = nextHasMore;
+        cursorRef.current = nextCursor;
+      } catch (e) {
+        console.warn("[star-history] initial fetch failed:", e?.message);
+        setDays([]);
+        setHasMore(false);
+        hasMoreRef.current = false;
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [user?.$id, filter, runQuery],
+  );
+
+  const fetchMore = useCallback(async () => {
+    if (loadingMoreRef.current) return;
+    if (!hasMoreRef.current) return;
+    if (!cursorRef.current) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const data = await runQuery({ before: cursorRef.current, currentFilter: filter });
+      setDays((prev) => {
+        const seen = new Set(prev.map((d) => d.reward_date));
+        const fresh = data.filter((d) => !seen.has(d.reward_date));
+        if (fresh.length === 0) {
+          hasMoreRef.current = false;
+          setHasMore(false);
+          return prev;
+        }
+        const merged = [...prev, ...fresh];
+        const nextHasMore = data.length >= PAGE_SIZE;
+        const nextCursor = data[data.length - 1].reward_date;
+        hasMoreRef.current = nextHasMore;
+        cursorRef.current = nextCursor;
+        setHasMore(nextHasMore);
+        setCursor(nextCursor);
+        return merged;
+      });
+    } catch (e) {
+      console.warn("[star-history] loadMore failed:", e?.message);
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
+  }, [filter, runQuery]);
+
   useEffect(() => {
-    fetchHistory();
-  }, [fetchHistory]);
+    fetchInitial();
+    fetchStarsBalance();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.$id]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    fetchHistory();
-  }, [fetchHistory]);
+    setDays([]);
+    setCursor(null);
+    setHasMore(true);
+    cursorRef.current = null;
+    hasMoreRef.current = true;
+    fetchInitial();
+    fetchStarsBalance();
+  }, [fetchInitial, fetchStarsBalance]);
 
-  const filtered = useMemo(() => {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    return days.filter((d) => {
-      const target = new Date(d.reward_date);
-      const diffDays = Math.round((today - target) / (1000 * 60 * 60 * 24));
-      if (filter === "today") return diffDays === 0;
-      if (filter === "week")  return diffDays >= 0 && diffDays < 7;
-      return true;
-    });
-  }, [days, filter]);
+  const onChangeFilter = useCallback(
+    (nextFilter) => {
+      if (nextFilter === filter) return;
+      setFilter(nextFilter);
+      setLoading(true);
+      setDays([]);
+      setCursor(null);
+      setHasMore(true);
+      cursorRef.current = null;
+      hasMoreRef.current = true;
+      fetchInitial(nextFilter);
+    },
+    [filter, fetchInitial],
+  );
 
+  // Filter is now SQL-side; this just totals what's loaded for the
+  // small "X stars earned in this period" footer caption.
   const totalEarned = useMemo(
-    () => filtered.reduce((sum, d) => sum + (d.ads_watched || 0), 0),
-    [filtered],
+    () => days.reduce((sum, d) => sum + (d.ads_watched || 0), 0),
+    [days],
   );
 
   return (
     <StyledSafeAreaView>
-      <View style={{ flex: 1, backgroundColor: theme.background }}>
+      {/* width: "100%" overrides StyledSafeAreaView's items-center
+          (align-items: center) which would otherwise size this View to
+          its intrinsic content width and leave gutters on each side.
+          Matches the pattern store.jsx uses (`w-full`). Same root cause
+          as the coin-history balance card layout bug. */}
+      <View style={{ flex: 1, width: "100%", backgroundColor: theme.background }}>
         <View
           style={{
             flexDirection: "row",
@@ -149,15 +260,19 @@ export default function StarHistory() {
           </Text>
         </View>
 
-        {/* Balance summary card — same shape as Coin History but with
-            the existing StarIcon and the amber accent the rest of the
-            app uses for stars. */}
+        {/* Balance summary card — same shape as Coin History.
+            paddingHorizontal: 8 matches Coin History's tightening fix —
+            the wider 16pt padding squeezed the middle text column hard
+            enough to truncate the value on iOS. adjustsFontSizeToFit
+            removed for the same reason: it raced the flex layout pass
+            and produced inconsistent shrinking. numberOfLines={1} alone
+            handles overflow now that the column has the room. */}
         <View
           style={{
             flexDirection: "row",
             alignItems: "center",
-            paddingHorizontal: 16,
-            paddingVertical: 14,
+            paddingHorizontal: 8,
+            paddingVertical: 16,
             backgroundColor: theme.accentAmberSoft,
           }}
         >
@@ -175,10 +290,18 @@ export default function StarHistory() {
           >
             <StarIcon size={24} color={theme.coin} />
           </View>
-          <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text style={{ fontSize: 11, color: theme.textSoft }}>Current balance</Text>
-            <Text style={{ fontSize: 22, fontWeight: "700", color: theme.text }}>
-              {stars} stars
+          <View style={{ flex: 1, marginLeft: 10, marginRight: 8, minWidth: 0 }}>
+            <Text
+              numberOfLines={1}
+              style={{ fontSize: 11, color: theme.textSoft }}
+            >
+              Current balance
+            </Text>
+            <Text
+              numberOfLines={1}
+              style={{ fontSize: 22, fontWeight: "700", color: theme.text, marginTop: 2 }}
+            >
+              {stars.toLocaleString()} {stars === 1 ? "star" : "stars"}
             </Text>
           </View>
           <TouchableOpacity
@@ -211,7 +334,7 @@ export default function StarHistory() {
             return (
               <TouchableOpacity
                 key={f.key}
-                onPress={() => setFilter(f.key)}
+                onPress={() => onChangeFilter(f.key)}
                 style={{
                   paddingHorizontal: 12,
                   paddingVertical: 5,
@@ -237,7 +360,7 @@ export default function StarHistory() {
 
         {/* Total-in-window summary — small footer-style line so the
             user knows the filter actually changed something. */}
-        {!loading && filtered.length > 0 && (
+        {!loading && days.length > 0 && (
           <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 4 }}>
             <Text style={{ fontSize: 11, color: theme.textSoft }}>
               {totalEarned} {totalEarned === 1 ? "star" : "stars"} earned in this period
@@ -249,7 +372,7 @@ export default function StarHistory() {
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
             <ActivityIndicator color={theme.accentAmber} />
           </View>
-        ) : filtered.length === 0 ? (
+        ) : days.length === 0 ? (
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 32 }}>
             <StarIcon size={36} color={theme.textSoft} />
             <Text style={{ marginTop: 12, fontSize: 15, fontWeight: "500", color: theme.text }}>
@@ -269,11 +392,24 @@ export default function StarHistory() {
           </View>
         ) : (
           <FlatList
-            data={filtered}
+            data={days}
             keyExtractor={(d) => d.reward_date}
             renderItem={({ item }) => <DayRow item={item} theme={theme} />}
             refreshControl={
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.accentAmber} />
+            }
+            onEndReached={fetchMore}
+            onEndReachedThreshold={0.4}
+            ListFooterComponent={
+              loadingMore ? (
+                <View style={{ paddingVertical: 16, alignItems: "center" }}>
+                  <ActivityIndicator color={theme.accentAmber} />
+                </View>
+              ) : !hasMore && days.length >= PAGE_SIZE ? (
+                <View style={{ paddingVertical: 16, alignItems: "center" }}>
+                  <Text style={{ fontSize: 11, color: theme.textSoft }}>No more history</Text>
+                </View>
+              ) : null
             }
           />
         )}

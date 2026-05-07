@@ -125,14 +125,16 @@ const ProfilePostTab = ({
           const supabasePosts = await fetchPostsByUser({ userId, limit: 10 });
           if (supabasePosts.length > 0) {
             const postIds = supabasePosts.map((p) => p.id).filter(Boolean);
-            const stats = await fetchPostStats(postIds);
+            // Parallelize — stats and viewer-like-set both take postIds and
+            // don't depend on each other. Was sequential, costing one extra
+            // round-trip (~80-150ms) on every Profile open.
+            const [stats, viewerLikeSet] = await Promise.all([fetchPostStats(postIds), fetchViewerLikeSet(user?.$id, postIds)]);
             // Hydrate the viewer's own like state so PostCard's heart shows
             // filled for already-liked posts. The home feed gets this for free
             // via attachIsLikedByCurrentUser; the profile tab missed the same
             // step under the Supabase branch — without it, taps on already-
             // liked posts behaved like first-time likes (insert conflict +
             // visual desync).
-            const viewerLikeSet = await fetchViewerLikeSet(user?.$id, postIds);
             const adapted = supabasePosts
               .map((p) => {
                 const adaptedPost = adaptSupabasePostToAppwriteShape(p, stats);

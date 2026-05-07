@@ -32,17 +32,16 @@ const formatTagList = (tags = []) => {
 const VideoCardSmall = ({ item, isFlexColumn, customHeight, customWidth, ...props }) => {
   const { theme } = useAppTheme();
   const { globalSettings, user } = useGlobalContext();
-  // Live engagement counts via VideoStatsProvider (same wiring as
-  // VideoCardNew). batchLoadVideoStats dedupes on already-loaded
-  // videos, so opening Profile > Videos doesn't fan out one round-
-  // trip per card. Falls back to the static `videoStats.total*`
-  // baked into mapRowToVideo so first-paint never lags.
-  const { getVideoStats, batchLoadVideoStats } = useVideosStats();
+  // Read-only subscription to VideoStatsProvider — kept so a toggleLike
+  // on the video-player screen propagates back to this card. The per-
+  // card batchLoadVideoStats useEffect was removed (was: every card
+  // mount fired its own batch → setVideosStats → context cascade re-
+  // rendering all 50+ cards on Videos tab open, sustained dt~2500ms
+  // VirtualizedList warnings in Metro). Display falls back to the
+  // denormalized `item.videoStats.total*` columns that triggers keep
+  // fresh — same source batchLoadVideoStats was reading anyway.
+  const { getVideoStats } = useVideosStats();
   const videoId = item?.$id;
-  useEffect(() => {
-    if (!videoId || !user?.$id) return;
-    batchLoadVideoStats([videoId], user.$id);
-  }, [videoId, user?.$id, batchLoadVideoStats]);
   const liveStats = getVideoStats(videoId);
 
   // Lazy duration — hoisted above the row/column branch so hook order is stable

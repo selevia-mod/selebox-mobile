@@ -23,6 +23,12 @@ const VideosRisingCreators = ({ videos = [] }) => {
     [cardWidth, imageHeight],
   );
   const keyExtractor = useCallback((item, index) => item?.$id || `${item.type}-${index}`, []);
+  // +12 accounts for VideoCardNew's mr-3 (Tailwind = 12px); without it
+  // FlatList's predicted offsets drift 12px per card and cause stutter.
+  const getItemLayout = useCallback(
+    (_data, index) => ({ length: cardWidth + 12, offset: (cardWidth + 12) * index, index }),
+    [cardWidth],
+  );
 
   if (!videos.length) return null;
 
@@ -38,6 +44,7 @@ const VideosRisingCreators = ({ videos = [] }) => {
         keyExtractor={keyExtractor}
         data={videos}
         renderItem={renderItem}
+        getItemLayout={getItemLayout}
         initialNumToRender={4}
         maxToRenderPerBatch={4}
         windowSize={3}

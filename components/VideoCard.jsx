@@ -17,15 +17,14 @@ const VideoCard = ({ item, ...props }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const avatarUri = item?.uploader?.avatar;
-  // Live engagement counts via the shared provider; identical pattern to
-  // VideoCardNew + VideoCardSmall. Falls back to the static counts on
-  // item.videoStats so first-paint isn't blocked.
-  const { getVideoStats, batchLoadVideoStats } = useVideosStats();
+  // Read-only subscription so toggleLike on the video-player propagates
+  // back here. Per-card batchLoadVideoStats useEffect removed (was the
+  // source of a 50×50 context cascade re-render on Videos tab open —
+  // sustained dt~2500ms in Metro logs). Display now falls back to the
+  // denormalized `item.videoStats.total*` columns kept fresh by triggers
+  // — same source the removed batch was reading anyway.
+  const { getVideoStats } = useVideosStats();
   const videoId = item?.$id;
-  useEffect(() => {
-    if (!videoId || !user?.$id) return;
-    batchLoadVideoStats([videoId], user.$id);
-  }, [videoId, user?.$id, batchLoadVideoStats]);
   const liveStats = getVideoStats(videoId);
   const liveViews = liveStats.videoViews ?? item?.videoStats?.totalViews ?? 0;
   const liveLikes = liveStats.videoLikes ?? item?.videoStats?.totalLikes ?? 0;

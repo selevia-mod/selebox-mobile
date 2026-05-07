@@ -13,16 +13,30 @@ const Search = () => {
   const [loading, setLoading] = useState(true);
 
   const refetch = async () => {
-    await FetchVideos(setAllVideos);
-    const queried_videos = await SearchVideos(query, videos);
-    setSearchedVideos(queried_videos);
+    setLoading(true);
+    try {
+      await FetchVideos(setAllVideos);
+      const queried_videos = await SearchVideos(query, allVideos);
+      setSearchedVideos(queried_videos);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
-    SearchVideos(query, allVideos).then((videos) => setSearchedVideos(videos));
-    setLoading(false);
-  }, [query]);
+    SearchVideos(query, allVideos)
+      .then((results) => {
+        if (!cancelled) setSearchedVideos(results);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [query, allVideos]);
 
   return (
     <StyledSafeAreaView>

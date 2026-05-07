@@ -23,7 +23,7 @@ import { useGlobalContext } from "../context/global-provider";
 import { reportContent } from "../lib/safety";
 import ReportContentModal from "./ReportContentModal";
 import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
-import { Alert, FlatList, Image as RNImage, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, Image as RNImage, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 import useAppTheme from "../hooks/useAppTheme";
@@ -141,10 +141,22 @@ const buildRowsWithDividers = (messages) => {
 // new array reference each time the parent rebuilds. Custom equality
 // compares the bubble-relevant fields field-by-field; `theme` and
 // `onLongPress` are reference-stable so an identity check is enough.
+// Resolve the message's image list — always returns an array. Promotes
+// legacy single-`image_url` rows (pre-multi-image migration) to a length-1
+// array so the grid renderer below has one shape to handle. Realtime echo
+// + loadMessages already do this server-side normalization, but we repeat
+// it here so optimistic rows and any unmigrated callers also Just Work.
+const resolveImageUrls = (message) => {
+  if (Array.isArray(message?.image_urls) && message.image_urls.length > 0) return message.image_urls;
+  if (message?.image_url) return [message.image_url];
+  return [];
+};
+
 const MessageBubbleImpl = ({ message, isMine, theme, onLongPress, reactionList, repliedTo }) => {
   const isDeleted = Boolean(message.deleted_at);
   const isPending = Boolean(message._pending);
-  const hasImage = Boolean(message.image_url);
+  const imageUrls = resolveImageUrls(message);
+  const hasImage = imageUrls.length > 0;
   const hasBody = Boolean(message.body && message.body.trim());
   // Image-only messages (picture / GIF without caption) should let the
   // image carry the visual weight. The purple frame around a 200×200 photo
@@ -208,8 +220,50 @@ const MessageBubbleImpl = ({ message, isMine, theme, onLongPress, reactionList, 
           paddingVertical: isImageOnly ? 4 : undefined,
         }}
       >
-        {message.image_url ? (
-          <FastImage source={{ uri: message.image_url }} style={{ width: 200, height: 200, borderRadius: 12, marginBottom: message.body ? 6 : 0 }} />
+        {hasImage ? (
+          // Gallery rules:
+          //   1 image  → full 200x200 (existing single-image treatment)
+          //   2 images → side-by-side 99x99 each (so the bubble stays the
+          //              same total width and we don't need to re-layout
+          //              all surrounding rows)
+          //   3+       → 2-column grid, square cells. If we have 5+ photos
+          //              the 4th cell gets a "+N more" overlay; tapping
+          //              still routes through long-press to the existing
+          //              action sheet (full-screen viewer is a follow-up).
+          imageUrls.length === 1 ? (
+            <FastImage
+              source={{ uri: imageUrls[0] }}
+              style={{ width: 200, height: 200, borderRadius: 12, marginBottom: message.body ? 6 : 0 }}
+            />
+          ) : (
+            <View
+              className="flex-row flex-wrap"
+              style={{ width: 200, marginBottom: message.body ? 6 : 0, gap: 2 }}
+            >
+              {imageUrls.slice(0, 4).map((url, idx) => {
+                const isLastVisibleWithOverflow = idx === 3 && imageUrls.length > 4;
+                const overflowCount = imageUrls.length - 4;
+                return (
+                  <View key={`${url}-${idx}`} style={{ width: 99, height: 99, borderRadius: 8, overflow: "hidden", position: "relative" }}>
+                    <FastImage source={{ uri: url }} style={{ width: "100%", height: "100%" }} />
+                    {isLastVisibleWithOverflow ? (
+                      <View
+                        style={{
+                          position: "absolute",
+                          inset: 0,
+                          backgroundColor: "rgba(0, 0, 0, 0.5)",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <Text style={{ color: "#fff", fontSize: 18, fontWeight: "700" }}>+{overflowCount}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </View>
+          )
         ) : null}
         {isDeleted ? (
           <Text className="text-sm italic" style={{ color: isMine ? theme.primaryContrast : theme.textSubtle }}>
@@ -294,10 +348,16 @@ const MessageBubble = memo(MessageBubbleImpl, (prev, next) => {
   const a = prev.message; const b = next.message;
   if (a === b) return true;
   if (!a || !b) return false;
+  // Compare image lists by joined string — cheap and order-sensitive,
+  // which matches the rendering. Falls back to image_url for legacy rows
+  // that haven't been normalized yet.
+  const imagesA = Array.isArray(a.image_urls) ? a.image_urls.join("|") : a.image_url || "";
+  const imagesB = Array.isArray(b.image_urls) ? b.image_urls.join("|") : b.image_url || "";
   return (
     a.id === b.id &&
     a.body === b.body &&
     a.image_url === b.image_url &&
+    imagesA === imagesB &&
     a.edited_at === b.edited_at &&
     a.deleted_at === b.deleted_at &&
     a._pending === b._pending &&
@@ -316,12 +376,26 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
   const [reactions, setReactions] = useState({}); // { messageId: [{ user_id, emoji }] }
   const [loading, setLoading] = useState(true);
   const [composer, setComposer] = useState("");
+  // Pagination state — populated by the initial load and bumped each time
+  // we paginate. `oldestCursor` is the created_at of the topmost loaded
+  // message; we pass it as `before` to fetch the next older page.
+  // `hasMoreOlder` flips false once a page returns no rows.
+  // `loadingOlder` is a re-entrancy guard so onEndReached doesn't fire
+  // overlapping requests while one is in flight.
+  const [oldestCursor, setOldestCursor] = useState(null);
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [sending, setSending] = useState(false);
-  // Composer attachment state — set when the user picks an image OR a GIF
-  // and clears on send. The UI shows a small preview chip above the input
-  // so the user can visually confirm before sending.
-  const [pendingImageUri, setPendingImageUri] = useState(null);  // local URI for picked image
-  const [pendingGifUrl, setPendingGifUrl] = useState(null);      // remote Tenor URL
+  // Composer attachment state — set when the user picks images OR a GIF
+  // and clears on send. The UI shows preview chips above the input so the
+  // user can visually confirm before sending.
+  //
+  // 2026-05-07: pendingImageUri (single) became pendingImageUris (array)
+  // when multi-image chat shipped. Up to 10 entries; selectionLimit on the
+  // picker enforces this client-side and a CHECK constraint on
+  // messages.image_urls enforces it server-side.
+  const [pendingImageUris, setPendingImageUris] = useState([]); // local URIs for picked images (up to 10)
+  const [pendingGifUrl, setPendingGifUrl] = useState(null);      // remote Tenor URL (still single)
   // Toggles the emoji quick-row + GIF modal visibility.
   const [emojiBarOpen, setEmojiBarOpen] = useState(false);
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
@@ -398,6 +472,10 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
         setConversation(conv);
         setMessages(payload.messages);
         setReactions(payload.reactions);
+        // Capture pagination state from the initial fetch so the user can
+        // scroll up to load older messages.
+        setOldestCursor(payload.oldestCursor);
+        setHasMoreOlder(payload.hasMore);
         markConversationRead(conversationId).catch(() => {});
         // Bell-panel side: opening the thread is the same gesture as "I've
         // seen this," so flip every dm_message bell row for this
@@ -563,6 +641,34 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
     [conversationId, currentUserId],
   );
 
+  // Load older messages — fired by FlatList's onEndReached when the user
+  // scrolls to the top of the visible history (FlatList is `inverted` so
+  // its "end" = chronological top = oldest visible row). Re-entrancy
+  // guarded by `loadingOlder` so a fast scroll doesn't fan out duplicate
+  // requests; bails fast when there's nothing left to load.
+  const handleLoadOlder = useCallback(async () => {
+    if (loadingOlder || !hasMoreOlder || !oldestCursor || !conversationId) return;
+    setLoadingOlder(true);
+    try {
+      const payload = await loadMessages(conversationId, { before: oldestCursor });
+      if (!payload.messages.length) {
+        setHasMoreOlder(false);
+        return;
+      }
+      // Prepend older messages — they're already chronological (oldest
+      // first). Reactions for these older rows merge into the existing
+      // map; existing-row reactions are preserved by spread order.
+      setMessages((prev) => [...payload.messages, ...prev]);
+      setReactions((prev) => ({ ...payload.reactions, ...prev }));
+      setOldestCursor(payload.oldestCursor);
+      setHasMoreOlder(payload.hasMore);
+    } catch (err) {
+      console.log("[supabase-chat] loadOlder failed:", err?.message);
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [conversationId, oldestCursor, hasMoreOlder, loadingOlder]);
+
   const handleSend = useCallback(async () => {
     // Edit mode — inlined here (rather than calling a separate
     // handleSaveEdit) so handleSend has no forward-reference into a
@@ -599,17 +705,17 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
     }
 
     const body = composer.trim();
-    // Send if we have ANY of: text body, picked image, or picked GIF.
-    const hasAttachment = pendingImageUri || pendingGifUrl;
+    // Send if we have ANY of: text body, picked images, or picked GIF.
+    const hasAttachment = pendingImageUris.length > 0 || pendingGifUrl;
     if (!body && !hasAttachment) return;
     if (sending || !conversationId) return;
 
     setSending(true);
-    const localImage = pendingImageUri;
+    const localImages = pendingImageUris.slice(); // copy — array mutation guard
     const localGif = pendingGifUrl;
     const replyToId = replyingTo?.id || null;
     setComposer("");
-    setPendingImageUri(null);
+    setPendingImageUris([]);
     setPendingGifUrl(null);
     setEmojiBarOpen(false);
     setReplyingTo(null);
@@ -629,15 +735,19 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
     // different id than the optimistic and the bubble would stay stuck
     // _pending forever. The two-path swap below is failure-safe.
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Optimistic image_urls: GIF is one URL; otherwise each picked local
+    // file:// URI shows in the gallery grid until uploads complete and we
+    // swap in the CDN URLs from sendMessage's RETURNING row.
+    const optimisticImageUrls = localGif ? [localGif] : localImages;
     const optimistic = {
       id: tempId,
       conversation_id: conversationId,
       sender_id: currentUserId,
       body,
-      // For optimistic UI use whichever URL we have. If it's a local
-      // image, the bubble shows it from the file:// URI until the upload
-      // finishes and we swap in the public CDN URL.
-      image_url: localGif || localImage || null,
+      // image_url stays = the lead image so any old code that still reads
+      // the singular field gets the first photo.
+      image_url: optimisticImageUrls[0] || null,
+      image_urls: optimisticImageUrls,
       reply_to_id: replyToId,
       created_at: new Date().toISOString(),
       _pending: true,
@@ -645,15 +755,22 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
     setMessages([...messagesRef.current, optimistic]);
 
     try {
-      // If we have a local image, upload first and use the resulting CDN
-      // URL as image_url. GIFs are already remote URLs from Tenor —
-      // nothing to upload, just pass through.
-      let finalImageUrl = localGif || null;
-      if (localImage && !localGif) {
-        finalImageUrl = await uploadChatImage(localImage, conversationId);
+      // GIF path: pass-through (Tenor is already a remote URL).
+      // Photo path: upload all picked images in parallel and collect the
+      // resulting CDN URLs in the SAME ORDER the user picked them so the
+      // gallery grid order matches their selection sequence.
+      let finalImageUrls = [];
+      if (localGif) {
+        finalImageUrls = [localGif];
+      } else if (localImages.length > 0) {
+        const settled = await Promise.allSettled(localImages.map((uri) => uploadChatImage(uri, conversationId)));
+        finalImageUrls = settled.filter((r) => r.status === "fulfilled" && r.value).map((r) => r.value);
+        if (finalImageUrls.length === 0) {
+          throw new Error("All photo uploads failed");
+        }
       }
 
-      const real = await supabaseSendMessage({ conversationId, body, imageUrl: finalImageUrl, replyToId });
+      const real = await supabaseSendMessage({ conversationId, body, imageUrls: finalImageUrls, replyToId });
       // Swap optimistic → real in place. If the realtime echo already
       // arrived and pushed the real row separately, the dedup-by-id in
       // onMessageInsert will have prevented a duplicate; here we just
@@ -677,13 +794,15 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
         return next;
       });
 
-      // Fire-and-forget push notification to the recipient.
+      // Fire-and-forget push notification to the recipient. We send only
+      // the LEAD image URL — push payloads have a tight size limit and
+      // showing one photo + "+N more" in the notification is plenty.
       sendChatPushNotification({
         conversation,
         senderId: currentUserId,
         senderUsername: null,
         body,
-        imageUrl: finalImageUrl,
+        imageUrl: finalImageUrls[0] || null,
       }).catch(() => {});
     } catch (error) {
       // Roll back optimistic on failure.
@@ -694,7 +813,7 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
     }
   }, [
     composer, conversationId, currentUserId, sending,
-    pendingImageUri, pendingGifUrl, conversation,
+    pendingImageUris, pendingGifUrl, conversation,
     editingMessage, replyingTo,
   ]);
 
@@ -1038,30 +1157,58 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
     ]);
   }, [conversation]);
 
-  // Image picker — launches the system gallery, sets pendingImageUri so
-  // the user sees a preview chip above the composer, then they tap send.
+  // Image picker — multi-select up to 10 photos. The native picker's
+  // selection UI shows numbered checkmarks so the user can pick a few
+  // photos in one gesture instead of opening the picker N times. Picked
+  // URIs are MERGED into the existing pendingImageUris (capped at 10) so
+  // the user can keep tapping "image" to add more rounds before sending.
   const handlePickImage = useCallback(async () => {
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (perm.status !== "granted") {
-        Alert.alert("Photo access needed", "Allow photos in Settings to attach an image.");
+        Alert.alert("Photo access needed", "Allow photos in Settings to attach photos.");
+        return;
+      }
+      // How many slots are still free? Cap selectionLimit so the user
+      // can't pick more than will fit alongside what they've already added.
+      const remaining = 10 - pendingImageUris.length;
+      if (remaining <= 0) {
+        Alert.alert("Limit reached", "You can attach up to 10 photos per message.");
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: false,
+        allowsMultipleSelection: true,
+        selectionLimit: remaining,
         quality: 0.85,
         exif: false,
       });
       if (result.canceled) return;
-      const asset = result.assets?.[0];
-      if (!asset?.uri) return;
-      // Clear any pending GIF — composer carries one attachment at a time.
+      const newUris = (result.assets || []).map((a) => a?.uri).filter(Boolean);
+      if (newUris.length === 0) return;
+      // Clear any pending GIF — gif + photos can't share a single message.
       setPendingGifUrl(null);
-      setPendingImageUri(asset.uri);
+      // Merge + dedupe (defensive — picker shouldn't return duplicates but
+      // some Android galleries do). Cap at 10 in case the runtime gave us
+      // more than selectionLimit.
+      setPendingImageUris((prev) => {
+        const merged = [...prev];
+        for (const uri of newUris) {
+          if (!merged.includes(uri)) merged.push(uri);
+          if (merged.length >= 10) break;
+        }
+        return merged.slice(0, 10);
+      });
     } catch (e) {
-      Alert.alert("Could not pick image", e?.message || "Try again.");
+      Alert.alert("Could not pick photos", e?.message || "Try again.");
     }
+  }, [pendingImageUris.length]);
+
+  // Remove a single staged image from the preview row. The X buttons on
+  // each preview chip call this with the URI to drop.
+  const handleRemovePendingImage = useCallback((uri) => {
+    setPendingImageUris((prev) => prev.filter((u) => u !== uri));
   }, []);
 
   // Tap an emoji from the quick-row → append to the composer at end.
@@ -1473,6 +1620,20 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
             // 'interactive' on Android.
             keyboardDismissMode="on-drag"
             keyboardShouldPersistTaps="handled"
+            // Pagination — FlatList is inverted, so onEndReached fires
+            // when the user reaches the chronological TOP (oldest msg).
+            // 0.4 means trigger when within 40% of viewport from the
+            // "end" — gives a smooth pre-fetch before the user actually
+            // hits the spinner.
+            onEndReached={handleLoadOlder}
+            onEndReachedThreshold={0.4}
+            ListFooterComponent={
+              loadingOlder ? (
+                <View className="items-center py-4">
+                  <ActivityIndicator size="small" color={theme.textMuted} />
+                </View>
+              ) : null
+            }
           />
         )}
         {/* Typing indicator — small chip above the composer when the other
@@ -1540,22 +1701,53 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
           </View>
         ) : null}
 
-        {/* Pending attachment preview chip — shown above composer while the
-            user has picked an image or GIF that hasn't been sent yet. Tap
-            X to discard. */}
-        {(pendingImageUri || pendingGifUrl) ? (
-          <View className="flex-row items-center px-3 py-2" style={{ backgroundColor: theme.surfaceElevated, borderTopWidth: 0.5, borderTopColor: theme.divider }}>
-            <RNImage
-              source={{ uri: pendingImageUri || pendingGifUrl }}
-              style={{ width: 56, height: 56, borderRadius: 8, backgroundColor: theme.surfaceMuted }}
-              resizeMode="cover"
-            />
-            <Text className="ml-3 flex-1 text-xs" style={{ color: theme.textSoft }} numberOfLines={1}>
-              {pendingGifUrl ? "GIF ready to send" : "Photo ready to send"}
-            </Text>
+        {/* Pending attachment preview row — shown above composer while the
+            user has picked photos or a GIF that haven't been sent yet.
+            For multi-image, scrolls horizontally with each chip showing
+            its own X to drop just that photo. The "Clear all" X on the
+            far right wipes the whole batch + any GIF. */}
+        {(pendingImageUris.length > 0 || pendingGifUrl) ? (
+          <View
+            className="flex-row items-center px-3 py-2"
+            style={{ backgroundColor: theme.surfaceElevated, borderTopWidth: 0.5, borderTopColor: theme.divider }}
+          >
+            {pendingGifUrl ? (
+              <>
+                <RNImage
+                  source={{ uri: pendingGifUrl }}
+                  style={{ width: 56, height: 56, borderRadius: 8, backgroundColor: theme.surfaceMuted }}
+                  resizeMode="cover"
+                />
+                <Text className="ml-3 flex-1 text-xs" style={{ color: theme.textSoft }} numberOfLines={1}>
+                  GIF ready to send
+                </Text>
+              </>
+            ) : (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-1">
+                {pendingImageUris.map((uri) => (
+                  <View key={uri} style={{ marginRight: 8 }}>
+                    <RNImage
+                      source={{ uri }}
+                      style={{ width: 56, height: 56, borderRadius: 8, backgroundColor: theme.surfaceMuted }}
+                      resizeMode="cover"
+                    />
+                    <TouchableOpacity
+                      onPress={() => handleRemovePendingImage(uri)}
+                      className="absolute h-5 w-5 items-center justify-center rounded-full"
+                      style={{ top: -4, right: -4, backgroundColor: theme.surfaceElevated, borderWidth: 1, borderColor: theme.border }}
+                    >
+                      <Feather name="x" size={11} color={theme.iconMuted} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
             <TouchableOpacity
-              onPress={() => { setPendingImageUri(null); setPendingGifUrl(null); }}
-              className="h-7 w-7 items-center justify-center rounded-full"
+              onPress={() => {
+                setPendingImageUris([]);
+                setPendingGifUrl(null);
+              }}
+              className="ml-2 h-7 w-7 items-center justify-center rounded-full"
               style={{ backgroundColor: theme.surfaceMuted }}
             >
               <Feather name="x" size={14} color={theme.iconMuted} />
@@ -1649,7 +1841,7 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
             // The button is ALWAYS enabled (modulo `sending`) — even an
             // empty composer can ship a thumbs-up. No more disabled/
             // -looking states for the user to wonder about.
-            const hasContent = Boolean(composer.trim()) || Boolean(pendingImageUri) || Boolean(pendingGifUrl);
+            const hasContent = Boolean(composer.trim()) || pendingImageUris.length > 0 || Boolean(pendingGifUrl);
             const isEditing = Boolean(editingMessage);
             const iconName = isEditing ? "checkmark" : hasContent ? "send" : "thumbs-up";
             const onPress = isEditing || hasContent ? handleSend : handleSendThumbsUp;

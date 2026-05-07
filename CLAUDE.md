@@ -46,7 +46,7 @@ No test suite is configured. Test manually on iOS simulator and Android emulator
 Redux Provider → PersistGate → GlobalProvider → ClipsStatsProvider → BookStatsProvider → VideosStatsProvider → InnerLayout
 ```
 
-`InnerLayout` wraps the Stack navigator inside `GestureHandlerRootView → OverlayProvider (Stream Chat theme) → Chat`.
+`InnerLayout` wraps the Stack navigator inside `GestureHandlerRootView`. (Pre-Phase D this also nested `OverlayProvider → Chat` for the Stream Chat SDK; both were removed when chat went Supabase-native and `stream-chat-expo` was uninstalled.)
 
 ### State Management
 
@@ -60,16 +60,17 @@ Redux Provider → PersistGate → GlobalProvider → ClipsStatsProvider → Boo
 
 File-based routing in `/app/` with grouped routes: `(tabs)`, `(auth)`, `(book)`, `(video)`, `(story)`, `(post)`, `(message)`, `(profile)`, `(edit)`, `(studio)`, `(store)`, `(payments)`, `(notification)`. Dynamic routes: `books/[id].jsx` (deep link), `search/[query].jsx`.
 
-Main tabs: `home`, `books`, `videos`, `clips`, `playlist`.
+Main tabs: `home`, `books`, `videos`, `playlist`. (The `clips` tab was retired May 2026 and replaced by a "Reels coming soon" teaser route.)
 
 Deep linking: `https://selebox.com/books/*` and `talesofsiren://books/*` (configured in `app.json`). Routes to `/(book)/book-info` with `bookId` param.
 
 ### Service Layer (`/lib/`)
 
-Backend services use **Appwrite** (BaaS). Key files:
+Backend services use **Appwrite** (legacy BaaS, mid-migration) and **Supabase** (current — see `lib/feature-flags.js` for which subsystem is on which backend). Key files:
 
-- `appwrite.js` — Core auth: account creation, sign-in/out, session/JWT management, Stream Chat token integration, self-healing user documents
-- `stream.js` / `stream-connection-manager.js` — Stream Chat SDK integration and connection lifecycle
+- `appwrite.js` — Core auth: account creation, sign-in/out, session/JWT management, self-healing user documents. Stream Chat token integration was removed in Phase D.
+- `supabase.js`, `supabase-auth.js` — Supabase client + auth bridge.
+- `messages-supabase.js` — Chat backend (was Stream Chat / Appwrite, now Supabase). The previous `stream.js` / `stream-connection-manager.js` files were deleted in Phase D.
 - `bunny-service.js` / `fetch-bunny-storage.js` — Bunny.net CDN + storage zone operations (images, videos)
 - `books.js`, `clips.js`, `video.js`, `posts.js`, `follows.js`, `notifications.js`, `messages.js`, `safety.js` — Domain CRUD services
 - `book-comments.js`, `book-chapter-comments.js`, `book-reads.js`, `book-unlocks.js`, `book-rating.js`, `book-downloads.js` — Granular book engagement services
@@ -106,7 +107,7 @@ Cursor-based pagination throughout: `lastId` or `offset` cursor, `hasMore` flag,
 
 - **Redux Persist + MMKV**: Long-lived data (auth, books, videos, notifications)
 - **Context State**: Session-scoped data
-- **AsyncStorage**: Tokens (Stream Chat, Expo push)
+- **AsyncStorage**: Tokens (Expo push, Supabase session)
 
 ## Styling
 
@@ -134,8 +135,8 @@ Tailwind class sorting via `prettier-plugin-tailwindcss`.
 
 ## Key Technologies
 
-- **Backend**: Appwrite (`react-native-appwrite`)
-- **Chat**: Stream Chat Expo SDK
+- **Backend**: Appwrite (`react-native-appwrite`) for legacy paths + Supabase (`@supabase/supabase-js`) for current code paths. Migration is feature-flag gated; see `lib/feature-flags.js` for the per-subsystem state.
+- **Chat**: Supabase-native (custom `lib/messages-supabase.js` + Realtime subscriptions for live updates). Stream Chat Expo SDK was removed in Phase D; `stream-chat-expo` is no longer a dependency.
 - **CDN**: Bunny.net — Bunny Stream for HLS video playback, Bunny Storage zones for images/general media. AWS S3+CloudFront retired May 2026; clips feature also retired May 2026 (replaced by a "Reels coming soon" teaser).
 - **Payments**: `react-native-iap` (in-app purchases)
 - **Ads**: `react-native-google-mobile-ads` (AdMob)
@@ -146,7 +147,7 @@ Tailwind class sorting via `prettier-plugin-tailwindcss`.
 
 ### Sensitive Files
 
-- `private/secrets.js` — Contains all API keys, Appwrite config, CDN keys, Stream API key. **This file is tracked by git.** Never modify secrets without coordinating with the team.
+- `private/secrets.js` — Contains all API keys, Appwrite config, Supabase URL/anon key, CDN keys. **This file is tracked by git.** Never modify secrets without coordinating with the team. (`STREAM_API_KEY` lives here historically but is no longer read by any active code.)
 - Never commit: `.env`, `google-services.json`, service account JSON files
 
 ### Git Workflow

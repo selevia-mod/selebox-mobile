@@ -112,6 +112,15 @@ const StoreSkeleton = () => {
   );
 };
 
+// Module-level cache for the coin pack catalog. Pricing rows in
+// coin_packages only change when an admin runs SQL — for end users this is
+// effectively static config. 1hr TTL is plenty; users get instant render
+// on subsequent Store opens instead of flashing the skeleton while the
+// network round-trips a query that returns the same payload every time.
+const COIN_PACKS_TTL_MS = 60 * 60 * 1000;
+let cachedCoinPacks = null;
+let cachedCoinPacksTs = 0;
+
 // Two-section screen: Goals (daily/weekly/monthly engagement targets,
 // formerly called "Quests" on web) and Store (coin packs + rewarded
 // ads). Tab toggle at the top lets the user swing between them without
@@ -130,13 +139,19 @@ const Store = () => {
   });
   const [loading, setLoading] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
+  // Once an IAP catalog fetch has resolved (success OR failure), release
+  // the skeleton even if `products` is empty. Without this, an App Store
+  // outage left iOS users staring at the skeleton forever (since the
+  // showSkeleton expression had `products.length === 0 && osName === "ios"`
+  // as a hard block).
+  const [iapFetchAttempted, setIapFetchAttempted] = useState(false);
   const osName = Platform.OS;
   const dailyLimit = starsData?.maxAdsPerDay || 0;
   const watchedToday = starsData?.adsWatchedToday || 0;
   const limitReached = watchedToday >= dailyLimit;
   const remainingAds = Math.max(dailyLimit - watchedToday, 0);
   const progress = dailyLimit > 0 ? Math.min((watchedToday / dailyLimit) * 100, 100) : 0;
-  const showSkeleton = loading || coinPacks.length === 0 || (products.length === 0 && osName === "ios");
+  const showSkeleton = loading || coinPacks.length === 0 || (products.length === 0 && osName === "ios" && !iapFetchAttempted);
 
   const getBonusPercent = useCallback((coins, free) => {
     if (!coins) return 0;
@@ -164,6 +179,17 @@ const Store = () => {
 
   const fetchCoinPacks = useCallback(async () => {
     try {
+      // Cache hit — paint immediately, skip the round-trip. iOS still
+      // wants the IAP getProducts call to populate `products` even when
+      // we have cached pack metadata, so we re-fire that side either way.
+      if (cachedCoinPacks && Date.now() - cachedCoinPacksTs < COIN_PACKS_TTL_MS) {
+        if (osName === "ios") {
+          handleGetProductsIOS(cachedCoinPacks);
+        }
+        setCoinPacks(cachedCoinPacks);
+        return;
+      }
+
       // Wallet flag drives the catalog source. Under USE_SUPABASE_WALLET,
       // packs come from public.coin_packages — that's the same table the
       // IAP webhooks (apple-iap-webhook + hitpay-webhook) resolve via
@@ -198,24 +224,48 @@ const Store = () => {
         response = await getCoinPacks();
       }
       if (osName === "ios") {
+        // Don't await — let the IAP catalog hydrate in the background so
+        // coin packs render immediately. handleGetProductsIOS now flips
+        // iapFetchAttempted in its finally block, so the skeleton releases
+        // even on App Store outage instead of hanging forever.
         handleGetProductsIOS(response);
         setCoinPacks(response);
-        return () => {
-          RNIap.endConnection();
-        };
       } else {
         setCoinPacks(response);
       }
+      // Persist for the next Store open within the TTL window.
+      cachedCoinPacks = response;
+      cachedCoinPacksTs = Date.now();
     } catch (error) {
       console.error(error.message);
     }
   }, []);
 
   const handleGetProductsIOS = async (response) => {
+    const skus = response.map((p) => p.iapIOSProductID).filter(Boolean);
+    if (skus.length === 0) {
+      setIapFetchAttempted(true);
+      return;
+    }
+    // One retry with backoff — App Store occasionally rate-limits or returns
+    // transient errors. After this, iapFetchAttempted releases the skeleton
+    // so the user at least sees the (price-less) packs and can pull-to-retry
+    // via the parent useFocusEffect.
+    const attempt = async () => {
+      await getProducts({ skus });
+    };
     try {
-      await getProducts({ skus: response.map((p) => p.iapIOSProductID) });
-    } catch (error) {
-      console.error(error.message);
+      await attempt();
+    } catch (firstErr) {
+      console.warn("IAP getProducts failed, retrying in 1.5s:", firstErr?.message);
+      try {
+        await new Promise((r) => setTimeout(r, 1500));
+        await attempt();
+      } catch (retryErr) {
+        console.error("IAP getProducts failed after retry:", retryErr?.message);
+      }
+    } finally {
+      setIapFetchAttempted(true);
     }
   };
 
@@ -500,7 +550,7 @@ const Store = () => {
                           Coins balance
                         </Text>
                         <Text className="font-psemibold text-lg" style={{ color: theme.text }}>
-                          {balance} Coins
+                          {balance ?? 0} {balance === 1 ? "Coin" : "Coins"}
                         </Text>
                       </View>
                     </View>
@@ -540,7 +590,9 @@ const Store = () => {
                                 +1
                               </Animated.Text>
                             ) : (
-                              <Text style={{ color: theme.text, fontSize: 18, fontWeight: "bold" }}>{starsData?.stars} Stars</Text>
+                              <Text style={{ color: theme.text, fontSize: 18, fontWeight: "bold" }}>
+                                {starsData?.stars ?? 0} {starsData?.stars === 1 ? "Star" : "Stars"}
+                              </Text>
                             )}
                           </View>
                         )}

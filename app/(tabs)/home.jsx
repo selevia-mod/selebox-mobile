@@ -761,34 +761,42 @@ const Home = () => {
     const data = resolveItemData(entry);
     return data?.$id || data?.id || data?.postResourceId || data?.video?.$id || data?.video?.id || data?.clip?.$id || data?.clip?.id || null;
   };
-  const applySafetyFilters = (feedItems = []) =>
-    feedItems.filter((entry) => {
-      const ownerId = resolveOwnerId(entry);
-      const contentId = resolveContentId(entry);
+  // Memoized so its identity stays stable across renders. Several useEffects
+  // (including the discover/following pre-warm at line ~1054) list this in
+  // their dependency array — without useCallback it gets a new identity on
+  // every render and the effects re-run constantly, scheduling/cancelling
+  // the 1s prewarm timer on every paint and adding event-loop pressure.
+  const applySafetyFilters = useCallback(
+    (feedItems = []) =>
+      feedItems.filter((entry) => {
+        const ownerId = resolveOwnerId(entry);
+        const contentId = resolveContentId(entry);
 
-      if (ownerId && blockedUserIds.has(ownerId)) return false;
-      if (contentId && hiddenContentIds.has(contentId)) return false;
+        if (ownerId && blockedUserIds.has(ownerId)) return false;
+        if (contentId && hiddenContentIds.has(contentId)) return false;
 
-      // Drop ghost entries left behind when an Appwrite auth account was
-      // deleted but the user's content (posts/videos/clips) wasn't cleaned up.
-      // Symptom: empty avatar + blank username on the card, blank profile
-      // screen on tap. Applies to all tabs (For You, Following, Discover).
-      const data = entry?.data || entry || {};
-      const type = entry?.type || data?.type;
+        // Drop ghost entries left behind when an Appwrite auth account was
+        // deleted but the user's content (posts/videos/clips) wasn't cleaned up.
+        // Symptom: empty avatar + blank username on the card, blank profile
+        // screen on tap. Applies to all tabs (For You, Following, Discover).
+        const data = entry?.data || entry || {};
+        const type = entry?.type || data?.type;
 
-      if (type === "post") {
-        if (!data?.postOwner?.username) return false;
-        // Post references a deleted video/clip resource.
-        if (data?.postResourceType === "video" && !data?.video?.$id) return false;
-        if (data?.postResourceType === "clip" && !data?.clip?.$id) return false;
-      } else if (type === "video") {
-        if (!data?.uploader?.username && !data?.uploader?.name) return false;
-      } else if (type === "clip") {
-        if (!data?.uploader?.username && !data?.uploader?.name) return false;
-      }
+        if (type === "post") {
+          if (!data?.postOwner?.username) return false;
+          // Post references a deleted video/clip resource.
+          if (data?.postResourceType === "video" && !data?.video?.$id) return false;
+          if (data?.postResourceType === "clip" && !data?.clip?.$id) return false;
+        } else if (type === "video") {
+          if (!data?.uploader?.username && !data?.uploader?.name) return false;
+        } else if (type === "clip") {
+          if (!data?.uploader?.username && !data?.uploader?.name) return false;
+        }
 
-      return true;
-    });
+        return true;
+      }),
+    [blockedUserIds, hiddenContentIds],
+  );
   const buildSafetyTarget = (entry) => ({
     ...entry,
     ownerId: resolveOwnerId(entry),

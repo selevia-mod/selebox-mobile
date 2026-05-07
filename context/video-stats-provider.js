@@ -3,6 +3,44 @@ import { createVideoLike, deleteVideoLike, getVideoLikeByOwner, getVideoLikeCoun
 
 const VideosStatsContext = createContext();
 
+// Module-level cache for the three count queries (like / comment / view).
+// Without this, every Videos tab open fired ~200 concurrent queries for a
+// 50-card feed (4 queries per card via batchLoadVideoStats). The counts
+// come from denormalized columns kept fresh by triggers, so a 30s TTL is
+// effectively realtime to the human eye while killing the burst.
+//
+// We deliberately do NOT cache `getVideoLikeByOwner` here — that's per-user
+// state and gets stored in the React `videosStats` map (which already dedups
+// per-mount). Toggle actions (toggleLike) patch BOTH the local state AND
+// invalidate this cache so the next batch read sees the fresh count.
+const VIDEO_COUNTS_TTL_MS = 30 * 1000;
+const VIDEO_COUNTS_CACHE_MAX = 1000;
+const videoCountsCache = new Map();
+
+const readVideoCounts = (videoId) => {
+  if (!videoId) return null;
+  const entry = videoCountsCache.get(videoId);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > VIDEO_COUNTS_TTL_MS) {
+    videoCountsCache.delete(videoId);
+    return null;
+  }
+  return entry.value;
+};
+
+const writeVideoCounts = (videoId, value) => {
+  if (!videoId) return;
+  if (videoCountsCache.size >= VIDEO_COUNTS_CACHE_MAX) {
+    const oldest = videoCountsCache.keys().next().value;
+    if (oldest !== undefined) videoCountsCache.delete(oldest);
+  }
+  videoCountsCache.set(videoId, { ts: Date.now(), value });
+};
+
+const invalidateVideoCounts = (videoId) => {
+  if (videoId) videoCountsCache.delete(videoId);
+};
+
 export const VideosStatsProvider = ({ children }) => {
   // videosStats: { [videoId]: { liked, likeId, videoLikes, commentCount } }
   const [videosStats, setVideosStats] = useState({});
@@ -28,16 +66,23 @@ export const VideosStatsProvider = ({ children }) => {
       const gen = (loadGenRef.current.get(videoId) || 0) + 1;
       loadGenRef.current.set(videoId, gen);
       try {
-        // Fetch like + comment + view counts in parallel — three single-row
-        // reads on the denormalized counter columns kept current by triggers.
-        // Sequential awaits would add ~150ms of round-trips per card; parallel
-        // collapses the wait to one round-trip.
+        // Cache hit — skip the three count round-trips and just go for the
+        // per-user like-by-owner query. 30s TTL above means we still see
+        // fresh numbers when a video has activity, and toggleLike below
+        // invalidates the entry on local writes.
+        const cachedCounts = readVideoCounts(videoId);
+        const countsPromises = cachedCounts
+          ? [Promise.resolve(cachedCounts.likeCount), Promise.resolve(cachedCounts.commentCount), Promise.resolve(cachedCounts.viewCount)]
+          : [getVideoLikeCount({ videoId }), getVideoCommentCount({ videoId }), getVideoViewCount({ videoId })];
+
         const [actualLikeCount, actualCommentCount, actualViewCount, resp] = await Promise.all([
-          getVideoLikeCount({ videoId }),
-          getVideoCommentCount({ videoId }),
-          getVideoViewCount({ videoId }),
+          ...countsPromises,
           getVideoLikeByOwner({ videoId, likeOwner: userId }),
         ]);
+
+        if (!cachedCounts) {
+          writeVideoCounts(videoId, { likeCount: actualLikeCount, commentCount: actualCommentCount, viewCount: actualViewCount });
+        }
         const preservedCommentCount = videosStatsRef.current[videoId]?.commentsCount;
         const nextCommentCount = actualCommentCount ?? preservedCommentCount ?? 0;
 
@@ -88,12 +133,19 @@ export const VideosStatsProvider = ({ children }) => {
 
       const results = await Promise.allSettled(
         needed.map(async (videoId) => {
-          const [likeCount, commentCount, viewCount, likeResp] = await Promise.all([
-            getVideoLikeCount({ videoId }),
-            getVideoCommentCount({ videoId }),
-            getVideoViewCount({ videoId }),
-            getVideoLikeByOwner({ videoId, likeOwner: userId }),
-          ]);
+          // Cache hit drops the 3 count queries, leaving just the per-user
+          // like-by-owner. For a 50-card feed where the cache is warm this
+          // takes the burst from 200 queries down to 50.
+          const cachedCounts = readVideoCounts(videoId);
+          const countsPromises = cachedCounts
+            ? [Promise.resolve(cachedCounts.likeCount), Promise.resolve(cachedCounts.commentCount), Promise.resolve(cachedCounts.viewCount)]
+            : [getVideoLikeCount({ videoId }), getVideoCommentCount({ videoId }), getVideoViewCount({ videoId })];
+
+          const [likeCount, commentCount, viewCount, likeResp] = await Promise.all([...countsPromises, getVideoLikeByOwner({ videoId, likeOwner: userId })]);
+
+          if (!cachedCounts) {
+            writeVideoCounts(videoId, { likeCount, commentCount, viewCount });
+          }
 
           const likeDoc = likeResp?.documents?.[0];
           return {
@@ -159,6 +211,9 @@ export const VideosStatsProvider = ({ children }) => {
 
       // Invalidate any in-flight loadVideoStats so it won't overwrite this toggle
       loadGenRef.current.set(videoId, (loadGenRef.current.get(videoId) || 0) + 1);
+      // Drop the cached counts so the next batch read after sync sees the
+      // fresh number instead of a stale entry that pretends nothing changed.
+      invalidateVideoCounts(videoId);
 
       if (currentLiked) {
         updateVideoStats(videoId, { liked: false, likeId: null, videoLikes: Math.max(0, currentLikeCount - 1) });

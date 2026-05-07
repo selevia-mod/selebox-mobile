@@ -14,21 +14,19 @@ import UserRoleBadgeIcons from "./UserRoleBadgeIcons";
 const VideoCardNew = ({ item, customWidth, customHeight, customAvatarSize, customFontSize, hideAvatar = false, ...props }) => {
   const { globalSettings, user } = useGlobalContext();
   const { theme } = useAppTheme();
-  // Live engagement counts via the shared VideoStatsProvider (same pattern
-  // PostBookStats.jsx uses with useBookStats). We register interest in this
-  // video's stats once on mount via batchLoadVideoStats — its built-in
-  // already-loaded filter dedupes across the dozens of cards a single
-  // section can mount, so opening the Videos tab fires at most one
-  // round-trip per unseen video, not one per card render. The display
-  // below reads from the provider first and falls back to the static
-  // `item.videoStats.totalViews` from mapRowToVideo so first-paint isn't
-  // blocked on the stats fetch.
-  const { getVideoStats, batchLoadVideoStats } = useVideosStats();
+  // Live engagement counts via the shared VideoStatsProvider — we still
+  // READ from it so a toggleLike on the video-player screen propagates
+  // back to the corresponding card the next time the user scrolls past
+  // it. We deliberately do NOT call batchLoadVideoStats on mount any
+  // more (was: every card mount fired its own batch → setVideosStats →
+  // every other card re-rendered via context, producing a 50×50 cascade
+  // when the Videos tab opened with ~50 visible cards across the
+  // shelves; Metro reported sustained dt~2500ms VirtualizedList warnings).
+  // The display falls back to `item.videoStats.totalViews` which is the
+  // denormalized count on `videos` (kept fresh by triggers — same source
+  // batchLoadVideoStats was reading anyway).
+  const { getVideoStats } = useVideosStats();
   const videoId = item?.$id;
-  useEffect(() => {
-    if (!videoId || !user?.$id) return;
-    batchLoadVideoStats([videoId], user.$id);
-  }, [videoId, user?.$id, batchLoadVideoStats]);
   const liveStats = getVideoStats(videoId);
   const viewCount = liveStats.videoViews ?? item?.videoStats?.totalViews ?? 0;
   // useWindowDimensions stays in sync with rotation and avoids a Dimensions.get
