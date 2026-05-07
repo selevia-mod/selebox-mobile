@@ -217,7 +217,8 @@ const ProfilePostTab = ({
       }
       const updatedFetchedPosts = [...posts, ...uniquePosts];
       setPosts(updatedFetchedPosts);
-      setLastId(postsData.documents[postsData.documents.length - 1].$id);
+      const lastPostDoc = postsData.documents[postsData.documents.length - 1];
+      if (lastPostDoc) setLastId(lastPostDoc.$id);
       if (updatedFetchedPosts >= postsData.total) setHasMore(false);
     } catch (error) {
       console.log("fetchMorePosts: error", error);

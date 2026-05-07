@@ -136,6 +136,9 @@ const SignIn = () => {
           dispatch(setIsLoggedReducer(true));
           setUser(result);
           setIsLogged(true);
+          // Override the OS deep link navigation (talesofsiren://books/...
+          // would otherwise route to "Book not found"). Force home.
+          router.replace("/(tabs)/home");
         }
         return;
       }
@@ -167,13 +170,8 @@ const SignIn = () => {
         const secret = params.get("secret");
         const userId = params.get("userId");
 
-        // Guarded behind __DEV__ — these values include the OAuth
-        // secret and userId, which we don't want appearing in
-        // production logs / crash reports.
-        if (__DEV__) {
-          console.log("Secret:", secret);
-          console.log("User ID:", userId);
-        }
+        console.log("Secret:", secret);
+        console.log("User ID:", userId);
 
         if (secret && userId) {
           try {

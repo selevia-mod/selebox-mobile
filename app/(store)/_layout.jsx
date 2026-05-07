@@ -15,6 +15,18 @@ const StoreLayout = () => {
             headerShown: false,
           }}
         />
+        <Stack.Screen
+          name="coin-history"
+          options={{
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="star-history"
+          options={{
+            headerShown: false,
+          }}
+        />
       </Stack>
 
       <ThemedStatusBar />

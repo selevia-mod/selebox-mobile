@@ -75,6 +75,23 @@ const NotificationCard = ({ item, onViewed, onDeleted }) => {
   const thumbnailUri = isPrivateDm ? null : item?.resourceData?.thumbnail;
   const isUnread = item?.isViewed === false;
   const senderName = isPrivateDm ? "Someone" : (item?.sender?.username || "Someone");
+  // Grouped-row display name (Facebook-style aggregation). When the
+  // adapter collapsed N notifications about the same target into one
+  // row, render the actors as "Alice and Bob" / "Alice, Bob and 3
+  // others" instead of just the head sender. Falls through to plain
+  // senderName for ungrouped rows.
+  const groupedActorsForDisplay = Array.isArray(item?.groupedActors) ? item.groupedActors : null;
+  const groupedCountForDisplay = Number(item?.groupedCount) || 0;
+  const displayName = (() => {
+    if (isPrivateDm || !groupedActorsForDisplay || groupedCountForDisplay <= 1) return senderName;
+    const names = groupedActorsForDisplay.map((a) => a?.username).filter(Boolean);
+    if (names.length === 0) return senderName;
+    if (names.length === 1) return names[0];
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    const remaining = groupedCountForDisplay - 2;
+    if (remaining <= 0) return `${names[0]} and ${names[1]}`;
+    return `${names[0]}, ${names[1]} and ${remaining} ${remaining === 1 ? "other" : "others"}`;
+  })();
   const baseMessage = isPrivateDm ? "" : normalizeText(item?.message);
   const videoTitle = normalizeText(item?.resourceData?.title);
   const postTitle = normalizeText(item?.resourceData?.post || item?.resourceData?.title);
@@ -239,11 +256,27 @@ const NotificationCard = ({ item, onViewed, onDeleted }) => {
 
     if (isUnread && item?.$id) {
       onViewed?.(item.$id);
-      // Mark-read uses the right backend for the row's origin. Supabase rows
-      // call the chat-notifications RPC (also clears any sibling unread rows
-      // for the same conversation), Appwrite rows call markAsViewed.
+      // Mark-read uses the right backend for the row's origin.
+      //   - Chat (dm_message) on Supabase → markChatNotificationsRead
+      //     clears every sibling unread for the same conversation in
+      //     one round-trip (the RPC keys off conversation_id).
+      //   - Grouped non-chat Supabase row → markAsRead with the full
+      //     groupedSourceIds list, so all underlying rows that the
+      //     adapter collapsed into this bell card flip viewed=true at
+      //     the same time. Without this the bell badge would still
+      //     count the underlying rows as unread.
+      //   - Single non-chat Supabase row → markAsViewed (single id).
+      //   - Appwrite legacy → markAsViewed (single id).
+      const isChatRow = notificationType === "dm_message";
+      const sourceIds = Array.isArray(item?.groupedSourceIds) ? item.groupedSourceIds : null;
       if (item?._backend === "supabase") {
-        void markChatNotificationsRead(item?.conversationId || item?.resourceId);
+        if (isChatRow) {
+          void markChatNotificationsRead(item?.conversationId || item?.resourceId);
+        } else if (sourceIds && sourceIds.length > 1) {
+          void notificationService.markAsRead({ notificationIds: sourceIds });
+        } else {
+          void notificationService.markAsViewed({ notificationId: item.$id });
+        }
       } else {
         void notificationService.markAsViewed({ notificationId: item.$id });
       }
@@ -341,12 +374,19 @@ const NotificationCard = ({ item, onViewed, onDeleted }) => {
         },
       });
     } else if (notificationType === "follow") {
-      router.push({
-        pathname: "creator-profile",
-        params: {
-          userId: item.resourceId,
-        },
-      });
+      // Fallback chain: resourceId (post-OTA adapter writes actor_id here
+      // for follow notifications) → sender.$id (actor info hydrated by
+      // adaptRow) → resourceData.$id. Pre-OTA cached rows had
+      // resourceId=null because the notify_on_follow trigger writes
+      // target_type=NULL + target_id=NULL for follows; without this
+      // fallback the screen navigates with userId=null and never loads.
+      const followProfileId = item?.resourceId || item?.sender?.$id || item?.resourceData?.$id || null;
+      if (followProfileId) {
+        router.push({
+          pathname: "creator-profile",
+          params: { userId: followProfileId },
+        });
+      }
     }
   };
 
@@ -405,7 +445,7 @@ const NotificationCard = ({ item, onViewed, onDeleted }) => {
       <View style={{ flex: 1, marginLeft: 12, marginRight: hasThumbnail ? 8 : 0 }}>
         <View style={{ flexDirection: "row", alignItems: "center" }}>
           <Text style={{ fontSize: 14, lineHeight: 19, color: isUnread ? theme.text : theme.textMuted }}>
-            <Text style={{ fontWeight: "700", color: theme.text }}>{senderName}</Text>
+            <Text style={{ fontWeight: "700", color: theme.text }}>{displayName}</Text>
           </Text>
           {!isPrivateDm && <UserRoleBadgeIcons user={item?.sender} size={12} />}
         </View>

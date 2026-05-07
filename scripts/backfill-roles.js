@@ -102,13 +102,21 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 
 // Map an Appwrite user document to its Supabase role string.
 //
-// Source of truth: the `roles` text[] array on the Appwrite user doc.
-// We deliberately ignore the legacy boolean fields (`creator`,
-// `moderator`, `auditor`) because they're known to drift from the
-// roles[] array — e.g., a user whose `moderator: true` flag was set
-// historically but never cleared, even though they're no longer a
-// moderator. Trusting roles[] only gives a clean, semantically-correct
-// classification that reflects the user's CURRENT badge set.
+// Source of truth: primarily the `roles` text[] array on the Appwrite
+// user doc, with one important exception — `pioneer` ALSO falls back to
+// the legacy `userPlus` boolean field. Pioneer badges were historically
+// granted by setting `userPlus: true` on the Appwrite user doc; many
+// pre-existing pioneers never had "pioneer" added to their roles[]
+// array, so reading from roles[] alone misses them. (This is consistent
+// with how the mobile client itself detects pioneer status — see
+// hasPioneerRole in lib/user-roles.js, which checks BOTH userPlus AND
+// roles[].)
+//
+// We DO NOT fall back to the boolean fields for moderator / creator /
+// auditor — those are known to drift (a user whose `moderator: true`
+// flag was set historically but never cleared, even though they're no
+// longer a moderator). Pioneer is the opposite case: the boolean is
+// authoritative and the array is incomplete.
 //
 // Priority (high → low): moderator > pioneer > creator > writer >
 // auditor > user. A user with multiple roles is reduced to the single
@@ -126,9 +134,10 @@ const resolveRole = (doc) => {
   const rolesArray = Array.isArray(doc.roles) ? doc.roles : [];
   const rolesLower = rolesArray.map((r) => String(r || "").trim().toLowerCase());
   const inRoles = (key) => rolesLower.includes(key);
+  const isPioneerByBoolean = Boolean(doc.userPlus);
 
   if (inRoles("moderator")) return "moderator";
-  if (inRoles("pioneer")) return "pioneer";
+  if (inRoles("pioneer") || isPioneerByBoolean) return "pioneer";
   if (inRoles("creator")) return "creator";
   if (inRoles("writer")) return "writer";
   if (inRoles("auditor")) return "auditor";

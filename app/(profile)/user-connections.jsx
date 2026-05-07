@@ -87,9 +87,12 @@ const UserConnectionsScreen = () => {
         if (user) {
           const requests = [];
 
-          if (isOwnProfile) {
-            requests.push(fetchCounts());
-          }
+          // Always refresh counts — the URL params come in formatted ("1.1K")
+          // and Number("1.1K") = NaN, so without this the count tab badge
+          // shows 0 when viewing someone else's profile. fetchCounts hits
+          // FollowService.getFollowersCount which already merges with the
+          // snapshot floor, so the badge displays correctly.
+          requests.push(fetchCounts());
           if (activeTab === "followers" && followers.length === 0) {
             const usedCache = hydrateConnectionsFromCache("followers");
             requests.push(fetchFollowers({ silent: usedCache }));
@@ -186,7 +189,12 @@ const UserConnectionsScreen = () => {
         cursor: append ? followersCursor : null,
       });
 
-      const nextCursor = res.documents.length > 0 ? res.documents[res.documents.length - 1].$id : append ? followersCursor : null;
+      // FollowService uses created_at for cursor pagination (q.lt("created_at", cursor)),
+      // not a row id. The legacy code used .$id here which is now a synthetic
+      // string `${follower_id}::${following_id}` and Postgres rejects it as not
+      // a timestamp. Use $createdAt / created_at instead.
+      const lastFollowerDoc = res.documents.length > 0 ? res.documents[res.documents.length - 1] : null;
+      const nextCursor = lastFollowerDoc ? (lastFollowerDoc.created_at || lastFollowerDoc.$createdAt) : (append ? followersCursor : null);
 
       setFollowers((prev) => (append ? [...prev, ...res.documents] : res.documents));
       setFollowersHasMore(res.hasMore);
@@ -233,7 +241,10 @@ const UserConnectionsScreen = () => {
         cursor: append ? followingCursor : null,
       });
 
-      const nextCursor = res.documents.length > 0 ? res.documents[res.documents.length - 1].$id : append ? followingCursor : null;
+      // Same created_at cursor fix as fetchFollowers above — synthetic $id
+      // is not a timestamp Postgres can use for pagination.
+      const lastFollowingDoc = res.documents.length > 0 ? res.documents[res.documents.length - 1] : null;
+      const nextCursor = lastFollowingDoc ? (lastFollowingDoc.created_at || lastFollowingDoc.$createdAt) : (append ? followingCursor : null);
 
       setFollowing((prev) => (append ? [...prev, ...res.documents] : res.documents));
 
@@ -392,7 +403,14 @@ const UserConnectionsScreen = () => {
   };
 
   const renderItem = ({ item }) => {
-    const userItem = activeTab === "followers" ? item.followerId : item.followingId;
+    // Migrated from Appwrite-populated relation objects (followerId/followingId
+    // came back as full doc objects under Appwrite) to Supabase, where
+    // follower_id/following_id are bare UUID strings and the embedded profile
+    // lives in `followerUser` / `followedUser` per follows-supabase.js's mapping.
+    // Fall back to the legacy fields for any cached data still in Appwrite shape.
+    const userItem = activeTab === "followers"
+      ? (item.followerUser || item.followerId || {})
+      : (item.followedUser || item.followingId || {});
     const relation = followBackStatus[userItem.$id] || {};
     const { iFollow, theyFollow } = relation;
     const isMutual = iFollow && theyFollow;

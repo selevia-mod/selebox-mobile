@@ -34,6 +34,46 @@ const normalizeRouteParam = (value) => {
   return String(value);
 };
 
+// Module-level book-info snapshot cache (May 2026 — perf fix).
+//
+// Why: useFocusEffect re-fetches every time the screen gets focus,
+// even if the user just popped back from the reader. The previous
+// flow blanked chapters/unlocks/ratings/continueReading and showed
+// a skeleton until 6 parallel network calls returned — felt slow on
+// every revisit. This snapshot lets us paint the LAST KNOWN state
+// instantly while a background refresh runs.
+//
+// Stale-while-revalidate pattern:
+//   - On focus, hydrate from cache (no skeleton, no loading=true).
+//   - Fire the fetch in background; update state if the fresh data
+//     differs (React's setState bails on referential equality, so
+//     identical results don't even rerender).
+//   - Bookmark fresh data into cache after every successful fetch.
+//
+// TTL: 5 minutes. Long enough that flicking between books in a
+// session feels instant; short enough that "rating updated" /
+// "chapter added" land on the next revisit. Cache is module-level so
+// it survives screen unmount but resets on app cold start (matches
+// the BOOK_CACHE TTL pattern in lib/books-supabase.js).
+const BOOK_INFO_CACHE = new Map();
+const BOOK_INFO_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const readBookInfoCache = (bookId) => {
+  if (!bookId) return null;
+  const entry = BOOK_INFO_CACHE.get(bookId);
+  if (!entry) return null;
+  if (Date.now() - entry.cachedAt > BOOK_INFO_CACHE_TTL_MS) {
+    BOOK_INFO_CACHE.delete(bookId);
+    return null;
+  }
+  return entry.snapshot;
+};
+
+const writeBookInfoCache = (bookId, snapshot) => {
+  if (!bookId || !snapshot) return;
+  BOOK_INFO_CACHE.set(bookId, { snapshot, cachedAt: Date.now() });
+};
+
 const BookInfo = () => {
   const { theme } = useAppTheme();
   const previewChaptersLimit = 5;
@@ -153,11 +193,42 @@ const BookInfo = () => {
       }
       const downloadedEntry = resolvedBookId ? getDownloadedBook(resolvedBookId) : null;
       const cachedBook = downloadedEntry?.book || findCachedBook();
+      // Snapshot cache check — if we have a recent full snapshot for
+      // this book, hydrate state from it BEFORE deciding whether to
+      // show a skeleton. The fetch below still runs in the background
+      // (stale-while-revalidate) so the user gets instant paint AND
+      // fresh data within the same beat.
+      //
+      // GUARD against infinite loops: useFocusEffect can fire multiple
+      // times in close succession when its deps churn (e.g., Redux
+      // selectors returning new refs). Without this guard, the 8
+      // setState calls below would re-fire each time, exceeding
+      // React's max update depth. We only hydrate when the screen's
+      // current book differs from the requested book — which captures
+      // both first-mount and book-to-book navigation, but skips the
+      // re-focus / re-render-on-same-book case where state is already
+      // valid.
+      const snapshot = readBookInfoCache(resolvedBookId);
+      const currentLoadedBookId = book?.$id || book?.id || null;
+      const shouldHydrateFromSnapshot = snapshot && currentLoadedBookId !== resolvedBookId;
 
-      if (cachedBook) {
+      if (shouldHydrateFromSnapshot) {
+        // Full hydrate from snapshot — no skeleton, no resets.
+        setBook(snapshot.book);
+        setChapters(snapshot.chapters || []);
+        setPreviewChapters(snapshot.previewChapters || []);
+        setChaptersTotal(snapshot.chaptersTotal || 0);
+        setUnlocks(snapshot.unlocks || null);
+        setContinueReadingChapter(snapshot.continueReadingChapter || null);
+        setAverageRating(snapshot.averageRating || 0);
+        if (snapshot.userRating) setUserRating(snapshot.userRating);
+        if (typeof snapshot.isFollowing === "boolean") setIsFollowing(snapshot.isFollowing);
+      } else if (!snapshot && cachedBook) {
+        // Partial hydrate — book metadata only (from Redux/rankings/library).
         setBook(cachedBook);
         if (cachedContinueReading) setContinueReadingChapter(cachedContinueReading);
       } else if (!downloadedEntry) {
+        // First visit, no cache, no offline copy — clear everything.
         setBook(null);
         setChapters([]);
         setPreviewChapters([]);
@@ -166,13 +237,22 @@ const BookInfo = () => {
         setContinueReadingChapter(null);
       }
 
+      // Offline-download path — fully self-contained, doesn't need
+      // the snapshot cache (downloads ARE the source of truth).
       if (downloadedEntry?.chapters?.length) {
         setChapters(downloadedEntry.chapters);
         setPreviewChapters([]);
         setChaptersTotal(downloadedEntry.chapters.length);
         setUnlocks({ chapters: downloadedEntry.chapterIds || downloadedEntry.chapters.map((chapter) => chapter.$id) });
         setIsDownloaded(true);
-      } else {
+      } else if (!shouldHydrateFromSnapshot && currentLoadedBookId !== resolvedBookId) {
+        // Only blank chapters on a fresh book load (different book
+        // than what's currently in state) AND when no snapshot is
+        // available to hydrate from. This avoids two pitfalls:
+        //   1. Clearing what the snapshot just hydrated (would race).
+        //   2. Re-clearing state on every focus when state is
+        //      already valid for the current book — that re-clear
+        //      is what triggered the React max-update-depth loop.
         setChapters([]);
         setPreviewChapters([]);
         setChaptersTotal(0);
@@ -180,7 +260,12 @@ const BookInfo = () => {
       }
 
       setIsOfflineMode(false);
-      setLoading(!cachedBook && !downloadedEntry);
+      // Skeleton only on cold first paint (no snapshot, no Redux
+      // book, no offline) AND only when state isn't already valid
+      // for this book. Setting loading=false when state is good
+      // prevents the skeleton from flashing on re-focus.
+      const hasValidStateForCurrentBook = currentLoadedBookId === resolvedBookId;
+      setLoading(!shouldHydrateFromSnapshot && !cachedBook && !downloadedEntry && !hasValidStateForCurrentBook);
 
       const fetchBook = async () => {
         try {
@@ -192,17 +277,15 @@ const BookInfo = () => {
           // call became a hang-forever liability the moment Appwrite
           // had any incident (Promise.all never resolves → loading stays
           // true → skeleton sticks). Both now route through Supabase.
-          const [booksData, unlocksData, chaptersData, previewChaptersData, bookProgressResponse, averageRes, ratingRes] = await Promise.all([
+          // Deduped fetch — chaptersData and previewChaptersData
+          // were calling the same query with the same params (same
+          // bookId, status, limit, select). Folded into one call;
+          // the preview is derived from the same response below.
+          const [booksData, unlocksData, chaptersData, bookProgressResponse, averageRes, ratingRes] = await Promise.all([
             // Pass actorUserId so authors viewing their own draft books
             // get a real result instead of an RLS-filtered null.
             bookService.fetchBook({ bookId: resolvedBookId, actorUserId: user?.$id }),
             bookUnlockService.getBookUnlockByUser({ book: resolvedBookId, unlockBy: user?.$id }),
-            bookService.fetchBookChapters({
-              bookId: resolvedBookId,
-              status: "Publish",
-              limit: previewChaptersLimit,
-              select: BOOK_CHAPTER_LIST_SELECT,
-            }),
             bookService.fetchBookChapters({
               bookId: resolvedBookId,
               status: "Publish",
@@ -222,21 +305,51 @@ const BookInfo = () => {
           // instead of { documents: [] }) the destructure above can leave
           // these as null, and `null.documents` throws synchronously,
           // bypassing the catch/finally and freezing loading=true again.
-          if ((unlocksData?.documents?.length ?? 0) > 0) setUnlocks(unlocksData.documents[0]);
-          setChapters(chaptersData?.documents || []);
-          setPreviewChapters(
-            (previewChaptersData?.documents || []).filter((chapter, index) => !isIntroductionChapter(chapter, index)).slice(0, previewChaptersLimit),
-          );
-          setChaptersTotal(chaptersData?.total ?? 0);
-          if ((bookProgressResponse?.documents?.length ?? 0) > 0) setContinueReadingChapter(bookProgressResponse.documents[0]);
+          const nextUnlocks =
+            (unlocksData?.documents?.length ?? 0) > 0 ? unlocksData.documents[0] : null;
+          if (nextUnlocks) setUnlocks(nextUnlocks);
 
+          const chapterDocs = chaptersData?.documents || [];
+          const nextChaptersTotal = chaptersData?.total ?? 0;
+          const nextPreviewChapters = chapterDocs
+            .filter((chapter, index) => !isIntroductionChapter(chapter, index))
+            .slice(0, previewChaptersLimit);
+
+          setChapters(chapterDocs);
+          setPreviewChapters(nextPreviewChapters);
+          setChaptersTotal(nextChaptersTotal);
+
+          const nextContinueReading =
+            (bookProgressResponse?.documents?.length ?? 0) > 0 ? bookProgressResponse.documents[0] : null;
+          if (nextContinueReading) setContinueReadingChapter(nextContinueReading);
+
+          let nextIsFollowing = false;
           if (booksData?.uploader?.$id) {
-            const followingResponse = await FollowService.isFollowing({ followerId: user?.$id, followingId: booksData?.uploader?.$id });
-            setIsFollowing(followingResponse);
+            nextIsFollowing = await FollowService.isFollowing({
+              followerId: user?.$id,
+              followingId: booksData?.uploader?.$id,
+            });
+            setIsFollowing(nextIsFollowing);
           } else {
             setIsFollowing(false);
           }
           setIsOfflineMode(false);
+
+          // Snapshot the freshly-loaded state into the cache so the
+          // next focus on this book (back-navigation, deep-link, etc.)
+          // hydrates instantly. Cache key = resolvedBookId; entries
+          // expire after 5 minutes (see BOOK_INFO_CACHE_TTL_MS).
+          writeBookInfoCache(resolvedBookId, {
+            book: booksData,
+            chapters: chapterDocs,
+            previewChapters: nextPreviewChapters,
+            chaptersTotal: nextChaptersTotal,
+            unlocks: nextUnlocks,
+            continueReadingChapter: nextContinueReading,
+            averageRating: averageRes?.averageRating || 0,
+            userRating: ratingRes || null,
+            isFollowing: nextIsFollowing,
+          });
         } catch (err) {
           const offlineDownload = resolvedBookId ? getDownloadedBook(resolvedBookId) : null;
           const offlineBook = offlineDownload?.book || findCachedBook();

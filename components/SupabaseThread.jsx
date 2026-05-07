@@ -1422,27 +1422,27 @@ const SupabaseThread = ({ conversationId: conversationIdProp, currentUserId }) =
 
       <KeyboardAvoidingView
         className="flex-1"
-        // iOS: pad the content above the keyboard.
-        // Android: leave behavior `undefined` so the OS's
-        // `windowSoftInputMode="adjustResize"` (set in
-        // AndroidManifest.xml + app.json `softwareKeyboardLayoutMode`)
-        // handles keyboard avoidance natively. When we used
-        // `behavior="height"` on Android the window got shrunk twice —
-        // once by the OS resize and again by KAV — and the composer
-        // ended up pushed below the visible viewport, leaving a big
-        // empty area between the header and the keyboard with no
-        // input visible. Reproduced consistently on stock Android 14;
-        // matches the known interaction documented in
-        // facebook/react-native#23874 and the Expo docs.
+        // Use `padding` on BOTH platforms. The previous strategy left
+        // Android `behavior` undefined and relied entirely on the OS's
+        // `windowSoftInputMode="adjustResize"` to shrink the window —
+        // that worked for a while but broke on certain Android devices
+        // (notably newer versions where edge-to-edge is more aggressive
+        // and the OS-side resize doesn't account for the home-indicator
+        // inset). When the OS-resize fails, the composer ends up
+        // entirely below the keyboard with the user typing into an
+        // invisible input — exactly what was reported.
         //
-        // keyboardVerticalOffset stays at 0 — SafeAreaView handles the
-        // status-bar / home-indicator insets, and the custom header is
-        // outside this KAV so React Native already knows where the
-        // avoiding region begins. Setting it to the header height
-        // (which we tried first) caused a visible gap between the
-        // input box and the top of the keyboard on iPhones with a home
-        // indicator.
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        // Switching Android to `padding` makes RN add explicit padding
+        // equal to the keyboard height. The earlier "double shrink"
+        // concern was specifically with `behavior="height"`, not
+        // `padding` — padding doesn't conflict with adjustResize because
+        // it adds space rather than re-measuring the window.
+        //
+        // keyboardVerticalOffset stays at 0 — the SafeAreaView root
+        // already handles bottom inset, and the custom header is
+        // outside the KAV so React Native correctly measures from the
+        // top of the avoiding region.
+        behavior="padding"
         keyboardVerticalOffset={0}
       >
         {/* Empty state rendered as a sibling — NOT as ListEmptyComponent —

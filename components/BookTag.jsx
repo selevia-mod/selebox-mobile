@@ -19,12 +19,25 @@ const BookTag = ({ tagName }) => {
     draft:      { bg: theme.surfaceMuted,     text: theme.textSoft },
   };
 
-  // Display label always uses Title Case for visual consistency,
-  // regardless of how the source field stored it.
-  const titleCase = (s) =>
-    String(s || "")
-      .toLowerCase()
-      .replace(/\b\w/g, (c) => c.toUpperCase());
+  // Display label uses Title Case for visual consistency, but preserves
+  // acronyms in content-rating tags so "Rated PG" / "Rated SPG" don't
+  // collapse to "Rated Pg" / "Rated Spg" via the naive title-case
+  // pass below.
+  const RATING_ACRONYMS = new Set(["PG", "SPG", "G", "R", "X", "PG-13", "R-13", "R-16", "R-18", "NC-17"]);
+  const titleCase = (s) => {
+    const str = String(s || "");
+    return str
+      .split(/\s+/)
+      .map((word) => {
+        if (!word) return word;
+        // Preserve numeric tokens as-is (e.g., "18" in "Rated 18").
+        if (/^\d/.test(word)) return word;
+        // Preserve content-rating acronyms uppercased.
+        if (RATING_ACRONYMS.has(word.toUpperCase())) return word.toUpperCase();
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      })
+      .join(" ");
+  };
 
   const lookup = String(tagName || "").toLowerCase();
   const style = tagStyles[lookup] || {

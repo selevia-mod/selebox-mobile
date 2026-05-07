@@ -108,7 +108,13 @@ const VERBOSE = process.env.VERBOSE === "1";
 const ONLY = (process.env.ONLY || "").toLowerCase();
 
 const PAGE_SIZE = 100;
-const UPSERT_BATCH_SIZE = 500;
+// Default 500 works for most passes (small rows). For chapters, content
+// blobs can be huge — Postgres statement_timeout fires before 500 rows
+// finish upserting. Override with UPSERT_BATCH_SIZE=20 (or smaller) for
+// the chapters pass specifically.
+const UPSERT_BATCH_SIZE = process.env.UPSERT_BATCH_SIZE
+  ? Number(process.env.UPSERT_BATCH_SIZE)
+  : 500;
 
 const aw = new Client().setEndpoint(APPWRITE_ENDPOINT).setProject(APPWRITE_PROJECT_ID).setKey(APPWRITE_API_KEY);
 const awDb = new Databases(aw);

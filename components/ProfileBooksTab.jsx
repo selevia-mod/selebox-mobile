@@ -34,7 +34,10 @@ const ProfileBooksTab = ({
 
   const bookService = new BookService();
   const isLoggedInUser = user?.$id === userId;
-  const bookStatus = isLoggedInUser ? undefined : ["Ongoing", "Completed"];
+  // Supabase stores status values lowercase ('ongoing', 'completed'). The old
+  // Appwrite values were title-cased ('Ongoing', 'Completed'); after the
+  // migration this filter started returning zero rows for non-self viewers.
+  const bookStatus = isLoggedInUser ? undefined : ["ongoing", "completed"];
 
   // "Does the viewing writer have at least one paid book?" — gates the
   // BookLockPromptBanner on each Free row. Only resolved when the
@@ -94,7 +97,7 @@ const ProfileBooksTab = ({
         status: bookStatus,
       });
       setUserBooks(booksData.documents);
-      setLastId(booksData.documents[booksData.documents.length - 1].$id);
+      setLastId(booksData.documents[booksData.documents.length - 1]?.$id);
       setHasMore(booksData.documents.length < booksData.total);
     } catch (error) {
       console.log("fetchUserBooks: error", error);
@@ -119,7 +122,7 @@ const ProfileBooksTab = ({
       }
       const updatedFetchedUserBooks = [...userBooks, ...uniqueBook];
       setUserBooks(updatedFetchedUserBooks);
-      setLastId(booksData.documents[booksData.documents.length - 1].$id);
+      setLastId(booksData.documents[booksData.documents.length - 1]?.$id);
       if (updatedFetchedUserBooks.length >= booksData.total) setHasMore(false);
     } catch (error) {
       console.log("fetchMoreUserBooks: error", error);

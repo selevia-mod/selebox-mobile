@@ -479,7 +479,18 @@ const Store = () => {
             ListHeaderComponent={
               <View className="mt-4 space-y-3">
                 <View className="flex-row space-x-3">
-                  <View className="flex-1 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
+                  {/* Tap → coin purchase history (May 2026 add).
+                      The card was a passive display before; promoting
+                      it to a tap target lets users see where their
+                      coins came from without a separate menu item. */}
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => router.push("/coin-history")}
+                    className="flex-1 rounded-2xl p-4"
+                    style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}
+                    accessibilityRole="button"
+                    accessibilityLabel="View coin purchase history"
+                  >
                     <View className="flex-row items-center space-x-3">
                       <View className="h-10 w-10 items-center justify-center rounded-full" style={{ backgroundColor: theme.accentAmberSoft }}>
                         <FontAwesome5 name="coins" size={20} color={theme.coin} />
@@ -493,9 +504,17 @@ const Store = () => {
                         </Text>
                       </View>
                     </View>
-                  </View>
+                  </TouchableOpacity>
 
-                  <View className="flex-1 rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}>
+                  {/* Tap → star earning history grouped by day. */}
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => router.push("/star-history")}
+                    className="flex-1 rounded-2xl p-4"
+                    style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card }}
+                    accessibilityRole="button"
+                    accessibilityLabel="View star earning history"
+                  >
                     <View className="flex-row items-center space-x-3">
                       <View className="h-10 w-10 items-center justify-center rounded-full" style={{ backgroundColor: theme.accentAmberSoft }}>
                         <StarIcon size={22} color={theme.coin} />
@@ -527,7 +546,7 @@ const Store = () => {
                         )}
                       </View>
                     </View>
-                  </View>
+                  </TouchableOpacity>
                 </View>
 
                 <View className="rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.accentAmber, backgroundColor: theme.accentAmberSoft }}>

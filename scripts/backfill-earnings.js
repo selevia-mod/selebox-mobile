@@ -81,6 +81,7 @@ const SUPABASE_SERVICE_ROLE_KEY = env("SUPABASE_SERVICE_ROLE_KEY");
 const DRY_RUN = process.env.DRY_RUN === "1";
 const LIMIT = process.env.LIMIT ? Number(process.env.LIMIT) : null;
 const VERBOSE = process.env.VERBOSE === "1";
+const USER_EMAIL = process.env.USER_EMAIL || null;
 const SHARE_PCT = Number(process.env.SHARE_PCT || 100);
 const COIN_RATE_MINOR = Number(process.env.COIN_RATE_MINOR || 20);
 const STAR_RATE_MINOR = Number(process.env.STAR_RATE_MINOR || 5);
@@ -178,18 +179,35 @@ async function ensureSchemaReady() {
 }
 
 async function main() {
-  console.log(`[backfill-earnings] dryRun=${DRY_RUN} limit=${LIMIT ?? "none"} verbose=${VERBOSE}`);
+  console.log(`[backfill-earnings] dryRun=${DRY_RUN} limit=${LIMIT ?? "none"} verbose=${VERBOSE} userEmail=${USER_EMAIL ?? "all"}`);
   console.log(`[backfill-earnings] sharePct=${SHARE_PCT} coinRate=${COIN_RATE_MINOR} starRate=${STAR_RATE_MINOR}`);
   console.log(`[backfill-earnings] appwrite ${APPWRITE_ENDPOINT}`);
   console.log(`[backfill-earnings] supabase ${SUPABASE_URL}`);
 
   await ensureSchemaReady();
 
+  // If filtering by single user, resolve email → hex once
+  let filterUserHex = null;
+  if (USER_EMAIL) {
+    const { data, error } = await sb
+      .from("profiles")
+      .select("legacy_appwrite_id, email, username")
+      .ilike("email", USER_EMAIL)
+      .single();
+    if (error || !data) {
+      console.error(`User not found: ${USER_EMAIL}`);
+      process.exit(1);
+    }
+    filterUserHex = data.legacy_appwrite_id;
+    console.log(`[backfill-earnings] filtering for ${data.email} (${data.username}) hex=${filterUserHex}`);
+  }
+
   let scanned = 0;
   let prepared = 0;
   let inserted = 0;
   let skippedNoOwner = 0;
   let skippedNoAmount = 0;
+  let skippedFiltered = 0;
   let errors = 0;
   let cursor = null;
 
@@ -230,6 +248,13 @@ async function main() {
 
       const contentOwnerHex = doc.contentOwner;
       const fromUserHex = doc.earningFromUser;
+
+      // Filter by single user if requested
+      if (filterUserHex && contentOwnerHex !== filterUserHex) {
+        skippedFiltered++;
+        continue;
+      }
+
       const authorUuid = profileCache.get(contentOwnerHex);
       if (!authorUuid) {
         if (VERBOSE) console.log(`  skip ${doc.$id}: contentOwner ${contentOwnerHex} not in profiles`);
@@ -321,6 +346,7 @@ async function main() {
   console.log(`  inserted:           ${inserted}${DRY_RUN ? " (dry-run)" : ""}`);
   console.log(`  skipped (no owner): ${skippedNoOwner}`);
   console.log(`  skipped (no amt):   ${skippedNoAmount}`);
+  if (filterUserHex) console.log(`  skipped (filtered): ${skippedFiltered}`);
   console.log(`  errors:             ${errors}`);
   console.log("──────────────────────────────────────────────");
   console.log("");

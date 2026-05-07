@@ -84,6 +84,50 @@ const normalizeRouteParam = (value) => {
 const PAGE_CHAPTER_SWIPE_DISTANCE = 36;
 const PAGE_CHAPTER_SWIPE_AXIS_RATIO = 0.85;
 
+// Module-level snapshot cache for the book-reading screen (May 2026
+// — perf fix). Same stale-while-revalidate idea as BOOK_INFO_CACHE,
+// scoped to per-book reader state.
+//
+// What it caches per bookId:
+//   - allChapters list (the table-of-contents the swipe nav uses)
+//   - unlocks document (the user's per-chapter / fully-unlocked state)
+//   - book object (with isLocked / bookChapterLockStart for the gate)
+//
+// What it does NOT cache:
+//   - The CURRENT chapter's content. That's a per-chapter resource
+//     and lives in BOOK_CHAPTER_CACHE (lib/books-supabase.js, 30s
+//     TTL). Skipping content here keeps the snapshot small AND
+//     avoids stale-content risk if the writer edits chapter 5.
+//
+// Cache key = bookId. TTL = 5 minutes (matches BOOK_INFO_CACHE).
+// Why per-book and not per-chapter: navigating chapter 1 → 2 → 3 in
+// the same book hits the SAME (allChapters, unlocks) values. Caching
+// per-chapter would be a wasted indirection.
+//
+// Refresh policy: snapshot is read on screen mount; the existing
+// fetch always still runs and overwrites the snapshot when fresh
+// data arrives. So a stale entry only ever shows for a single
+// frame before being replaced — the user sees instant paint, then
+// data refreshes seamlessly.
+const READING_SCREEN_CACHE = new Map();
+const READING_SCREEN_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const readReadingCache = (bookId) => {
+  if (!bookId) return null;
+  const entry = READING_SCREEN_CACHE.get(bookId);
+  if (!entry) return null;
+  if (Date.now() - entry.cachedAt > READING_SCREEN_CACHE_TTL_MS) {
+    READING_SCREEN_CACHE.delete(bookId);
+    return null;
+  }
+  return entry.snapshot;
+};
+
+const writeReadingCache = (bookId, snapshot) => {
+  if (!bookId || !snapshot) return;
+  READING_SCREEN_CACHE.set(bookId, { snapshot, cachedAt: Date.now() });
+};
+
 export default function ReadingScreen() {
   const { user } = useSelector((state) => state.auth);
   const { globalSettings } = useSelector((state) => state.app);
@@ -191,20 +235,74 @@ export default function ReadingScreen() {
         if (!doc) throw new Error("Unable to load chapter");
 
         const chapterBookId = doc?.book?.$id || doc?.book;
-        const [{ documents: chapterDocs = [] } = {}, unlocksData = { documents: [] }] = await Promise.all([
-          bookService.fetchAllBookChapters({ bookId: chapterBookId, status: "Publish", select: BOOK_CHAPTER_LIST_SELECT }),
-          bookUnlockService.getBookUnlockByUser({ book: chapterBookId, unlockBy: user?.$id }),
-        ]);
+
+        // Fetch the FULL book in parallel with the rest below.
+        // The chapter's embedded `books` join (CHAPTER_SELECT) only
+        // returns lock_from_chapter + cover + title + author_id —
+        // missing the uploader profile (username, avatar, role) the
+        // BookChaptersModal header needs to render "By <author>" and
+        // the cover. Pulling the full book row here keeps that
+        // surface populated. Cached at lib level (BOOK_CACHE, 30s
+        // TTL) so repeat calls within a session are cheap.
+        const fullBookPromise = chapterBookId
+          ? bookService.fetchBook({ bookId: chapterBookId, actorUserId: user?.$id })
+          : Promise.resolve(null);
+
+        // Snapshot cache check (May 2026 perf fix). If the user just
+        // navigated chapter→chapter inside the same book, allChapters
+        // + unlocks + book are unchanged from the previous load —
+        // skip the parallel network fetches and hydrate from the
+        // module cache. A background refresh runs after to catch any
+        // drift (writer added a chapter, user paid in another tab),
+        // so the next render still has fresh data.
+        const snapshot = chapterBookId ? readReadingCache(chapterBookId) : null;
+        const haveSnapshot = !!(snapshot && snapshot.bookId === chapterBookId);
+
+        const [{ documents: chapterDocs = [] } = {}, unlocksData = { documents: [] }] = haveSnapshot
+          ? [
+              { documents: snapshot.allChapters },
+              { documents: snapshot.unlocks ? [snapshot.unlocks] : [] },
+            ]
+          : await Promise.all([
+              bookService.fetchAllBookChapters({ bookId: chapterBookId, status: "Publish", select: BOOK_CHAPTER_LIST_SELECT }),
+              bookUnlockService.getBookUnlockByUser({ book: chapterBookId, unlockBy: user?.$id }),
+            ]);
 
         const unlockDocument = unlocksData.documents?.[0];
         const idx = chapterDocs.findIndex((c) => c.$id === resolvedChapterId);
         const safeIndex = idx >= 0 ? idx : 0;
 
+        // Resolve the full book (started in parallel above). Falls
+        // back to the chapter's embedded book if the full fetch
+        // returned null — at minimum the lock fields + title are
+        // still present.
+        const fullBook = (await fullBookPromise) || doc?.book;
+
         setChapterIndex(safeIndex);
         if (unlockDocument) setUnlocks(unlockDocument);
         setAllChapters(chapterDocs);
         setChapter(doc);
-        setBook(doc?.book);
+        setBook(fullBook);
+
+        // Snapshot the surrounding state into the per-book cache so
+        // the next chapter open in this book skips the parallel
+        // fetches above. bookId is captured on the entry so reads
+        // can verify the snapshot matches the requested book.
+        //
+        // No background refresh on snapshot hits (May 2026 fix).
+        // The previous version fired a second setAllChapters after
+        // the network came back, which made BookChaptersModal's
+        // chapters-dep useEffect re-fire and cascade into a "Maximum
+        // update depth exceeded" loop. The snapshot's 5-min TTL is
+        // tight enough that staleness windows are short — pull-to-
+        // refresh in the TOC or closing+reopening the book picks up
+        // any new chapters.
+        writeReadingCache(chapterBookId, {
+          bookId: chapterBookId,
+          allChapters: chapterDocs,
+          unlocks: unlockDocument || null,
+          book: fullBook,
+        });
 
         // Check if this chapter is locked
         const isLocked = BookUnlocksService.isChapterLocked({
@@ -531,19 +629,60 @@ export default function ReadingScreen() {
     return bookService.fetchBookChapter({ chapterId: nextChapter.$id, actorUserId: user?.$id });
   };
 
+  // Defensive lock evaluator (May 2026 — book unlock-bypass on swipe).
+  //
+  // Writers reported that swiping past a paid chapter boundary skipped
+  // the unlock prompt even though direct-link entry to the same chapter
+  // gated correctly. Audit showed every nav path calls isChapterLocked
+  // — but the input data could be stale: the top-level `book` state is
+  // set ONCE on initial load and never refreshed when new chapters
+  // join `allChapters`. If the writer toggled the lock while the
+  // reader had the screen open, or if the embedded book object drifts
+  // from the canonical book row, the gate evaluates against stale
+  // values.
+  //
+  // This wrapper:
+  //   1. Resolves the FRESHEST book reference — prefers the chapter's
+  //      own embedded `chapter.book` (set during the `books!chapters_…`
+  //      join in CHAPTER_SELECT), falls back to top-level `book` state.
+  //      Whichever has lock_from_chapter wins.
+  //   2. Logs the inputs + decision so we can see in Metro exactly why
+  //      a chapter is being treated as unlocked. Strip after we've
+  //      confirmed the fix.
+  //   3. Returns the boolean lock decision.
+  const _evaluateChapterLock = (chapter, index) => {
+    const chapterBook = chapter?.book && typeof chapter.book === "object" ? chapter.book : null;
+    const effectiveBook = chapterBook || book;
+    const decision = BookUnlocksService.isChapterLocked({
+      book: effectiveBook,
+      bookChapterLockStart,
+      chapter,
+      index,
+      unlocks,
+      currentUserId: user?.$id,
+    });
+    console.log("[book-reading] lock check", {
+      chapter_id: chapter?.$id,
+      chapter_number: chapter?.chapter_number,
+      chapter_is_locked: !!(chapter?.is_locked || chapter?.isLocked),
+      effective_book_isLocked: !!effectiveBook?.isLocked,
+      effective_book_lockStart:
+        effectiveBook?.bookChapterLockStart ?? effectiveBook?.lock_from_chapter ?? null,
+      bookChapterLockStartProp: bookChapterLockStart,
+      unlocks_fully: !!unlocks?.isFullyUnlocked,
+      unlocks_chapters_count: unlocks?.chapters?.length || 0,
+      decision_locked: decision,
+      source: chapterBook ? "chapter.book" : "screen.book",
+    });
+    return decision;
+  };
+
   const loadNextChapter = async () => {
     if (transitioning) return;
     if (chapterIndex < allChapters.length - 1) {
       const nextIndex = chapterIndex + 1;
       const nextChapter = allChapters[nextIndex];
-      const isChapterLocked = BookUnlocksService.isChapterLocked({
-        book,
-        bookChapterLockStart,
-        chapter: nextChapter,
-        index: nextIndex,
-        unlocks,
-        currentUserId: user?.$id,
-      });
+      const isChapterLocked = _evaluateChapterLock(nextChapter, nextIndex);
 
       if (isChapterLocked) {
         setSelectedChapter(nextChapter);
@@ -551,6 +690,16 @@ export default function ReadingScreen() {
       } else {
         try {
           const readableChapter = await fetchReadableChapter(nextChapter);
+          // Re-check using the freshly-fetched chapter (it carries its
+          // own embedded book via the join — fresher than allChapters[]
+          // which may have been served from cache). Catches the case
+          // where the cached list said "free" but the live row says
+          // "locked".
+          if (_evaluateChapterLock(readableChapter, nextIndex)) {
+            setSelectedChapter(readableChapter);
+            setChapterUnlockVisible(true);
+            return;
+          }
           animateChapterChange(readableChapter, nextIndex);
           BookReadService.readBookChapter({ userId: user?.$id, bookId: book?.$id, chapterId: readableChapter?.$id });
           tickGoalUnique("read_chapters", readableChapter?.$id);
@@ -567,14 +716,7 @@ export default function ReadingScreen() {
     if (chapterIndex > 0) {
       const prevIndex = chapterIndex - 1;
       const prevChapter = allChapters[prevIndex];
-      const isChapterLocked = BookUnlocksService.isChapterLocked({
-        book,
-        bookChapterLockStart,
-        chapter: prevChapter,
-        index: prevIndex,
-        unlocks,
-        currentUserId: user?.$id,
-      });
+      const isChapterLocked = _evaluateChapterLock(prevChapter, prevIndex);
 
       if (isChapterLocked) {
         setSelectedChapter(prevChapter);
@@ -582,6 +724,12 @@ export default function ReadingScreen() {
       } else {
         try {
           const readableChapter = await fetchReadableChapter(prevChapter);
+          // Same fresh re-check as loadNextChapter — see comment above.
+          if (_evaluateChapterLock(readableChapter, prevIndex)) {
+            setSelectedChapter(readableChapter);
+            setChapterUnlockVisible(true);
+            return;
+          }
           animateChapterChange(readableChapter, prevIndex);
           BookReadService.readBookChapter({ userId: user?.$id, bookId: book?.$id, chapterId: readableChapter?.$id });
         } catch (error) {

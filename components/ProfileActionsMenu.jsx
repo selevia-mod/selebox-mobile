@@ -291,21 +291,27 @@ const ProfileActionsMenu = ({
   // Trigger button — glass-tinted dark disc designed to sit on top of the
   // profile banner art. Reads as a polished translucent control in the
   // language of iOS native player overlays. White ellipsis-horizontal icon
-  // (cleaner than the previous vertical kebab) with a subtle glass rim.
+  // (cleaner than the previous vertical kebab) with a defined glass rim.
+  //
+  // Contrast bumped from 0.42 → 0.55 background and 0.22 → 0.40 border
+  // because the previous values washed out on light pastel banners
+  // (cloud/sky / pink-checker patterns) — the disc disappeared into
+  // the artwork. The new values stay translucent enough to read as
+  // overlay-glass on dark banners but hold their shape on bright ones.
   const defaultTriggerStyle = {
-    height: 36,
-    width: 36,
+    height: 38,
+    width: 38,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0, 0, 0, 0.42)",
+    backgroundColor: "rgba(0, 0, 0, 0.55)",
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.22)",
+    borderColor: "rgba(255, 255, 255, 0.40)",
     shadowColor: "#000000",
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowOpacity: 0.45,
+    shadowRadius: 10,
+    elevation: 5,
   };
 
   return (
@@ -316,7 +322,7 @@ const ProfileActionsMenu = ({
         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         style={[defaultTriggerStyle, triggerStyle]}
       >
-        <Ionicons name="ellipsis-horizontal" size={18} color="#FFFFFF" />
+        <Ionicons name="ellipsis-horizontal" size={20} color="#FFFFFF" />
       </TouchableOpacity>
 
       <Modal

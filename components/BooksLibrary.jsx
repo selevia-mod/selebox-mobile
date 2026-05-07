@@ -95,9 +95,12 @@ const BooksLibrary = ({ isActive = false }) => {
       }
       const updatedFetchedUserLibrary = [...userLibrary, ...uniqueBook];
       setUserLibrary(updatedFetchedUserLibrary);
-      setLastId(bookLibraryData.documents[bookLibraryData.documents.length - 1].$id);
+      const lastBookDoc = bookLibraryData.documents[bookLibraryData.documents.length - 1];
+      if (lastBookDoc) {
+        setLastId(lastBookDoc.$id);
+        dispatch(setLibraryLastId(lastBookDoc.$id));
+      }
       dispatch(appendLibrary(uniqueBook));
-      dispatch(setLibraryLastId(bookLibraryData.documents[bookLibraryData.documents.length - 1].$id));
       if (updatedFetchedUserLibrary.length >= bookLibraryData.total) setHasMore(false);
     } catch (error) {
       console.log("fetchMoreUserBooks: error", error);

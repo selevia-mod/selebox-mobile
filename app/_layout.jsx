@@ -375,6 +375,15 @@ const InnerLayout = () => {
       let normalizedPath = path?.startsWith("/") ? path.slice(1) : path;
       let bookId;
 
+      // Skip OAuth callback URLs — they should never be routed as content.
+      // Supabase's signInWithGoogle uses talesofsiren://books/auth-callback
+      // (host=books because that's the only registered intent filter), and
+      // the rest of this handler would otherwise treat "auth-callback" as a
+      // book ID and push to book-info → "Book Not Found".
+      if (normalizedPath === "books/auth-callback" || normalizedPath?.startsWith("auth-callback")) {
+        return;
+      }
+
       const queryType = normalizeRouteValue(queryParams.type);
       const queryResourceId = normalizeRouteValue(
         queryParams.resourceId || queryParams.videoId || queryParams.video || queryParams.postId || queryParams.post || queryParams.id,

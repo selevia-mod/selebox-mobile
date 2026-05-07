@@ -300,11 +300,18 @@ const Profile = ({ user, videos, isLoadingProfile = false }) => {
   };
 
   const navigateToConnections = (initialTab) => {
+    // Pass raw integer counts (not FormatNumber'd "1.1K" strings) — the
+    // user-connections page does Number(initialFollowerCount) which is
+    // NaN for formatted strings and falls back to 0. fetchCounts on the
+    // other side refreshes from the server immediately, but the initial
+    // render shows whatever the URL param parses to.
+    const rawFollowing = typeof following === "number" ? following : 0;
+    const rawFollowers = typeof followers === "number" ? followers : 0;
     router.push({
       pathname: "/user-connections",
       params: {
-        followingCount: FormatNumber(following || 0),
-        followerCount: FormatNumber(followers || 0),
+        followingCount: rawFollowing,
+        followerCount: rawFollowers,
         initLoadContent: initialTab,
         loggedInUser: user?.$id,
         username: user?.username,

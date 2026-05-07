@@ -163,13 +163,73 @@ async function backfillVideos() {
         if (VERBOSE) console.log(`  skip video ${d.$id}: uploader ${uploaderHex} → ?`);
         continue;
       }
+
+      // Extract bunny_video_id from the Bunny.net URL. The Appwrite
+      // videos collection doesn't store bunny_video_id as a separate
+      // field — it lives embedded in `videoUrl` / `uri`. Pre-Bunny
+      // videos (the retired AWS S3 / clips era) have URLs that don't
+      // match any Bunny pattern; we skip those entirely because:
+      //   1. public.videos.bunny_video_id is NOT NULL — would error
+      //   2. The S3 storage was retired May 2026, so the video files
+      //      are gone — backfilling a "ghost" row would surface an
+      //      unplayable video to users (worse UX than not showing it)
+      //
+      // Recognized Bunny URL patterns:
+      //   https://iframe.mediadelivery.net/embed/{library}/{video_id}
+      //   https://video.bunnycdn.com/library/{library}/videos/{video_id}
+      //   https://vz-{hash}.b-cdn.net/{video_id}/playlist.m3u8
+      // The {video_id} is a UUID-shaped string in all variants.
+      const url = d.videoUrl || d.video_url || d.uri || "";
+      // Parse both bunny_video_id and bunny_library_id from the URL.
+      // The Appwrite videos collection doesn't store either as a separate
+      // field — they live embedded in the URL. Pre-Bunny videos (the
+      // retired AWS S3 / clips era) have URLs that don't match any Bunny
+      // pattern; we skip those entirely because:
+      //   1. public.videos.bunny_video_id and bunny_library_id are NOT NULL
+      //   2. The S3 storage was retired May 2026, so the video files
+      //      are gone — backfilling a "ghost" row would surface an
+      //      unplayable video to users (worse UX than not showing it)
+      //
+      // Bunny URL patterns + what we extract:
+      //   https://iframe.mediadelivery.net/embed/{library}/{video_id}
+      //     → library_id from path, video_id (UUID) from path
+      //   https://video.bunnycdn.com/library/{library}/videos/{video_id}
+      //     → library_id from path, video_id (UUID) from path
+      //   https://vz-{hash}.b-cdn.net/{video_id}/playlist.m3u8
+      //     → library not in URL; fall back to default library id
+      const DEFAULT_BUNNY_LIBRARY_ID =
+        process.env.DEFAULT_BUNNY_LIBRARY_ID || "541939";
+      const bunnyVideoId = (() => {
+        if (!url) return null;
+        const uuidMatch = String(url).match(
+          /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+        );
+        return uuidMatch ? uuidMatch[0] : null;
+      })();
+      const bunnyLibraryId = (() => {
+        if (!url) return null;
+        // Match `/library/{digits}/` or `/embed/{digits}/` from Bunny URLs.
+        const libMatch = String(url).match(/\/(?:library|embed)\/(\d+)\//);
+        if (libMatch) return libMatch[1];
+        // Fall back to the default library when the URL is the b-cdn.net
+        // shape that doesn't expose the library id explicitly.
+        return DEFAULT_BUNNY_LIBRARY_ID;
+      })();
+      if (!bunnyVideoId) {
+        skippedNoMap += 1;
+        if (VERBOSE) console.log(`  skip video ${d.$id}: no Bunny ID parseable from URL "${url.slice(0, 80)}" (likely retired S3 video)`);
+        continue;
+      }
+
       prepared += 1;
       buffer.push({
         legacy_appwrite_id: d.$id,
         uploader_id: uploaderUuid,
+        bunny_video_id: bunnyVideoId,
+        bunny_library_id: bunnyLibraryId,
         title: d.title || null,
         description: d.description || null,
-        video_url: d.videoUrl || d.video_url || null,
+        video_url: url || null,
         thumbnail_url: d.thumbnail || d.thumbnail_url || null,
         status: d.status || "ready",
         tags: Array.isArray(d.tags) ? d.tags : null,

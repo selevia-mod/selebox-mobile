@@ -2,7 +2,7 @@
   "expo": {
     "name": "Selebox",
     "slug": "tales-of-siren",
-    "version": "2.4.18",
+    "version": "2.4.20",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "appwrite-callback-66b8be7400121b5d4697",
@@ -12,14 +12,22 @@
       "resizeMode": "contain",
       "backgroundColor": "#111827"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.talesofsiren.talesofsiren",
-      "associatedDomains": ["applinks:www.selebox.com", "applinks:selebox.com"],
+      "associatedDomains": [
+        "applinks:www.selebox.com",
+        "applinks:selebox.com"
+      ],
       "usesAppleSignIn": true,
       "infoPlist": {
-        "UIBackgroundModes": ["audio", "fetch"],
+        "UIBackgroundModes": [
+          "audio",
+          "fetch"
+        ],
         "NSPhotoLibraryUsageDescription": "We need access to your photos to let you upload a profile picture or set a custom avatar. Your photos will remain private and secure.",
         "NSCameraUsageDescription": "We need access to your camera to allow photo or video selection.",
         "NSMicrophoneUsageDescription": "We need access to your microphone for video-related features.",
@@ -31,7 +39,12 @@
             }
           }
         },
-        "LSApplicationQueriesSchemes": ["fb", "instagram", "twitter", "tiktoksharesdk"],
+        "LSApplicationQueriesSchemes": [
+          "fb",
+          "instagram",
+          "twitter",
+          "tiktoksharesdk"
+        ],
         "ITSAppUsesNonExemptEncryption": false
       },
       "appleTeamId": "Y3NK8Z38H8",
@@ -59,7 +72,10 @@
               "pathPrefix": "/books/"
             }
           ],
-          "category": ["BROWSABLE", "DEFAULT"],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ],
           "autoVerify": true
         },
         {
@@ -70,7 +86,23 @@
               "host": "books"
             }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        },
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "talesofsiren",
+              "host": "auth-callback"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ],
       "permissions": [
@@ -79,7 +111,8 @@
         "android.permission.RECORD_AUDIO",
         "com.google.android.gms.permission.AD_ID"
       ],
-      "googleServicesFile": "./google-services.json"
+      "googleServicesFile": "./google-services.json",
+      "versionCode": 2
     },
     "plugins": [
       "expo-router",
@@ -191,8 +224,18 @@
       [
         "react-native-share",
         {
-          "ios": ["fb", "instagram", "twitter", "tiktoksharesdk"],
-          "android": ["com.facebook.katana", "com.instagram.android", "com.twitter.android", "com.zhiliaoapp.musically"],
+          "ios": [
+            "fb",
+            "instagram",
+            "twitter",
+            "tiktoksharesdk"
+          ],
+          "android": [
+            "com.facebook.katana",
+            "com.instagram.android",
+            "com.twitter.android",
+            "com.zhiliaoapp.musically"
+          ],
           "enableBase64ShareAndroid": true
         }
       ]

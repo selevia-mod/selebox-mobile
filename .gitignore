@@ -65,3 +65,4 @@ backups/
 scripts/appwrite-users.json
 scripts/auth-migration-failures.json
 scripts/auth-migration-unsupported.json
+*.apk

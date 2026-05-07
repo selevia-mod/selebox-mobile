@@ -6,6 +6,7 @@ import { Query } from "react-native-appwrite";
 import Modal from "react-native-modal";
 import useAppTheme from "../hooks/useAppTheme";
 import { appwriteConfig, databases } from "../lib/appwrite";
+import { fetchTrendingAudiusTracks, searchAudiusTracks } from "../lib/audius";
 
 export default function MusicPickerModal({ isOpen, onClose, onSelect }) {
   const { theme } = useAppTheme();
@@ -15,6 +16,16 @@ export default function MusicPickerModal({ isOpen, onClose, onSelect }) {
   const [searchText, setSearchText] = useState("");
   const [offset, setOffset] = useState(0);
   const [playingId, setPlayingId] = useState(null);
+  // Source tab — "selebox" (existing curated Appwrite library) or
+  // "audius" (decentralized streaming catalog via lib/audius.js).
+  // Switching tabs resets the list + search so the user always sees
+  // the new source's content immediately.
+  const [source, setSource] = useState("selebox");
+  // Audius search needs a small debounce — its API is fast but we
+  // don't want to fire a request on every keystroke. Selebox queries
+  // are local-filtered after the initial fetch, so they don't need
+  // the debounce at all.
+  const audiusDebounceRef = useRef(null);
 
   const previewSound = useRef(null);
   const limit = 20;
@@ -57,15 +68,32 @@ export default function MusicPickerModal({ isOpen, onClose, onSelect }) {
   };
 
   // -----------------------------------------------------
-  // Fetch Music (Paginated)
+  // Fetch Music (Paginated for Selebox; one-shot for Audius)
   // -----------------------------------------------------
-  const fetchMusic = async (reset = false) => {
+  // Selebox path → paginated listDocuments from the Appwrite curated
+  // collection. Search is local-filter on the loaded set.
+  // Audius path → one-shot fetch from Audius API. Trending if no
+  // query, search if query is present. Pagination via Audius is a
+  // phase-2 enhancement — for now we surface 25 results which is
+  // enough to feel responsive without spamming their endpoint.
+  const fetchMusic = async (reset = false, sourceOverride = null) => {
+    const activeSource = sourceOverride || source;
     try {
       if (reset) {
         setLoading(true);
         setOffset(0);
       }
 
+      if (activeSource === "audius") {
+        const audiusList = searchText.trim()
+          ? await searchAudiusTracks(searchText, { limit: 25 })
+          : await fetchTrendingAudiusTracks({ limit: 25 });
+        setMusicList(audiusList);
+        setFilteredList(audiusList);
+        return;
+      }
+
+      // Selebox source — original Appwrite path.
       const res = await databases.listDocuments(appwriteConfig.databaseId, appwriteConfig.storyMusicCollectionId, [
         Query.equal("isActive", true),
         Query.limit(limit),
@@ -77,7 +105,6 @@ export default function MusicPickerModal({ isOpen, onClose, onSelect }) {
 
       setMusicList(newList);
 
-      // Apply search filter after load
       if (searchText.trim()) {
         const lower = searchText.toLowerCase();
         const filtered = newList.filter((m) => m.title.toLowerCase().includes(lower) || m.artist.toLowerCase().includes(lower));
@@ -94,23 +121,46 @@ export default function MusicPickerModal({ isOpen, onClose, onSelect }) {
     }
   };
 
-  // Load on open
+  // Load on open. Re-runs when `source` flips so the user sees the
+  // selected library's content immediately on tab change.
   useEffect(() => {
     if (isOpen) {
+      // Reset search when switching tabs so a Selebox query doesn't
+      // bleed into Audius (and vice versa).
+      setSearchText("");
       fetchMusic(true);
     } else {
       stopEqualizer();
       setPlayingId(null);
     }
     return () => previewSound.current?.unloadAsync();
-  }, [isOpen]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, source]);
 
   // -----------------------------------------------------
   // Search
   // -----------------------------------------------------
+  // Selebox: local filter over the already-loaded set (instant).
+  // Audius: hits the network — debounce 300ms so a quick typer
+  //         doesn't spray N requests per keystroke.
   const handleSearch = (text) => {
     setSearchText(text);
 
+    if (source === "audius") {
+      if (audiusDebounceRef.current) clearTimeout(audiusDebounceRef.current);
+      audiusDebounceRef.current = setTimeout(async () => {
+        setLoading(true);
+        const list = text.trim()
+          ? await searchAudiusTracks(text, { limit: 25 })
+          : await fetchTrendingAudiusTracks({ limit: 25 });
+        setMusicList(list);
+        setFilteredList(list);
+        setLoading(false);
+      }, 300);
+      return;
+    }
+
+    // Selebox path — local filter only.
     if (!text.trim()) {
       setFilteredList(musicList);
       return;
@@ -221,6 +271,56 @@ export default function MusicPickerModal({ isOpen, onClose, onSelect }) {
           Select Music
         </Text>
 
+        {/* Source tabs — Selebox library (curated) vs Audius
+            (decentralized streaming catalog). Tapping a tab swaps
+            the loaded list and resets search. The active tab gets a
+            purple underline. Pure pill layout would also work; the
+            underline keeps visual weight low so the picker doesn't
+            feel busier than it already is. */}
+        <View
+          className="mb-3 flex-row"
+          style={{ borderBottomWidth: 1, borderColor: theme.border }}
+        >
+          {[
+            { key: "selebox", label: "Selebox" },
+            { key: "audius",  label: "Audius"  },
+          ].map((tab) => {
+            const active = source === tab.key;
+            return (
+              <TouchableOpacity
+                key={tab.key}
+                onPress={() => {
+                  if (source !== tab.key) {
+                    stopEqualizer();
+                    previewSound.current?.unloadAsync();
+                    setPlayingId(null);
+                    setSource(tab.key);
+                  }
+                }}
+                style={{
+                  flex: 1,
+                  paddingVertical: 10,
+                  alignItems: "center",
+                  borderBottomWidth: active ? 2 : 0,
+                  borderColor: theme.accentPurple,
+                }}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: active }}
+              >
+                <Text
+                  style={{
+                    fontSize: 14,
+                    fontWeight: active ? "700" : "500",
+                    color: active ? theme.accentPurple : theme.textSoft,
+                  }}
+                >
+                  {tab.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
         {/* Search Box */}
         <View className="mb-3 flex-row items-center rounded-lg px-3 py-2" style={{ backgroundColor: theme.inputBackground }}>
           <Ionicons name="search" size={18} color={theme.iconMuted} />
@@ -254,14 +354,41 @@ export default function MusicPickerModal({ isOpen, onClose, onSelect }) {
             data={filteredList}
             keyExtractor={(item) => item.$id}
             renderItem={renderItem}
-            onEndReached={() => fetchMusic(false)}
+            // Pagination is Selebox-only — Audius returns up to 25
+            // results in one fetch and we surface them all. Adding
+            // Audius pagination would need offset support in the
+            // search endpoint (phase 2; their API doesn't expose it
+            // cleanly today).
+            onEndReached={source === "selebox" ? () => fetchMusic(false) : undefined}
             onEndReachedThreshold={0.35}
             ListFooterComponent={
-              filteredList.length >= limit && (
+              source === "selebox" && filteredList.length >= limit ? (
                 <View className="py-3">
                   <ActivityIndicator color={theme.primary} />
                 </View>
-              )
+              ) : null
+            }
+            ListEmptyComponent={
+              <View className="items-center justify-center py-10">
+                <Text className="text-sm text-center" style={{ color: theme.textSoft }}>
+                  {source === "audius"
+                    ? (searchText ? "No tracks found on Audius." : "Couldn't load trending tracks.")
+                    : "No music available."}
+                </Text>
+                {source === "audius" && (
+                  <TouchableOpacity
+                    onPress={() => fetchMusic(true)}
+                    className="mt-3 rounded-full px-4 py-2"
+                    style={{ backgroundColor: theme.accentPurpleSoft }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Retry Audius"
+                  >
+                    <Text style={{ color: theme.accentPurple, fontWeight: "600", fontSize: 13 }}>
+                      Retry
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             }
           />
         )}

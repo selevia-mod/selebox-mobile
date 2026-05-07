@@ -34,24 +34,30 @@ const BookCatalogCard = ({
   useEffect(() => {
     if (hideStats || !item?.$id) return;
 
+    // Likes come straight off the `item` row — `mapRowToBook` populates
+    // `totalLikes` / `likes` from `books.likes_count` (denormalized
+    // counter, kept fresh by triggers). The earlier per-card
+    // `bookService.getBookLikes` fan-out hit RLS on `book_likes` which
+    // only lets a user SELECT their own like row, so the count came back
+    // as 1 (the author's own like) instead of the real total. Same
+    // pattern as `fetchBookReads` below.
+    setLikeTotal(item?.totalLikes ?? item?.likes ?? item?.likes_count ?? 0);
+
     const fetchData = async () => {
       try {
-        await Promise.all([fetchBookLikes(), fetchBookBookmarks(), fetchBookComments(), fetchBookChapters(), fetchBookReads()]);
+        await Promise.all([fetchBookBookmarks(), fetchBookComments(), fetchBookChapters(), fetchBookReads()]);
       } catch (error) {
         console.log("fetchData error", error);
       }
     };
     fetchData();
-  }, [hideStats, item?.$id]);
+  }, [hideStats, item?.$id, item?.totalLikes, item?.likes, item?.likes_count]);
 
-  const fetchBookLikes = async () => {
-    try {
-      const bookLikes = await bookService.getBookLikes({ bookId: item.$id });
-      setLikeTotal(bookLikes.total);
-    } catch (error) {
-      console.log("fetchBookLikes: error", error);
-    }
-  };
+  // fetchBookLikes removed — see useEffect above. The denormalized
+  // `books.likes_count` (exposed as item.totalLikes by mapRowToBook) is
+  // the source of truth; the earlier per-card SELECT on book_likes was
+  // shadowed by RLS to only the caller's own row, so authors saw "1
+  // like" on their own books even when the real total was hundreds.
 
   const fetchBookBookmarks = async () => {
     try {

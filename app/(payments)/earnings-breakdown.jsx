@@ -1,23 +1,44 @@
 import { Ionicons, MaterialCommunityIcons, MaterialIcons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, FlatList, Text, TouchableOpacity, View } from "react-native";
 import { StyledSafeAreaView, StyledTitle } from "../../components";
 import useAppTheme from "../../hooks/useAppTheme";
-import { getAuthorEarningsBreakdownByItem } from "../../lib/earnings-supabase";
+import {
+  getAuthorEarningsSummary,
+  getAuthorEarningsTransactions,
+} from "../../lib/earnings-supabase";
 
-// Per-item earnings breakdown for one category (book / video / post /
-// clip). Reached by tapping a tile on the Payments → Earnings screen;
-// receives `category`, `label` (for the header), and an optional
-// `monthYear` to scope to a single month.
+// Per-category transaction log. Each row is one unlock event:
 //
-// Each list row shows:
-//   • Title (joined from books / videos / chapters)
-//   • Total earnings in pesos
-//   • Unlock count + currency split (coin / star)
-//   • Last unlock timestamp
+//   Chapter Title                               +5 coins
+//   May 5, 2026 · 3:42 PM
 //
-// Sorted by pesos desc — top earners surface first.
+// Authors get an obvious "what just happened" view instead of an
+// aggregated rollup that read ambiguously (the previous "448 unlocks ·
+// 143 by coin · 305 by star" layout kept making people think a single
+// reader spent 143 coins).
+//
+// Pagination: server-side offset + limit. Loads PAGE_SIZE rows at a
+// time when the user nears the bottom. Memory stays flat regardless of
+// how many lifetime unlocks the author has.
+const PAGE_SIZE = 15;
+
+// Format the created_at ISO string into a friendly "May 5, 2026 · 3:42 PM"
+// shown on every row. Falls back to "—" if the date is missing.
+const formatTimestamp = (iso) => {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "—";
+    const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    return `${date} · ${time}`;
+  } catch (_) {
+    return "—";
+  }
+};
+
 const EarningsBreakdown = () => {
   const { theme } = useAppTheme();
   const params = useLocalSearchParams();
@@ -25,18 +46,39 @@ const EarningsBreakdown = () => {
   const label = String(params.label || "Earnings");
   const monthYear = String(params.monthYear || "");
 
+  const [summary, setSummary] = useState({
+    total_pesos: 0,
+    total_coins: 0,
+    total_stars: 0,
+    total_unlocks: 0,
+  });
   const [items, setItems] = useState([]);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
 
+  // Initial load — summary + first page in parallel.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
+      setItems([]);
+      setHasMore(false);
       try {
-        const rows = await getAuthorEarningsBreakdownByItem({ category, monthYear });
-        if (!cancelled) setItems(rows);
+        const [sum, page] = await Promise.all([
+          getAuthorEarningsSummary({ category, monthYear }),
+          getAuthorEarningsTransactions({ category, monthYear, limit: PAGE_SIZE, offset: 0 }),
+        ]);
+        if (cancelled) return;
+        setSummary(sum);
+        setItems(page.items);
+        setHasMore(page.hasMore);
       } catch (err) {
-        if (!cancelled) setItems([]);
+        if (!cancelled) {
+          setSummary({ total_pesos: 0, total_coins: 0, total_stars: 0, total_unlocks: 0 });
+          setItems([]);
+          setHasMore(false);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -46,74 +88,77 @@ const EarningsBreakdown = () => {
     };
   }, [category, monthYear]);
 
-  // Total at the top — sum of items shown in this list.
-  const totalPesos = items.reduce((sum, it) => sum + (Number(it.total_pesos) || 0), 0);
-  const totalUnlocks = items.reduce((sum, it) => sum + (Number(it.unlock_count) || 0), 0);
+  // Lazy-load the next page when the user scrolls near the bottom.
+  // Server-side offset paging — simple, stable for the time scale
+  // earnings rows arrive at (concurrent inserts during scrolling
+  // aren't a real concern here).
+  const handleEndReached = useCallback(async () => {
+    if (loading || loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await getAuthorEarningsTransactions({
+        category,
+        monthYear,
+        limit: PAGE_SIZE,
+        offset: items.length,
+      });
+      setItems((prev) => [...prev, ...page.items]);
+      setHasMore(page.hasMore);
+    } catch (_) {
+      // Silently stop pagination on error; user can pull-to-refresh
+      // by re-entering the screen.
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [category, monthYear, items.length, hasMore, loading, loadingMore]);
 
-  // Match the colored tile accents from the Earnings page so the
-  // category context carries through visually.
+  // Match the colored tile accents from the Earnings page.
   const accent =
     category === "book" ? { color: theme.accentTeal, soft: theme.accentTealSoft, icon: "book" } :
     category === "video" ? { color: theme.accentPurple, soft: theme.accentPurpleSoft, icon: "videocam" } :
     category === "post" ? { color: theme.accentAmber, soft: theme.accentAmberSoft, icon: "document-text-outline" } :
     { color: theme.like, soft: theme.likeSoft, icon: "film-outline" };
 
-  const renderItem = ({ item, index }) => (
-    <View
-      className="mt-3 rounded-2xl p-3"
-      style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}
-    >
-      <View className="flex-row items-start justify-between">
-        <View className="flex-1 pr-3">
-          <Text
-            className="text-[14px] font-semibold"
-            style={{ color: theme.text }}
-            numberOfLines={2}
-          >
-            {item.title}
-          </Text>
-          <View className="mt-1.5 flex-row items-center" style={{ gap: 10, flexWrap: "wrap" }}>
-            <View className="flex-row items-center" style={{ gap: 4 }}>
-              <MaterialCommunityIcons name="lock-open-variant" size={12} color={theme.iconMuted} />
-              <Text className="text-[11px]" style={{ color: theme.textSoft }}>
-                {item.unlock_count} {item.unlock_count === 1 ? "unlock" : "unlocks"}
-              </Text>
-            </View>
-            {item.coin_count > 0 ? (
-              <View className="flex-row items-center" style={{ gap: 4 }}>
-                <MaterialCommunityIcons name="circle-multiple" size={12} color={theme.accentAmber} />
-                <Text className="text-[11px]" style={{ color: theme.textSoft }}>
-                  {item.coin_count} coin
-                </Text>
-              </View>
-            ) : null}
-            {item.star_count > 0 ? (
-              <View className="flex-row items-center" style={{ gap: 4 }}>
-                <MaterialCommunityIcons name="star" size={12} color={theme.accentAmber} />
-                <Text className="text-[11px]" style={{ color: theme.textSoft }}>
-                  {item.star_count} star
-                </Text>
-              </View>
-            ) : null}
+  // One row per unlock event.
+  const renderItem = ({ item }) => {
+    const isStar = item.currency === "star";
+    const amountColor = theme.text;
+    const amountIconName = isStar ? "star" : "circle-multiple";
+    const amountSuffix = isStar
+      ? item.amount === 1 ? "star" : "stars"
+      : item.amount === 1 ? "coin" : "coins";
+
+    return (
+      <View
+        className="mt-3 rounded-2xl p-3"
+        style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}
+      >
+        <View className="flex-row items-start justify-between">
+          <View className="flex-1 pr-3">
+            <Text
+              className="text-[14px] font-semibold"
+              style={{ color: theme.text }}
+              numberOfLines={2}
+            >
+              {item.title}
+            </Text>
+            <Text className="mt-1 text-[11px]" style={{ color: theme.textSubtle }}>
+              {formatTimestamp(item.created_at)}
+            </Text>
+          </View>
+          <View className="flex-row items-center" style={{ gap: 4 }}>
+            <Text className="text-[15px] font-semibold" style={{ color: amountColor }}>
+              +{item.amount}
+            </Text>
+            <MaterialCommunityIcons name={amountIconName} size={14} color={theme.accentAmber} />
+            <Text className="text-[12px]" style={{ color: theme.textSoft }}>
+              {amountSuffix}
+            </Text>
           </View>
         </View>
-        <View className="items-end">
-          <Text
-            className="font-semibold"
-            style={{ color: theme.text, fontSize: 16 }}
-            adjustsFontSizeToFit
-            numberOfLines={1}
-            minimumFontScale={0.7}
-          >
-            ₱ {item.total_pesos.toFixed(2)}
-          </Text>
-          <Text className="text-[10px]" style={{ color: theme.textSubtle }}>
-            #{index + 1}
-          </Text>
-        </View>
       </View>
-    </View>
-  );
+    );
+  };
 
   return (
     <StyledSafeAreaView>
@@ -134,7 +179,7 @@ const EarningsBreakdown = () => {
           <View className="h-10 w-10" />
         </View>
 
-        {/* Summary */}
+        {/* Summary card — totals across ALL filtered rows, not just visible */}
         <View
           className="mx-4 mt-2 rounded-2xl p-4"
           style={{ backgroundColor: accent.soft, borderWidth: 1, borderColor: theme.border }}
@@ -143,14 +188,33 @@ const EarningsBreakdown = () => {
             {monthYear ? "Earnings this month" : "Lifetime earnings"}
           </Text>
           <Text className="mt-1 font-bold" style={{ color: theme.text, fontSize: 22 }}>
-            ₱ {totalPesos.toFixed(2)}
+            ₱ {summary.total_pesos.toFixed(2)}
           </Text>
-          <Text className="mt-1 text-[11px]" style={{ color: theme.textSoft }}>
-            {items.length} {items.length === 1 ? "item" : "items"} · {totalUnlocks} {totalUnlocks === 1 ? "unlock" : "unlocks"}
-          </Text>
+          <View className="mt-2 flex-row items-center" style={{ gap: 12, flexWrap: "wrap" }}>
+            <View className="flex-row items-center" style={{ gap: 4 }}>
+              <MaterialCommunityIcons name="circle-multiple" size={13} color={theme.accentAmber} />
+              <Text className="text-[12px]" style={{ color: theme.textSoft }}>
+                {summary.total_coins.toLocaleString()} coins
+              </Text>
+            </View>
+            <Text className="text-[12px]" style={{ color: theme.textSubtle }}>•</Text>
+            <View className="flex-row items-center" style={{ gap: 4 }}>
+              <MaterialCommunityIcons name="star" size={13} color={theme.accentAmber} />
+              <Text className="text-[12px]" style={{ color: theme.textSoft }}>
+                {summary.total_stars.toLocaleString()} stars
+              </Text>
+            </View>
+            <Text className="text-[12px]" style={{ color: theme.textSubtle }}>•</Text>
+            <View className="flex-row items-center" style={{ gap: 4 }}>
+              <MaterialCommunityIcons name="lock-open-variant" size={13} color={theme.iconMuted} />
+              <Text className="text-[12px]" style={{ color: theme.textSoft }}>
+                {summary.total_unlocks.toLocaleString()} {summary.total_unlocks === 1 ? "unlock" : "unlocks"}
+              </Text>
+            </View>
+          </View>
         </View>
 
-        {/* List */}
+        {/* Transaction list */}
         {loading ? (
           <View className="mt-12 items-center">
             <ActivityIndicator size="small" color={theme.primary} />
@@ -163,16 +227,43 @@ const EarningsBreakdown = () => {
               {monthYear ? " in this month" : ""}.
             </Text>
             <Text className="mt-1 text-center text-[11px]" style={{ color: theme.textSubtle }}>
-              When readers unlock your {label.toLowerCase()}, the breakdown will show up here.
+              When readers unlock your {label.toLowerCase()}, each transaction will show up here.
             </Text>
           </View>
         ) : (
           <FlatList
             data={items}
-            keyExtractor={(it, i) => `${it.source_type}:${it.source_id || i}`}
+            keyExtractor={(it, i) => `${it.source_type}:${it.source_id}:${it.created_at}:${i}`}
             renderItem={renderItem}
             contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 32, paddingTop: 4 }}
             showsVerticalScrollIndicator={false}
+            // Keep the React Native virtualized list lean — only mount
+            // a small window of rows even if the user has thousands of
+            // lifetime transactions.
+            initialNumToRender={PAGE_SIZE}
+            maxToRenderPerBatch={PAGE_SIZE}
+            windowSize={5}
+            removeClippedSubviews
+            // Server-side pagination — fetch the next PAGE_SIZE when
+            // the user scrolls within half a screen of the bottom.
+            onEndReached={handleEndReached}
+            onEndReachedThreshold={0.5}
+            ListFooterComponent={
+              loadingMore ? (
+                <View className="items-center py-4">
+                  <ActivityIndicator size="small" color={theme.primary} />
+                  <Text className="mt-2 text-[11px]" style={{ color: theme.textSubtle }}>
+                    Loading more transactions
+                  </Text>
+                </View>
+              ) : !hasMore && items.length >= PAGE_SIZE ? (
+                <View className="items-center py-4">
+                  <Text className="text-[11px]" style={{ color: theme.textSubtle }}>
+                    End of history
+                  </Text>
+                </View>
+              ) : null
+            }
           />
         )}
       </View>
