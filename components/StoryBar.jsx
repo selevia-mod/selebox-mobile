@@ -6,6 +6,7 @@ import { ActivityIndicator, Dimensions, FlatList, Text, TouchableOpacity, View }
 import FastImage from "react-native-fast-image";
 import Svg, { Circle } from "react-native-svg";
 import AnimatedSkeleton from "../components/AnimatedSkeleton";
+import { useSetMomentRings } from "../context/moment-rings-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import storyEvents from "../lib/story-events";
 import { StoryService } from "../lib/story-service";
@@ -14,9 +15,18 @@ import { StoryService } from "../lib/story-service";
 // ~10 of them at the top of the home feed, so any per-tile decode
 // savings multiply.
 import { optimizedImageUri } from "../lib/utils/image-source";
+import createTtlCache from "../lib/utils/createTtlCache";
 
 const STORY_TILE_WIDTH = 112;
 const STORY_AVATAR_WIDTH = 32;
+
+// Per-user feed cache for the home strip. 5-minute TTL — Moments are
+// 24h-ephemeral but the *composition* of the strip changes as friends
+// post throughout the day, so we don't want to freeze it for too long.
+// Stored shape: { myStories, followingStories, fallbackStories }.
+// Stale-while-revalidate: loadStories paints from this cache on first
+// open (no spinner), then refreshes in the background.
+const STORY_FEED_CACHE = createTtlCache({ ttlMs: 5 * 60_000, maxEntries: 20 });
 
 const ProgressRing = ({ progress = 0, size = 56, strokeWidth = 6 }) => {
   const { theme } = useAppTheme();
@@ -54,8 +64,17 @@ const StoryBar = ({ user, forceUpdate }) => {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [page, setPage] = useState(0);
-  const limit = 10;
+  // Bumped from 10 → 20 so the strip surfaces a meaningful spread of
+  // recent activity (Facebook / IG show ~15-20 in their tray). The
+  // cache keeps the cost cheap on subsequent opens.
+  const limit = 20;
   const params = useGlobalSearchParams();
+
+  // Publishes "user IDs whose avatar should glow purple" to the
+  // MomentRingsProvider. Only includes followings + own (not the
+  // discover section) so the visibility rule per the spec stays
+  // true: ring is for users the viewer FOLLOWS who have a Moment.
+  const setMomentRings = useSetMomentRings();
 
   useEffect(() => {
     if (!initialized) {
@@ -125,6 +144,14 @@ const StoryBar = ({ user, forceUpdate }) => {
               : [],
           thumbnail: data.thumbnail,
           musicId: data.musicId,
+          // Forward the optional link attachment from story-preview.
+          // `data.link` is { url, resourceType, resourceId } | null —
+          // createStory writes the three pieces into stories.link_url /
+          // stories.link_resource_type / stories.link_resource_id so
+          // the viewer can deep-link in-app on swipe-up. Null when the
+          // user didn't attach a link, in which case createStory leaves
+          // those columns NULL (default).
+          link: data.link || null,
           onProgress: updateProgress,
         });
 
@@ -189,11 +216,43 @@ const StoryBar = ({ user, forceUpdate }) => {
         return;
       }
 
+      // ── 1. Stale-while-revalidate: paint cache instantly on first
+      //      load (reset=true, page 0). Subsequent paginations skip
+      //      the cache and go straight to network.
+      const isFirstLoad = reset && page === 0;
+      if (isFirstLoad) {
+        const cached = STORY_FEED_CACHE.get(user.$id);
+        if (cached) {
+          setUserStories((prev) => {
+            // Preserve any in-flight optimistic uploads on top of the
+            // cached list so a refresh during upload doesn't wipe them.
+            const optimistic = prev.filter((s) => s.uploading || s.status === "processing");
+            const cachedMap = new Map((cached.myStories || []).map((s) => [s.id, s]));
+            for (const o of optimistic) if (!cachedMap.has(o.id)) cachedMap.set(o.id, o);
+            return Array.from(cachedMap.values());
+          });
+          // Reconstruct the strip order: followings first, discover
+          // after — matches what loadStories writes to setStories on
+          // a fresh fetch.
+          const cachedFollowing = cached.followingStories || [];
+          const cachedDiscover = cached.discoverStories || [];
+          setStories([...cachedFollowing, ...cachedDiscover]);
+          setLoading(false); // cached paint — no spinner needed
+
+          // Publish glow set from cache so avatars across the app
+          // get the purple ring instantly on warm opens, not after
+          // the network refresh resolves.
+          const ringIds = cachedFollowing.map((s) => s.user?.id).filter(Boolean);
+          if ((cached.myStories || []).length > 0) ringIds.push(user.$id);
+          setMomentRings(ringIds);
+        }
+      }
+
       try {
-        if (reset) {
+        if (reset && !isFirstLoad) {
           setLoading(true);
           setPage(0);
-        } else {
+        } else if (!reset) {
           setLoadingMore(true);
         }
 
@@ -241,22 +300,82 @@ const StoryBar = ({ user, forceUpdate }) => {
 
         const activeFollowing = followingStories.filter(isActive);
 
-        // Use functional update to avoid dependency on stories
-        setStories((prevStories) => {
-          const mergedFollowing = reset ? activeFollowing : [...prevStories, ...activeFollowing];
+        // ── Discover stories — ALWAYS appended after followings on
+        //    the first page (not just as a fallback). Order goal:
+        //      [Own] [Following...newest first] [Discover...newest first]
+        //
+        //    When a followed user posts a new Moment, the per-user
+        //    dedup picks the new (latest) story for their tile and
+        //    the createdAt-desc sort floats them to the top of the
+        //    Following section automatically. Discover sits below.
+        //
+        //    Dedup against followings + own so a discover row whose
+        //    author the viewer already follows doesn't render twice.
+        //    Only fired on reset/page-0 — pagination past the first
+        //    page only extends followings, not discover.
+        let discoverStories = [];
+        if (reset && offset === 0) {
+          try {
+            const discover = await StoryService.fetchStories({ limit, offset: 0 });
+            const followingUserIds = new Set(activeFollowing.map((s) => s.user?.id).filter(Boolean));
+            discoverStories = (discover || [])
+              .filter(isActive)
+              .filter((s) => {
+                const uid = s.user?.id;
+                if (!uid) return false;
+                if (uid === user.$id) return false; // skip own — already in userStories
+                if (followingUserIds.has(uid)) return false; // already in following section
+                return true;
+              });
+          } catch (discoverErr) {
+            console.log("Discover fetch failed:", discoverErr?.message);
+          }
+        }
 
-          const dedup = mergedFollowing.reduce((acc, s) => {
+        // Reusable per-user dedup + recency sort. Keeps only the
+        // latest story per user (one tile per user, FB/IG style).
+        const dedupAndSort = (list) => {
+          const map = list.reduce((acc, s) => {
             if (!acc[s.user.id] || new Date(acc[s.user.id].createdAt) < new Date(s.createdAt)) {
               acc[s.user.id] = s;
             }
             return acc;
           }, {});
+          return Object.values(map).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        };
 
-          const finalFollowingStories = Object.values(dedup);
-          finalFollowingStories.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        const followingTiles = dedupAndSort(activeFollowing);
+        const discoverTiles = dedupAndSort(discoverStories);
 
-          return finalFollowingStories;
+        // Use functional update to avoid dependency on stories
+        setStories((prevStories) => {
+          if (reset) {
+            // First page — followings first, discover after.
+            return [...followingTiles, ...discoverTiles];
+          }
+          // Pagination — append fresh followings to whatever's already
+          // displayed (discover is page-0-only, so don't re-append).
+          const merged = [...prevStories, ...activeFollowing];
+          return dedupAndSort(merged);
         });
+
+        // Persist the fresh result to the SWR cache so the next mount
+        // can paint instantly. Cache the post-dedup tile lists since
+        // that's what setStories actually writes.
+        if (reset) {
+          STORY_FEED_CACHE.set(user.$id, {
+            myStories: activeMyStories,
+            followingStories: followingTiles,
+            discoverStories: discoverTiles,
+          });
+
+          // Refresh the global "ring this avatar" set with the fresh
+          // followings (not discover — per spec, ring is followings-
+          // only) plus own when the viewer has an active Moment.
+          const ringIds = followingTiles.map((s) => s.user?.id).filter(Boolean);
+          if (activeMyStories.length > 0) ringIds.push(user.$id);
+          setMomentRings(ringIds);
+        }
 
         setHasMore(activeFollowing.length === limit);
       } catch (error) {
@@ -395,6 +514,10 @@ const StoryBar = ({ user, forceUpdate }) => {
     </TouchableOpacity>
   );
 
+  // Facebook-style: when the user has a Moment, this tile REPLACES
+  // the "Post a moment" CTA at the head of the strip. A small "+"
+  // badge in the bottom-right lets the user post another without
+  // losing the slot — tapping the rest of the tile opens the viewer.
   const YourStoryCard = () => {
     const story = userStories[0];
     if (!story) return null;
@@ -447,12 +570,44 @@ const StoryBar = ({ user, forceUpdate }) => {
               Your Story
             </Text>
           </View>
+
+          {/* "+" badge — Facebook-style. Lets the user post another
+              Moment from the same tile instead of needing a separate
+              "Post a moment" slot. We use a TouchableOpacity nested
+              inside the parent and stop propagation via the dedicated
+              onPress (the parent's onPress only fires if the tap
+              doesn't hit a child touchable). 28dp circle in the
+              bottom-right with an accent ring for affordance. */}
+          {!isUploading && !isFailed && !isProcessing ? (
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={handleAddStory}
+              hitSlop={6}
+              className="absolute right-1.5 top-1.5 h-7 w-7 items-center justify-center rounded-full"
+              style={{
+                backgroundColor: theme.accentPurple,
+                borderWidth: 2,
+                borderColor: theme.primaryContrast,
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Post another moment"
+            >
+              <Ionicons name="add" size={16} color={theme.primaryContrast} />
+            </TouchableOpacity>
+          ) : null}
         </View>
       </TouchableOpacity>
     );
   };
 
-  const data = [{ id: "add_story", type: "add" }, ...(userStories.length ? [{ id: "your_story", type: "your" }] : []), ...stories];
+  // Head of the strip: if the user has any active Moments (including
+  // an in-flight optimistic upload), their story tile takes the first
+  // slot — Facebook-style — and carries a "+" badge for posting more.
+  // Otherwise we fall back to the standalone "Post a moment" CTA so
+  // first-time posters know where to start.
+  const data = userStories.length
+    ? [{ id: "your_story", type: "your" }, ...stories]
+    : [{ id: "add_story", type: "add" }, ...stories];
 
   const renderItem = ({ item }) => {
     if (item.type === "add") return <AddStoryCard />;

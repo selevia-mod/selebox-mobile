@@ -222,7 +222,7 @@ const BookChapterCommentItem = ({
     <View className="mb-4">
       <View className="flex-row items-start space-x-2">
         <TouchableOpacity onPress={() => handleUserPress(null)}>
-          <UserAvatar name={item?.commentOwner?.username} avatarUri={item?.commentOwner?.avatar} size={40} borderRadius={20} />
+          <UserAvatar name={item?.commentOwner?.username} avatarUri={item?.commentOwner?.avatar} userId={item?.commentOwner?.$id} size={40} borderRadius={20} />
         </TouchableOpacity>
 
         <View className="flex-1 flex-row items-start">
@@ -300,7 +300,7 @@ const BookChapterCommentItem = ({
                       return (
                         <View key={reply?.$id} className="mb-3 flex-row items-center space-x-2">
                           <TouchableOpacity onPress={() => handleUserPress(reply)}>
-                            <UserAvatar name={reply?.commentOwner?.username} avatarUri={reply?.commentOwner?.avatar} size={28} borderRadius={14} />
+                            <UserAvatar name={reply?.commentOwner?.username} avatarUri={reply?.commentOwner?.avatar} userId={reply?.commentOwner?.$id} size={28} borderRadius={14} />
                           </TouchableOpacity>
 
                           <View className="flex-1">

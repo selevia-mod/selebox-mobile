@@ -1,12 +1,23 @@
 import { Audio } from "expo-av";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useVideoPlayer, VideoView } from "expo-video";
+import * as WebBrowser from "expo-web-browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Dimensions, PanResponder, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Feather } from "@expo/vector-icons";
 import FastImage from "react-native-fast-image";
 import { useDispatch, useSelector } from "react-redux";
 
-import { CustomAlertModal, StoryBottomBar, StoryCubeFaces, StoryHeader, StyledSafeAreaView } from "../../components";
+import {
+  CustomAlertModal,
+  StoryActionBar,
+  StoryCubeFaces,
+  StoryHeader,
+  StoryReplyComposer,
+  StoryRepostSheet,
+  StoryViewersSheet,
+  StyledSafeAreaView,
+} from "../../components";
 import { useGlobalContext } from "../../context/global-provider";
 import storyEvents from "../../lib/story-events";
 import { StoryService } from "../../lib/story-service";
@@ -20,6 +31,74 @@ const { width: screenWidth, height: screenHeight } = Dimensions.get("window");
 const MAX_VIDEO_DURATION = 30000;
 const LONG_PRESS_THRESHOLD = 300;
 const READY_VIDEO_STATUSES = new Set(["ready", "published"]);
+
+// --------------------------------------------------
+// Swipe-up hint pill — shown above the StoryBottomBar when the active
+// Moment has a link attached. Tap-target is a fallback for users who
+// don't realize they can swipe up; the gesture in the panResponder is
+// the primary interaction. The chevron pulse animation is a visual cue
+// that something's interactive without being noisy.
+// --------------------------------------------------
+const SwipeUpHint = ({ link, onTap }) => {
+  const pulse = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0, duration: 900, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+  const translateY = pulse.interpolate({ inputRange: [0, 1], outputRange: [0, -4] });
+  const opacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1] });
+
+  // Label leads with "Slide up to ..." so the gesture is explicit —
+  // earlier copy ("Read this book") didn't communicate that swiping
+  // was the trigger, only what the destination was. Per-resource
+  // verbs keep the destination obvious. Mirrors the Instagram-style
+  // swipe-up CTA convention.
+  const label =
+    link.resourceType === "book"
+      ? "Slide up to read this book"
+      : link.resourceType === "video"
+      ? "Slide up to watch this video"
+      : "Slide up to open link";
+
+  return (
+    <TouchableOpacity activeOpacity={0.85} onPress={onTap} style={hintStyles.wrap}>
+      <Animated.View style={[hintStyles.chevron, { transform: [{ translateY }], opacity }]}>
+        <Feather name="chevron-up" size={22} color="#fff" />
+      </Animated.View>
+      <Text style={hintStyles.label}>{label}</Text>
+    </TouchableOpacity>
+  );
+};
+
+const hintStyles = StyleSheet.create({
+  wrap: {
+    alignSelf: "center",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
+  chevron: { marginBottom: 4 },
+  label: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
+    letterSpacing: 0.3,
+    // Heavier shadow so the text reads cleanly on bright media
+    // without needing a backing pill that would clutter the
+    // composer-and-emojis bar below.
+    textShadowColor: "rgba(0, 0, 0, 0.85)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
+  },
+});
 
 // --------------------------------------------------
 // Component
@@ -62,6 +141,26 @@ const StoryViewer = () => {
   const [hasLiked, setHasLiked] = useState(false);
   const [hasViewed, setHasViewed] = useState(false);
 
+  // ────────────────────────────────────────────────────────────────
+  // Premium-viewer state (May 2026 revamp)
+  //
+  // currentReaction:    'heart' | 'haha' | 'sad' | 'cry' | 'angry' | null
+  // reactionCount:      total reactions across all emojis on this Moment
+  // reactionPickerOpen: 5-emoji popup floating above the action bar
+  // viewersSheetOpen:   owner-only sheet listing who viewed
+  // repostSheetOpen:    Share-to-DM / Repost menu
+  // commentsOpen:       PostCommentModal reused for Moment comments
+  // muted:              local audio mute toggle. Persists per-session
+  //                     globally so toggling once silences subsequent
+  //                     Moments until the user un-mutes.
+  // ────────────────────────────────────────────────────────────────
+  const [currentReaction, setCurrentReaction] = useState(null);
+  const [reactionCount, setReactionCount] = useState(0);
+  const [viewersSheetOpen, setViewersSheetOpen] = useState(false);
+  const [repostSheetOpen, setRepostSheetOpen] = useState(false);
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [muted, setMuted] = useState(false);
+
   // --------------------------------------------------
   // Refs
   // --------------------------------------------------
@@ -71,6 +170,16 @@ const StoryViewer = () => {
   const lastStoryIndexRef = useRef({});
   const videoLoadedRef = useRef(false);
   const cacheEntryRef = useRef(cacheEntry);
+  // Mirrors handleFollowLink so the panResponder (created in a useRef
+  // and frozen at first render) can call the latest version on swipe-up.
+  // Same pattern used by usersRef / currentUserIndexRef above. Kept as a
+  // ref (not deps array) because PanResponder.create captures its
+  // closure once and won't see fresh callbacks otherwise.
+  const followLinkRef = useRef(() => {});
+  // Mirrors currentStory.link so the swipe-up handler can decide
+  // whether the gesture should fire follow-link OR fall through to the
+  // existing close-on-vertical-swipe behavior.
+  const currentLinkRef = useRef(null);
 
   const [paused, setPaused] = useState(false);
   const progress = useRef(new Animated.Value(0)).current;
@@ -124,6 +233,14 @@ const StoryViewer = () => {
   useEffect(() => {
     currentUserIndexRef.current = currentUserIndex;
   }, [currentUserIndex]);
+
+  // Keep currentLinkRef in sync with the active story's link so the
+  // panResponder's swipe-up handler can read the latest value without
+  // re-creating the responder (PanResponder.create is captured once on
+  // mount).
+  useEffect(() => {
+    currentLinkRef.current = currentStory?.link || null;
+  }, [currentStory?.id, currentStory?.link]);
 
   useEffect(() => {
     pausedRef.current = paused;
@@ -258,7 +375,7 @@ const StoryViewer = () => {
   };
 
   // --------------------------------------------------
-  // Like toggle
+  // Like toggle (legacy — kept while older surfaces still consume it)
   // --------------------------------------------------
   const toggleLike = async () => {
     if (!currentStory || !viewerUserId) return;
@@ -275,6 +392,95 @@ const StoryViewer = () => {
       await StoryService.likeStory(currentStory.id, viewerUserId);
       setStoryStats((prev) => ({ ...prev, totalLikes: prev.totalLikes + 1 }));
     }
+  };
+
+  // --------------------------------------------------
+  // Reaction handlers — optimistic + DB-backed
+  // --------------------------------------------------
+  // pickReaction handles three transitions:
+  //   1. No reaction → set new one        (count + 1)
+  //   2. Same reaction tapped → remove it (count - 1)
+  //   3. Different reaction → swap        (count unchanged)
+  // The DB upsert pattern + composite PK guarantees a user only ever
+  // has one reaction per story, so we don't have to manage that
+  // invariant on the client. With the new FB-style action bar all
+  // 5 emojis are tap-targets directly — no separate picker UI.
+  const pickReaction = async (key) => {
+    if (!currentStory || !viewerUserId) return;
+
+    const prev = currentReaction;
+    if (prev === key) {
+      // Toggle off — remove
+      setCurrentReaction(null);
+      setReactionCount((c) => Math.max(0, c - 1));
+      try {
+        await StoryService.removeStoryReaction(currentStory.id, viewerUserId);
+      } catch (e) {
+        console.log("[reactions] remove failed, reverting:", e?.message);
+        setCurrentReaction(prev);
+        setReactionCount((c) => c + 1);
+      }
+      return;
+    }
+
+    setCurrentReaction(key);
+    if (!prev) setReactionCount((c) => c + 1);
+    try {
+      await StoryService.setStoryReaction(currentStory.id, viewerUserId, key);
+    } catch (e) {
+      console.log("[reactions] set failed, reverting:", e?.message);
+      setCurrentReaction(prev);
+      if (!prev) setReactionCount((c) => Math.max(0, c - 1));
+    }
+  };
+
+  // --------------------------------------------------
+  // Mute toggle — applies to the active Moment's music sound. We
+  // also store the choice in pausedRef so subsequent Moments
+  // initialise muted as well (sticky preference per session).
+  // --------------------------------------------------
+  const handleMuteToggle = async () => {
+    const next = !muted;
+    setMuted(next);
+    try {
+      const sound = musicRef.current;
+      if (sound) {
+        await sound.setIsMutedAsync?.(next);
+      }
+    } catch (e) {
+      console.log("[mute] toggle failed:", e?.message);
+    }
+  };
+
+  // --------------------------------------------------
+  // Repost handlers
+  // --------------------------------------------------
+  const handleRepost = async () => {
+    if (!currentStory || !viewerUserId) return;
+    try {
+      await StoryService.repostStory(currentStory.id, viewerUserId);
+      setRepostSheetOpen(false);
+      // Notify other parts of the app (story tray, profile) that the
+      // user just published a repost so feeds can refresh.
+      storyEvents.emit?.("story-shared", { type: "repost", originalId: currentStory.id });
+    } catch (e) {
+      console.log("[repost] failed:", e?.message);
+    }
+  };
+
+  const handleShareToDM = () => {
+    // Route to the new-chat flow with a payload describing the Moment
+    // to share. The chat composer reads it and seeds the message
+    // with a Moment preview card. (Wired in a follow-up commit; for
+    // now the flow lands the user on the chat picker.)
+    if (!currentStory) return;
+    router.push({
+      pathname: "/(message)/new-chat",
+      params: {
+        shareKind: "story",
+        shareStoryId: currentStory.id,
+      },
+    });
   };
 
   // --------------------------------------------------
@@ -399,6 +605,22 @@ const StoryViewer = () => {
         if (disposed || closingRef.current || loadId !== musicLoadIdRef.current) return;
         setHasLiked(!!likedDoc);
 
+        // Reactions — fetched on every story change so the action
+        // bar reflects the viewer's existing reaction (if any) and
+        // the running total. Bundled with the existing stats fetch
+        // so we don't add a separate effect that fights for the
+        // closingRef guard.
+        try {
+          const summary = await StoryService.getStoryReactions(currentStory.id, viewerUserId);
+          if (disposed || closingRef.current || loadId !== musicLoadIdRef.current) return;
+          setCurrentReaction(summary?.ownReaction || null);
+          setReactionCount(summary?.total || 0);
+        } catch (rxnErr) {
+          console.log("[reactions] load error:", rxnErr?.message);
+          setCurrentReaction(null);
+          setReactionCount(0);
+        }
+
         if (!_hasViewed && currentStory.user.id !== viewerUserId) {
           await StoryService.createView(currentStory.id, viewerUserId);
           if (disposed || closingRef.current || loadId !== musicLoadIdRef.current) return;
@@ -438,7 +660,14 @@ const StoryViewer = () => {
 
         const { sound } = await Audio.Sound.createAsync(
           { uri: musicDoc.fileUrl },
-          { shouldPlay: !pausedRef.current && !closingRef.current, isLooping: true },
+          {
+            shouldPlay: !pausedRef.current && !closingRef.current,
+            isLooping: true,
+            // Apply the sticky session-level mute preference at
+            // creation time so the next Moment doesn't briefly
+            // play audio before the muted state is applied.
+            isMuted: muted,
+          },
         );
         createdSound = sound;
 
@@ -613,6 +842,48 @@ const StoryViewer = () => {
     startProgressAnimation();
   }, [currentStory?.id, users.length]);
 
+  // Follow the swipe-up link target on the current Moment. Routes
+  // in-app for Selebox book/video links (using router.push to the same
+  // routes the rest of the app uses) and falls back to the system
+  // browser for external URLs. Closes the viewer first so the user
+  // doesn't return to a paused-mid-swipe Moment when they come back.
+  const handleFollowLink = useCallback(async () => {
+    const link = currentLinkRef.current;
+    if (!link?.url) return;
+    closingRef.current = true;
+    try {
+      // Close the viewer first — gives the user a clean transition into
+      // the destination instead of a paused-mid-swipe story behind a modal.
+      router.back();
+      // Tiny defer so the back animation gets a chance to commit before
+      // we push the next route. Without this Expo Router occasionally
+      // collapses the two transitions and lands on the wrong stack frame.
+      setTimeout(() => {
+        if (link.resourceType === "book" && link.resourceId) {
+          router.push({ pathname: "/(book)/book-info", params: { bookId: link.resourceId } });
+        } else if (link.resourceType === "video" && link.resourceId) {
+          router.push({ pathname: "/(video)/video-player", params: { docId: link.resourceId } });
+        } else {
+          // External — open in the system browser. WebBrowser keeps
+          // the in-app context (no tab spam) while still respecting
+          // the user's default browser preference on Android.
+          WebBrowser.openBrowserAsync(link.url).catch((err) => {
+            console.log("[story-viewer] failed to open link", err?.message);
+          });
+        }
+      }, 80);
+    } catch (err) {
+      console.log("[story-viewer] handleFollowLink error", err?.message);
+    }
+  }, []);
+
+  // Sync the latest follow-link callback into a ref so the panResponder
+  // (frozen at first render) can call the freshest version on swipe-up
+  // without being re-created.
+  useEffect(() => {
+    followLinkRef.current = handleFollowLink;
+  }, [handleFollowLink]);
+
   // --------------------------------------------------
   // Gestures
   // --------------------------------------------------
@@ -671,12 +942,23 @@ const StoryViewer = () => {
           return;
         }
 
-        // Vertical swipe close
+        // Vertical swipe — up = follow link (when one is attached),
+        // down = close viewer (existing behavior). The directional split
+        // makes the swipe-up gesture feel natural for the "tap to learn
+        // more / read this book" CTA on Moments with a link, while
+        // preserving Instagram-style swipe-down-to-dismiss for everything
+        // else.
         if (!isSwipe) {
           const verticalThreshold = screenHeight * 0.18;
           const horizontalLimit = screenWidth * 0.2;
 
           if (Math.abs(dy) > verticalThreshold && Math.abs(dx) < horizontalLimit) {
+            // Swipe UP (dy < 0) with a link attached → follow.
+            if (dy < 0 && currentLinkRef.current?.url) {
+              followLinkRef.current?.();
+              return;
+            }
+            // Swipe DOWN (or up without a link) → close.
             closingRef.current = true;
             safeClose();
             return;
@@ -775,12 +1057,19 @@ const StoryViewer = () => {
 
     const mediaStyle = { width: "100%", height: "100%" };
 
+    // May 2026 — cover instead of contain so the picture/video uses
+    // the full screen. The previous "contain" sizing left visible
+    // letterbox bars on any non-portrait media (square Selebox-logo
+    // images showed white bars top + bottom). With cover the media
+    // crops to fill — same approach IG/FB Stories use. Authors
+    // already see the editor's safe-frame guide while composing, so
+    // important content stays inside the visible region.
     if (story.type === "image") {
-      return <FastImage source={{ uri: story.mediaUrl }} style={mediaStyle} resizeMode="contain" />;
+      return <FastImage source={{ uri: story.mediaUrl }} style={mediaStyle} resizeMode="cover" />;
     }
 
     if (story.type === "video" && !isVideoReady(story)) {
-      return <FastImage source={{ uri: story.thumbnail || story.mediaUrl }} style={mediaStyle} resizeMode="contain" />;
+      return <FastImage source={{ uri: story.thumbnail || story.mediaUrl }} style={mediaStyle} resizeMode="cover" />;
     }
 
     if (isCurrent) {
@@ -792,13 +1081,13 @@ const StoryViewer = () => {
             nativeControls={false}
             allowsFullscreen={false}
             allowsPictureInPicture={false}
-            contentFit="contain"
+            contentFit="cover"
           />
         </View>
       );
     }
 
-    return <FastImage source={{ uri: story.thumbnail || story.mediaUrl }} style={mediaStyle} resizeMode="contain" />;
+    return <FastImage source={{ uri: story.thumbnail || story.mediaUrl }} style={mediaStyle} resizeMode="cover" />;
   };
 
   // --------------------------------------------------
@@ -897,7 +1186,13 @@ const StoryViewer = () => {
   // CURRENT
   const currentFace = (
     <View style={styles.faceInner}>
-      <View style={styles.headerArea}>
+      {/* Media fills the full screen first — header + bottom bar
+          overlay it via absolute positioning. */}
+      <View style={styles.mediaArea} {...panResponder.panHandlers}>
+        <View style={styles.mediaFrame}>{renderStoryMedia(currentStory, true)}</View>
+      </View>
+
+      <View style={styles.headerArea} pointerEvents="box-none">
         <StoryHeader
           user={currentUser}
           story={currentStory}
@@ -908,20 +1203,25 @@ const StoryViewer = () => {
           onClose={safeClose}
           onDelete={askDelete}
           viewerUserId={viewerUserId}
+          isMuted={muted}
+          onMuteToggle={handleMuteToggle}
+          isPaused={paused}
+          onPauseToggle={() => (paused ? resumeStory() : pauseStory())}
         />
       </View>
 
-      <View style={styles.mediaArea} {...panResponder.panHandlers}>
-        <View style={styles.mediaFrame}>{renderStoryMedia(currentStory, true)}</View>
-      </View>
+      <View style={styles.bottomArea} pointerEvents="box-none">
+        {currentStory?.link?.url ? <SwipeUpHint link={currentStory.link} onTap={handleFollowLink} /> : null}
 
-      <View style={styles.bottomArea}>
-        <StoryBottomBar
+        <StoryActionBar
           isOwnStory={currentStory.user.id === viewerUserId}
-          totalViews={currentStory?.storiesStats?.totalViews}
-          totalLikes={currentStory?.storiesStats?.totalLikes}
-          hasLiked={hasLiked}
-          onToggleLike={toggleLike}
+          currentReaction={currentReaction}
+          reactionCount={reactionCount}
+          totalViews={storyStats.totalViews}
+          onReactionPress={pickReaction}
+          onComposerPress={() => setReplyOpen(true)}
+          onRepostPress={() => setRepostSheetOpen(true)}
+          onViewersPress={() => setViewersSheetOpen(true)}
         />
       </View>
 
@@ -1008,6 +1308,42 @@ const StoryViewer = () => {
         <StoryCubeFaces cubeAnim={cubeAnim} currentFace={currentFace} prevFace={prevFace} nextFace={nextFace} />
       </View>
       <CustomAlertModal message={message} iconName="trash" iconColor="#f87171" messageOpen={messageOpen} closeMessage={closeMessage} />
+
+      {/* Premium-viewer sheets — mounted at root so they sit above
+          the cube faces and bottom bar. They each manage their own
+          backdrop + dismiss gestures. */}
+      <StoryViewersSheet
+        visible={viewersSheetOpen}
+        onClose={() => setViewersSheetOpen(false)}
+        storyId={currentStory?.id}
+        totalViews={storyStats.totalViews}
+        totalReactions={reactionCount}
+      />
+
+      <StoryRepostSheet
+        visible={repostSheetOpen}
+        onClose={() => setRepostSheetOpen(false)}
+        onShareToDM={handleShareToDM}
+        onRepost={handleRepost}
+        ownerName={currentStory?.user?.name ? `@${currentStory.user.name}` : null}
+      />
+
+      {/* Reply composer — opens when the viewer taps "Send message…"
+          on the action bar. Fires getOrCreate1to1Conversation +
+          sendMessage against the moment owner. */}
+      <StoryReplyComposer
+        visible={replyOpen}
+        onClose={() => setReplyOpen(false)}
+        recipientId={currentStory?.user?.id}
+        recipientName={currentStory?.user?.name}
+        onSent={() => showMessage("Message sent")}
+      />
+
+      {/* Story comments — coming in a follow-up. PostCommentModal is
+          currently coupled to post-shaped items (reads item.$id) so we
+          can't reuse it directly; a dedicated StoryCommentModal +
+          story_comments table will land next. For now the button shows
+          an alert so users know the feature is on the way. */}
     </StyledSafeAreaView>
   );
 };
@@ -1027,22 +1363,35 @@ const styles = StyleSheet.create({
     backgroundColor: "#020617",
   },
 
+  // May 2026 — full-bleed layout. Header + bottom bar overlay the
+  // media as floating absolutes instead of consuming flex space, so
+  // the picture/video uses the entire screen. Each face stacks the
+  // three regions on top of each other:
+  //   • mediaArea fills 100% (z=0)
+  //   • headerArea floats at top, pointerEvents: box-none so taps
+  //     fall through to the media (only the close/delete buttons
+  //     intercept)
+  //   • bottomArea floats at bottom, same box-none pattern
   headerArea: {
-    flex: 0.1,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
   },
 
   mediaArea: {
-    flex: 0.78,
+    flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    marginTop: -20,
   },
 
   bottomArea: {
-    flex: 0.12,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingBottom: 30,
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
   },
 
   mediaFrame: {

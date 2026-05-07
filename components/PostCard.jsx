@@ -4,6 +4,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { Alert, Animated, Dimensions, FlatList, InteractionManager, Text, TouchableOpacity, TouchableWithoutFeedback, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { useGlobalContext } from "../context/global-provider";
+import { useMomentRing } from "../context/moment-rings-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { deletePost } from "../lib/posts";
 // Phase E.4 — tier-aware image source. Bunny Optimizer query params
@@ -64,6 +65,10 @@ const PostCard = ({
   const { user } = useGlobalContext();
   const { theme } = useAppTheme();
   const isLoggedInUser = user?.$id === item?.postOwner?.$id;
+  // Glow ring for followed creators with active Moments. Reads from
+  // MomentRingsProvider; returns true ONLY when the viewer follows
+  // this post's author AND that author has a live story (per-spec).
+  const ownerHasMomentRing = useMomentRing(item?.postOwner?.$id);
   const [currentIndex, setCurrentIndex] = useState(0);
   // Lazy initializer pulls measured aspect ratios out of the module cache so
   // the first render uses real dimensions instead of DEFAULT_IMAGE_ASPECT_RATIO.
@@ -465,12 +470,26 @@ const PostCard = ({
         <View className="flex flex-row items-center justify-center px-4 py-2">
           <View className="mr-2">
             <TouchableOpacity onPress={handleProfilePress} activeOpacity={0.7}>
-              <FastImage
-                source={optimizedImageSource(item.postOwner.avatar, { width: 35, isViewport: true })}
-                style={{ height: 35, width: 35, borderRadius: 5, backgroundColor: theme.surfaceStrong }}
-                resizeMode={FastImage.resizeMode.cover}
-                className="mt-1"
-              />
+              {/* Purple Moment ring — only shown when the viewer
+                  follows this author AND that author has an active
+                  Moment (resolved by useMomentRing → MomentRingsProvider,
+                  populated by StoryBar's existing followings fetch).
+                  The ring is a 2dp accent border with a tiny inner gap
+                  so the avatar's own background isn't bisected by it. */}
+              <View
+                style={{
+                  padding: ownerHasMomentRing ? 2 : 0,
+                  borderRadius: 8,
+                  borderWidth: ownerHasMomentRing ? 2 : 0,
+                  borderColor: ownerHasMomentRing ? theme.accentPurple : "transparent",
+                }}
+              >
+                <FastImage
+                  source={optimizedImageSource(item.postOwner.avatar, { width: 35, isViewport: true })}
+                  style={{ height: 35, width: 35, borderRadius: 5, backgroundColor: theme.surfaceStrong }}
+                  resizeMode={FastImage.resizeMode.cover}
+                />
+              </View>
             </TouchableOpacity>
           </View>
 

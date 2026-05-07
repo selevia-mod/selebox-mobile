@@ -87,7 +87,12 @@ const Profile = () => {
     setIsRefreshing(true);
 
     try {
-      const videosData = await videosService.fetchVideos({ userId: user?.$id, limit: 100, status: "published" });
+      // limit:24 (was 100) — on slow / spotty networks a 100-row video
+      // payload could take long enough to hit the default 60s fetch
+      // timeout, leaving the profile spinning. 24 fits two screens of
+      // grid cells on typical phones and is plenty for first paint.
+      // Older videos are paged in via ProfileVideosTab's onEndReached.
+      const videosData = await videosService.fetchVideos({ userId: user?.$id, limit: 24, status: "published" });
       setVideos(videosData.documents);
       // Persist for cold-start hydration on the next app launch.
       writeCachedOwnVideos(user.$id, videosData.documents);

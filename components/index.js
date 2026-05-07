@@ -76,11 +76,16 @@ import ScrollFadeOverlay from "./ScrollFadeOverlay";
 import SectionDot from "./SectionDot";
 import SelectedMusicBadge from "./SelectedMusicBadge";
 import StarIcon from "./StarIcon";
+import StoryActionBar from "./StoryActionBar";
 import StoryBar from "./StoryBar";
 import StoryBottomBar from "./StoryBottomBar";
 import StoryCubeFaces from "./StoryCubeFaces";
 import StoryHeader from "./StoryHeader";
 import StoryMusicBadge from "./StoryMusicBadge";
+import StoryReactionPicker from "./StoryReactionPicker";
+import StoryReplyComposer from "./StoryReplyComposer";
+import StoryRepostSheet from "./StoryRepostSheet";
+import StoryViewersSheet from "./StoryViewersSheet";
 import StyledAvatar from "./StyledAvatar";
 import StyledButton from "./StyledButton";
 import StyledCoinIndicator from "./StyledCoinIndicator";
@@ -196,11 +201,16 @@ export {
   SectionDot,
   SelectedMusicBadge,
   StarIcon,
+  StoryActionBar,
   StoryBar,
   StoryBottomBar,
   StoryCubeFaces,
   StoryHeader,
   StoryMusicBadge,
+  StoryReactionPicker,
+  StoryReplyComposer,
+  StoryRepostSheet,
+  StoryViewersSheet,
   StyledAvatar,
   StyledButton,
   StyledCoinIndicator,

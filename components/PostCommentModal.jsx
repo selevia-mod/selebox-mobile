@@ -2,6 +2,7 @@ import { MaterialCommunityIcons, MaterialIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Alert,
   Dimensions,
   FlatList,
   InteractionManager,
@@ -408,7 +409,7 @@ const PostCommentItem = memo(
       <View className="mb-4">
         <View className="flex-row items-start space-x-2">
           <TouchableOpacity onPress={() => handleUserPress(item)}>
-            <UserAvatar name={item?.commentOwner?.username} avatarUri={item?.commentOwner?.avatar} size={40} borderRadius={20} />
+            <UserAvatar name={item?.commentOwner?.username} avatarUri={item?.commentOwner?.avatar} userId={item?.commentOwner?.$id} size={40} borderRadius={20} />
           </TouchableOpacity>
 
           <View className="flex-1 flex-row items-start">
@@ -491,7 +492,7 @@ const PostCommentItem = memo(
                           onLayout={(event) => onReplyLayout?.(item?.$id, reply?.$id, event)}
                         >
                           <TouchableOpacity onPress={() => handleUserPress(reply)}>
-                            <UserAvatar name={reply?.commentOwner?.username} avatarUri={reply?.commentOwner?.avatar} size={28} borderRadius={14} />
+                            <UserAvatar name={reply?.commentOwner?.username} avatarUri={reply?.commentOwner?.avatar} userId={reply?.commentOwner?.$id} size={28} borderRadius={14} />
                           </TouchableOpacity>
 
                           <View className="flex-1">
@@ -1874,6 +1875,16 @@ const PostCommentModal = ({
       if (replyContext) setReplyTarget(replyContext);
       setCommentText(trimmedComment);
       console.log("handlePostComment: error", error);
+      // Surface the failure to the user — previously the catch silently
+      // restored the input text, so tapping Send appeared to do nothing
+      // when the Supabase dual-write returned null (post or profile
+      // had no Supabase counterpart yet) or the network failed. Using
+      // Alert.alert (already a stable RN primitive) instead of a custom
+      // hook so this catch path can't itself crash the modal — the
+      // earlier showMessage attempt referenced an undefined name and
+      // crashed the modal entirely on render-after-error.
+      const reason = String(error?.message || error || "Unknown error");
+      Alert.alert("Couldn't post comment", reason.length > 200 ? reason.slice(0, 200) + "…" : reason);
     } finally {
       setIsSubmitting(false);
     }
@@ -2390,6 +2401,7 @@ const PostCommentModal = ({
             <View className="relative flex-1">
               <TextInput
                 ref={inputRef}
+                value={commentText}
                 onPressIn={handleComposerPressIn}
                 onChangeText={handleCommentTextChange}
                 onSelectionChange={handleSelectionChange}
@@ -2416,9 +2428,16 @@ const PostCommentModal = ({
                 autoCapitalize="sentences"
                 multiline
                 style={{ maxHeight: 100, color: theme.inputText }}
-              >
-                {renderComposerMentionText}
-              </TextInput>
+              />
+              {/* Plain `value`-driven TextInput now (no UserMention child) —
+                  the previous rich-text inline mention coloring re-rendered
+                  on every keystroke and was the main typing-lag culprit
+                  reported by Charles. Mention coloring still applies to
+                  posted comments via UserMention in the rendered comment
+                  list; only the live composer reverted to plain text.
+                  Net: typing is responsive again, posted mentions still
+                  look styled, and the @suggestion popover still works
+                  through handleCommentTextChange's debounced search. */}
             </View>
             <TouchableOpacity onPress={handlePostComment} disabled={isSubmitting} className="ml-4">
               <Text className="font-semibold" style={{ color: isSubmitting ? theme.textSoft : theme.primary }}>

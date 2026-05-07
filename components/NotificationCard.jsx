@@ -423,7 +423,16 @@ const NotificationCard = ({ item, onViewed, onDeleted }) => {
             <Text style={{ fontSize: 22, color: theme.primaryContrast || "#fff" }}>🔒</Text>
           </View>
         ) : (
-          <UserAvatar name={senderName} avatarUri={avatarUri} size={44} borderRadius={22} />
+          <UserAvatar
+            name={senderName}
+            avatarUri={avatarUri}
+            size={44}
+            borderRadius={22}
+            // Glow ring when the notification's sender is a followed
+            // user with an active Moment. Suppressed for private DMs
+            // where we hide identity entirely.
+            userId={isPrivateDm ? null : item?.sender?.$id}
+          />
         )}
         {isUnread && (
           <View

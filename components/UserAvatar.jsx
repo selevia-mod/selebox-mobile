@@ -1,5 +1,6 @@
 import { Text, View } from "react-native";
 import FastImage from "react-native-fast-image";
+import { useMomentRing } from "../context/moment-rings-provider";
 import useAppTheme from "../hooks/useAppTheme";
 // Phase E.4 — tier-aware image source. Avatars are rendered everywhere
 // (feed cards, comments, message rows, profile lists), so optimizing
@@ -50,6 +51,12 @@ const getMonogramColor = (name, theme) => {
  * Props:
  *   - name        : string. Used for initials + deterministic color.
  *   - avatarUri   : string|null. Photo URL. Falls through to monogram if empty.
+ *   - userId      : string|null. When provided, the avatar is wrapped in a
+ *                   purple Moment ring IF the viewer follows that user AND
+ *                   that user has an active Moment (resolved by the
+ *                   MomentRingsProvider context). Omit (or pass null/undef)
+ *                   to opt out — current callers without the prop continue
+ *                   to render exactly as before.
  *   - size        : number (px). Default 48.
  *   - borderRadius: number (px). Default 12 (matches Tailwind rounded-xl).
  *   - borderColor : string|null. If provided, applies a 1px border.
@@ -59,10 +66,13 @@ const getMonogramColor = (name, theme) => {
  *                   when the avatar IS the focus (profile header, full-screen).
  *   - style       : object. Additional style overrides for the outer container.
  */
-const UserAvatar = ({ name, avatarUri, size = 48, borderRadius = 12, borderColor = null, priority = "normal", style, ...rest }) => {
+const UserAvatar = ({ name, avatarUri, userId = null, size = 48, borderRadius = 12, borderColor = null, priority = "normal", style, ...rest }) => {
   const { theme } = useAppTheme();
   const showPhoto = hasValidAvatar(avatarUri);
   const monogramColor = getMonogramColor(name, theme);
+  // Hook always runs (Rules of Hooks); returns false when userId is
+  // null/undef so callers that don't pass userId pay nothing.
+  const hasMomentRing = useMomentRing(userId);
 
   // Initials font size scales with avatar size; 40% of size, floor 12.
   const fontSize = Math.max(12, Math.round(size * 0.4));
@@ -77,30 +87,46 @@ const UserAvatar = ({ name, avatarUri, size = 48, borderRadius = 12, borderColor
     style,
   ];
 
-  if (showPhoto) {
-    const fastImagePriority = priority === "low" ? FastImage.priority.low : priority === "high" ? FastImage.priority.high : FastImage.priority.normal;
-    // We use optimizedImageUri (URL transform only) instead of
-    // optimizedImageSource (URL + priority) so the caller's explicit
-    // `priority` prop is preserved — profile headers passing
-    // priority="high" should still win over the helper's tier default.
-    return (
-      <FastImage
-        source={{ uri: optimizedImageUri(avatarUri, { width: size }), priority: fastImagePriority }}
-        style={[...containerStyle, { backgroundColor: theme.surfaceMuted }]}
-        resizeMode={FastImage.resizeMode.cover}
-        accessibilityLabel={`${name || "User"} avatar`}
-        {...rest}
-      />
-    );
-  }
-
-  return (
+  // Inner avatar element (photo OR monogram). The ring wrapper below
+  // applies the purple border around whichever variant we render.
+  const fastImagePriority = priority === "low" ? FastImage.priority.low : priority === "high" ? FastImage.priority.high : FastImage.priority.normal;
+  const inner = showPhoto ? (
+    <FastImage
+      source={{ uri: optimizedImageUri(avatarUri, { width: size }), priority: fastImagePriority }}
+      style={[...containerStyle, { backgroundColor: theme.surfaceMuted }]}
+      resizeMode={FastImage.resizeMode.cover}
+      accessibilityLabel={`${name || "User"} avatar`}
+      {...rest}
+    />
+  ) : (
     <View
       style={[...containerStyle, { backgroundColor: monogramColor, alignItems: "center", justifyContent: "center" }]}
       accessibilityLabel={`${name || "User"} avatar`}
       {...rest}
     >
       <Text style={{ color: theme.primaryContrast, fontSize, fontWeight: "700" }}>{getInitials(name)}</Text>
+    </View>
+  );
+
+  // No ring → return inner directly so callers without userId don't
+  // pay an extra View in the tree.
+  if (!hasMomentRing) return inner;
+
+  // Ring wrapper — 2dp accent border + 2dp padding so the avatar's
+  // background isn't bisected by the ring. borderRadius math: outer
+  // is 4 bigger (2 padding + 2 border) so the ring corner matches
+  // the avatar corner concentrically.
+  return (
+    <View
+      style={{
+        padding: 2,
+        borderRadius: borderRadius + 4,
+        borderWidth: 2,
+        borderColor: theme.accentPurple,
+        alignSelf: "flex-start",
+      }}
+    >
+      {inner}
     </View>
   );
 };

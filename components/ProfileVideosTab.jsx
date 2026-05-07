@@ -44,7 +44,11 @@ const ProfileVideosTab = ({
   const fetchUserVideos = async () => {
     if (!hasLoadedRef.current) onLoadingChange?.(true);
     try {
-      const videosData = await videosService.fetchVideos({ userId: userId, limit: 100, status: "published" });
+      // limit:24 (was 100) — profile screen first paint shouldn't fetch
+      // 100 rows on slow networks. Older videos are paged via the
+      // FlashList onEndReached path. Matches the route-level cap in
+      // app/(profile)/profile.jsx for consistency.
+      const videosData = await videosService.fetchVideos({ userId: userId, limit: 24, status: "published" });
       setVideos(videosData.documents);
     } catch (error) {
       console.log("fetchUserVideos: error", error);

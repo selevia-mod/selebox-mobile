@@ -61,6 +61,7 @@ import { PersistGate } from "redux-persist/integration/react";
 import { BookStatsProvider } from "../context/book-stats-provider";
 // ClipsStatsProvider import removed — clips feature retired May 2026.
 import GlobalProvider, { useGlobalContext } from "../context/global-provider";
+import { MomentRingsProvider } from "../context/moment-rings-provider";
 import { VideosStatsProvider } from "../context/video-stats-provider";
 import { isAppwriteAuthError } from "../lib/appwrite";
 import { initializeCrashlytics, recordCrashlyticsError } from "../lib/crashlytics";
@@ -503,7 +504,9 @@ export default function RootLayout() {
         <GlobalProvider>
           <BookStatsProvider>
             <VideosStatsProvider>
-              <InnerLayout />
+              <MomentRingsProvider>
+                <InnerLayout />
+              </MomentRingsProvider>
             </VideosStatsProvider>
           </BookStatsProvider>
         </GlobalProvider>
