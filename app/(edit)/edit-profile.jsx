@@ -28,7 +28,7 @@ import UserRoleChips from "../../components/UserRoleChips";
 import { PROFILE_BANNER_ASPECT_RATIO, PROFILE_BANNER_CROP_ASPECT } from "../../constants/profile";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
-import { getCurrentUserWithoutStream, signOut, updateAvatar, updateBanner, updateSelectedRole, updateUsername } from "../../lib/appwrite";
+import { getCurrentUserWithoutStream, getUsernameChangeStatus, signOut, updateAvatar, updateBanner, updateSelectedRole, updateUsername } from "../../lib/appwrite";
 import { cleanupTempFile } from "../../lib/utils/image-utils";
 import {
   getActiveSelectedRoleKey,
@@ -260,6 +260,10 @@ const EditProfile = () => {
   const bannerCropOpenTaskRef = useRef(null);
   const roleConfirmationTaskRef = useRef(null);
   const pendingRoleSelectionRef = useRef(null);
+  // Rate limit info for username changes (2 per 30 days, server-enforced).
+  // Refreshed when the edit sheet opens and after every successful change.
+  // null while loading; { changes_remaining, max_per_window, next_change_allowed_at } once fetched.
+  const [usernameStatus, setUsernameStatus] = useState(null);
   const currentUsername = user?.username || "";
   const normalizedUsername = username.trim();
   const hasPendingChanges = normalizedUsername.length > 0 && normalizedUsername !== currentUsername;
@@ -300,7 +304,21 @@ const EditProfile = () => {
     const timer = setTimeout(() => {
       inputRef.current?.focus();
     }, 150);
-    return () => clearTimeout(timer);
+    // Refresh the rate limit status every time the user opens the
+    // edit sheet — covers the case where they used a change earlier
+    // in the session and the local state is stale.
+    let cancelled = false;
+    getUsernameChangeStatus()
+      .then((status) => {
+        if (!cancelled) setUsernameStatus(status);
+      })
+      .catch((err) => {
+        if (!cancelled) console.warn("[edit-profile] username status fetch failed:", err?.message);
+      });
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [isEditSheetOpen]);
 
   useEffect(() => {
@@ -413,13 +431,42 @@ const EditProfile = () => {
       return;
     }
 
+    // Pre-check the rate limit. The server is the source of truth, but
+    // catching it here avoids a wasted RPC call when we already know
+    // the user is over the limit.
+    if (usernameStatus?.ok && usernameStatus.changes_remaining === 0) {
+      const nextAllowed = usernameStatus.next_change_allowed_at
+        ? new Date(usernameStatus.next_change_allowed_at).toLocaleDateString()
+        : null;
+      Alert.alert(
+        "Limit reached",
+        `You can only change your username ${usernameStatus.max_per_window} times every ${usernameStatus.window_days} days.${
+          nextAllowed ? `\n\nYou can change it again on ${nextAllowed}.` : ""
+        }`,
+      );
+      return;
+    }
+
     setSubmitting(true);
     try {
-      await updateUsername(user?.$id, nextUsername);
-      const updatedUser = await getCurrentUserWithoutStream();
-      setUser(updatedUser);
-      setUsername(updatedUser?.username || nextUsername);
-      Alert.alert("Success", "Username updated successfully");
+      const result = await updateUsername(user?.$id, nextUsername);
+      // Optimistically patch the local user state instead of round-
+      // tripping through getCurrentUserWithoutStream(). The legacy
+      // helper hits Appwrite's account.get() which throws under
+      // USE_SUPABASE_AUTH=true. Patching locally is also faster.
+      setUser((prev) => (prev ? { ...prev, username: result?.username || nextUsername } : prev));
+      setUsername(result?.username || nextUsername);
+      // Refresh the rate-limit status so subsequent attempts in the
+      // same session reflect the change we just used up.
+      getUsernameChangeStatus().then(setUsernameStatus).catch(() => {});
+      Alert.alert(
+        "Success",
+        typeof result?.changes_remaining === "number"
+          ? `Username updated. You have ${result.changes_remaining} change${
+              result.changes_remaining === 1 ? "" : "s"
+            } remaining this month.`
+          : "Username updated successfully",
+      );
       setEditSheetOpen(false);
     } catch (error) {
       Alert.alert("Error", error.message);

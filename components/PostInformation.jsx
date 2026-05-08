@@ -1,4 +1,4 @@
-import { AntDesign, Feather } from "@expo/vector-icons";
+import { Feather } from "@expo/vector-icons";
 import { memo, useEffect, useRef, useState } from "react";
 import { Alert, Text, TouchableOpacity, View } from "react-native";
 import { useGlobalContext } from "../context/global-provider";
@@ -9,6 +9,7 @@ import { tickGoalUnique } from "../lib/goals-store";
 import { createPostLike, deletePostLike, getPostLike, updatePost } from "../lib/posts";
 import { DEFAULT_REACTION_KEY, getReactionByKey } from "../lib/reactions";
 import { getMyReaction, removeMyReaction, setReaction } from "../lib/reactions-supabase";
+import { PostReactionIcon, PostReactionStack } from "./PostReaction";
 import ReactionPicker from "./ReactionPicker";
 import RepostModal from "./RepostModal";
 
@@ -25,6 +26,14 @@ import RepostModal from "./RepostModal";
 // fresh stats. After this window, server is authoritative again so
 // genuinely-stale state self-corrects.
 const OPTIMISTIC_WINDOW_MS = 2500;
+
+// NOTE: We previously called LayoutAnimation.configureNext() here to
+// smooth the stats-row appearance on first react. That's a *global*
+// API — it animates every layout change on the screen for the next
+// render, which caused the entire viewport (Moments strip, FlatList
+// recycling, scroll position) to flash whenever the user tapped Like.
+// Removed in favor of snap behavior; if we want smoothness we'll use
+// Reanimated shared values scoped to the affected element.
 const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSharePress, onLikeChange, onDarkSurface = false }) => {
   const postID = item?.$id;
   const { user } = useGlobalContext();
@@ -307,7 +316,6 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
 
   const activeReaction = userReactionKey ? getReactionByKey(userReactionKey) : null;
   const likeLabel = activeReaction?.label ?? "Like";
-  const summaryEmoji = activeReaction?.emoji ?? "❤️";
   const showLikeAccent = !!activeReaction;
 
   const commentCount = Number(item?.postComments) || 0;
@@ -336,9 +344,12 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
           }}
         >
           {safeLikeCount > 0 ? (
-            <TouchableOpacity onPress={handleShowLikes} activeOpacity={0.7} style={{ flexDirection: "row", alignItems: "center" }}>
-              <Text style={{ fontSize: 14, marginRight: 6 }}>{summaryEmoji}</Text>
-              <Text style={{ fontSize: 12, fontWeight: "500", color: subtleTextColor }}>{FormatNumber(safeLikeCount)}</Text>
+            <TouchableOpacity onPress={handleShowLikes} activeOpacity={0.7}>
+              <PostReactionStack
+                reactionKey={userReactionKey}
+                count={safeLikeCount}
+                textColor={subtleTextColor}
+              />
             </TouchableOpacity>
           ) : (
             <View />
@@ -370,7 +381,7 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
           ref={likeButtonRef}
           onPress={handleLikeTap}
           onLongPress={handleLikeLongPress}
-          delayLongPress={220}
+          delayLongPress={180}
           activeOpacity={0.85}
           style={{
             flexDirection: "row",
@@ -378,16 +389,21 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
             paddingVertical: 9,
             paddingHorizontal: 14,
             borderRadius: 12,
-            backgroundColor: showLikeAccent ? reactedSoft : "transparent",
+            // Reacted state no longer paints a pink/red soft background.
+            // Charles felt the wash was loud against the rest of the
+            // feed — the active state is now signaled by the emoji
+            // itself + the accent-tinted label color.
+            backgroundColor: "transparent",
           }}
         >
-          {activeReaction ? (
-            <Text style={{ fontSize: 18, marginRight: 8 }}>{activeReaction.emoji}</Text>
-          ) : (
-            <AntDesign name="hearto" size={18} color={iconColor} style={{ marginRight: 8 }} />
-          )}
+          {/* Reaction glyph — single source of truth. PostReactionIcon
+              renders all three states (no reaction, heart, other emoji)
+              inside an 18×18 box so the action row never grows or
+              shrinks between states. */}
+          <PostReactionIcon reactionKey={userReactionKey} size={18} mutedColor={iconColor} />
           <Text
             style={{
+              marginLeft: 6,
               fontSize: 13,
               fontWeight: showLikeAccent ? "600" : "500",
               color: showLikeAccent ? reactedColor : labelColor,

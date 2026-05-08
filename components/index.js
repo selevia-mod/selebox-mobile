@@ -1,3 +1,4 @@
+import BalanceRecoveryBanner from "./BalanceRecoveryBanner";
 import BookCard from "./BookCard";
 import BookCatalogCard from "./BookCatalogCard";
 import BookChapterCommentItem from "./BookChapterCommentItem";
@@ -68,6 +69,7 @@ import PostVideo from "./PostVideo";
 import Profile from "./Profile";
 import ProfileAboutTab from "./ProfileAboutTab";
 import ProfileBooksTab from "./ProfileBooksTab";
+import ProfileMenuModal from "./ProfileMenuModal";
 // ProfileClipsTab removed — clips feature retired May 2026.
 import ProfilePostTab from "./ProfilePostTab";
 import ProfileVideosTab from "./ProfileVideosTab";
@@ -133,6 +135,7 @@ import WithdrawModal from "./WithdrawModal";
 import WriterBadgeIcon from "./WriterBadgeIcon";
 
 export {
+  BalanceRecoveryBanner,
   BookCard,
   BookCatalogCard,
   BookChapterCommentItem,
@@ -194,6 +197,7 @@ export {
   Profile,
   ProfileAboutTab,
   ProfileBooksTab,
+  ProfileMenuModal,
   ProfilePostTab,
   ProfileVideosTab,
   ReportModal,

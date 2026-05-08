@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, AppState, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { useGlobalContext } from "../context/global-provider";
+import { useProfileDrawer } from "../context/profile-drawer-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import useIsOffline from "../hooks/useIsOffline";
 import { NotificationService } from "../lib/notifications";
@@ -17,6 +18,12 @@ const notificationService = new NotificationService();
 const MainScreensHeader = ({ title }) => {
   const { user } = useGlobalContext();
   const { theme } = useAppTheme();
+  // Drawer state lives at (tabs) layout level (see
+  // context/profile-drawer-provider.js). Reading it here is purely
+  // for the avatar tap → setOpen(true). The actual <ProfileMenuModal>
+  // is rendered ONCE at the (tabs) layout — not inside this header —
+  // so it stays mounted across drawer-tap → destination → back.
+  const { setOpen: setProfileDrawerOpen } = useProfileDrawer();
   const isOffline = useIsOffline();
   // Bell badge: total unread count across ALL notification types (likes /
   // comments / replies / follows / clips / dm_message). Backed by the
@@ -117,7 +124,14 @@ const MainScreensHeader = ({ title }) => {
   };
 
   const handleChatsPress = () => router.push("channel-list");
-  const handleProfilePress = () => router.push("/profile");
+  // Avatar-tap now opens the slide-in profile drawer instead of routing
+  // straight to /profile. The drawer itself routes to /profile (via its
+  // header card), and additionally surfaces Payments / Author / Creator
+  // shortcuts + Community soon-rows + Log out. The drawer + its open
+  // state live at the (tabs) layout level (see ProfileDrawerProvider)
+  // so they survive drawer-tap → destination → back round-trips
+  // without remounting.
+  const handleProfilePress = () => setProfileDrawerOpen(true);
   const handleNotificationsPress = async () => {
     // Optimistic clear — opening the bell panel is the same gesture as
     // "I've seen these." We flip is_viewed (NOT is_read), because:
@@ -202,6 +216,11 @@ const MainScreensHeader = ({ title }) => {
           </TouchableOpacity>
         </View>
       </View>
+      {/* ProfileMenuModal lives at the (tabs) layout level now (see
+          app/(tabs)/_layout.jsx + ProfileDrawerProvider). Rendering it
+          there keeps it mounted across drawer-tap → destination → back
+          round-trips, so the user can pop a screen off and find the
+          drawer still open exactly where they left it. */}
     </>
   );
 };

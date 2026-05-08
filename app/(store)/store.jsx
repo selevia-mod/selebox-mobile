@@ -5,7 +5,7 @@ import * as WebBrowser from "expo-web-browser";
 import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Animated, FlatList, Platform, Text, TouchableOpacity, View } from "react-native";
 import { useIAP, withIAPContext } from "react-native-iap";
-import { CustomAlertModal, StarIcon, StyledDivider, StyledSafeAreaView } from "../../components";
+import { BalanceRecoveryBanner, CustomAlertModal, StarIcon, StyledDivider, StyledSafeAreaView } from "../../components";
 import AnimatedSkeleton from "../../components/AnimatedSkeleton";
 import GoalsTab from "../../components/GoalsTab";
 import { useGlobalContext } from "../../context/global-provider";
@@ -545,11 +545,18 @@ const Store = () => {
                       <View className="h-10 w-10 items-center justify-center rounded-full" style={{ backgroundColor: theme.accentAmberSoft }}>
                         <FontAwesome5 name="coins" size={20} color={theme.coin} />
                       </View>
-                      <View>
-                        <Text className="font-plight text-xs" style={{ color: theme.textSoft }}>
+                      {/* `min-w-0 flex-1` lets this text container shrink
+                          below its intrinsic content width inside the
+                          flex row, which is what allows the numberOfLines
+                          truncation to actually engage. Without min-w-0
+                          the card overflows the screen edge on narrow
+                          (~360pt) devices — a Facebook user's screenshot
+                          flagged this for the Stars side. */}
+                      <View className="min-w-0 flex-1">
+                        <Text className="font-plight text-xs" style={{ color: theme.textSoft }} numberOfLines={1}>
                           Coins balance
                         </Text>
-                        <Text className="font-psemibold text-lg" style={{ color: theme.text }}>
+                        <Text className="font-psemibold text-lg" style={{ color: theme.text }} numberOfLines={1}>
                           {balance ?? 0} {balance === 1 ? "Coin" : "Coins"}
                         </Text>
                       </View>
@@ -569,8 +576,11 @@ const Store = () => {
                       <View className="h-10 w-10 items-center justify-center rounded-full" style={{ backgroundColor: theme.accentAmberSoft }}>
                         <StarIcon size={22} color={theme.coin} />
                       </View>
-                      <View>
-                        <Text className="font-plight text-xs" style={{ color: theme.textSoft }}>
+                      {/* Same min-w-0 + numberOfLines treatment as the
+                          Coins card above — keeps the card honest on
+                          narrow devices. */}
+                      <View className="min-w-0 flex-1">
+                        <Text className="font-plight text-xs" style={{ color: theme.textSoft }} numberOfLines={1}>
                           Stars balance
                         </Text>
                         {loading ? (
@@ -586,11 +596,12 @@ const Store = () => {
                                   transform: [{ translateY: plusOneAnim }],
                                   textAlign: "left",
                                 }}
+                                numberOfLines={1}
                               >
                                 +1
                               </Animated.Text>
                             ) : (
-                              <Text style={{ color: theme.text, fontSize: 18, fontWeight: "bold" }}>
+                              <Text style={{ color: theme.text, fontSize: 18, fontWeight: "bold" }} numberOfLines={1}>
                                 {starsData?.stars ?? 0} {starsData?.stars === 1 ? "Star" : "Stars"}
                               </Text>
                             )}
@@ -600,6 +611,12 @@ const Store = () => {
                     </View>
                   </TouchableOpacity>
                 </View>
+
+                {/* Balance recovery banner — surfaced here right under
+                    the Coins/Stars balance cards so users staring at a
+                    suspicious 0 have the report-an-issue path within
+                    reach without having to navigate to Payments. */}
+                <BalanceRecoveryBanner />
 
                 <View className="rounded-2xl p-4" style={{ borderWidth: 1, borderColor: theme.accentAmber, backgroundColor: theme.accentAmberSoft }}>
                   <View className="flex-row items-start justify-between">

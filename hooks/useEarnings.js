@@ -11,6 +11,11 @@ export function useEarnings(userId, selectedMonth) {
   const [earnings, setEarnings] = useState({ total: 0, breakdown: {}, totalEarningsThisMonth: 0 });
   const [withdrawals, setWithdrawals] = useState([]);
   const [remainingBalance, setRemainingBalance] = useState(0);
+  // Pending pesos — credits that have landed but are still inside the
+  // hold window (app_config.author_earnings_hold_days). Surfaced as a
+  // separate tile on the Earnings screen so writers can see new
+  // unlocks immediately instead of thinking nothing was credited.
+  const [pendingBalance, setPendingBalance] = useState(0);
   const [loading, setLoading] = useState(false);
 
   const fetchData = useCallback(async () => {
@@ -41,6 +46,10 @@ export function useEarnings(userId, selectedMonth) {
         : withdrawalsData.filter((w) => w.status === "approved").reduce((sum, w) => sum + (Number(w.amount) || 0), 0);
 
       setRemainingBalance(earningsData.total - approvedWithdrawals);
+      // Pending balance comes straight from author_balance_for via the
+      // Supabase adapter; legacy Appwrite path doesn't have a pending
+      // concept (those rows were credited immediately) so default 0.
+      setPendingBalance(Number(earningsData?.pending) || 0);
     } catch (err) {
     } finally {
       setLoading(false);
@@ -87,12 +96,40 @@ export function useEarnings(userId, selectedMonth) {
   // in centavos. Without normalizing, the Earnings screen crashes on
   // `latestWithdrawal.amountToReceive.toFixed(2)` because the field
   // is undefined on Supabase rows.
+  //
+  // amountToReceive fallback chain (May 2026 fix — Ms.Chaser + Dear
+  // Jen reports):
+  //   1. rawLatest.amountToReceive  — Appwrite legacy field, in pesos.
+  //   2. rawLatest.net_php_minor    — Supabase post-fee net (in
+  //                                   centavos). Added by the pioneer
+  //                                   stars migration; backfilled NULL
+  //                                   on rows that predate the
+  //                                   migration.
+  //   3. rawLatest.amount_php_minor — Supabase gross (always
+  //                                   populated). Right answer when
+  //                                   net_php_minor is null/0 because
+  //                                   no fees applied yet on pending
+  //                                   withdrawals — gross == net.
+  //
+  // The previous (#2-only) fallback returned 0 whenever net_php_minor
+  // was null, which is exactly what made "Withdrawal Status: pending
+  // - ₱0.00" show on the Earnings tab even though the request was
+  // for hundreds of pesos. The added #3 fallback restores the right
+  // display while preserving #2 for rows that DO have a net column
+  // populated (post-migration writes).
+  const pickReceiveMinor = (row) => {
+    const net = Number(row?.net_php_minor);
+    if (Number.isFinite(net) && net > 0) return net;
+    const gross = Number(row?.amount_php_minor);
+    if (Number.isFinite(gross) && gross > 0) return gross;
+    return 0;
+  };
+
   const latestWithdrawal = rawLatest
     ? {
         ...rawLatest,
         amount: rawLatest.amount ?? (Number(rawLatest.amount_php_minor) || 0) / 100,
-        amountToReceive:
-          rawLatest.amountToReceive ?? (Number(rawLatest.net_php_minor) || 0) / 100,
+        amountToReceive: rawLatest.amountToReceive ?? pickReceiveMinor(rawLatest) / 100,
       }
     : null;
 
@@ -100,6 +137,7 @@ export function useEarnings(userId, selectedMonth) {
     earnings,
     withdrawals,
     remainingBalance,
+    pendingBalance,
     latestWithdrawal,
     loading,
     withdraw,

@@ -4,12 +4,19 @@ import useAppTheme from "../hooks/useAppTheme";
 import AnimatedSkeleton from "./AnimatedSkeleton";
 
 // Earnings breakdown tile. Renders read-only by default; pass `onPress`
-// to make it tappable (used by Books / Videos / Post / Clips tiles to
-// open the per-item drill-down screen). When tappable, a chevron hints
-// at the affordance and the whole tile lifts on press.
+// to make it tappable (used by Books / Videos / Post tiles to open the
+// per-item drill-down screen). When tappable, a chevron hints at the
+// affordance and the whole tile lifts on press.
+//
+// Optional `description` renders as small soft text below the amount —
+// used to surface context that doesn't fit in the title (e.g. the
+// 7-day hold period note on the Pending tile, or "Tap to see
+// breakdown" on the per-source-type tiles). Mirrors the web's
+// Author Earnings card copy.
 const PaymentBreakdownEarnings = ({
   title = "Earnings",
   amount = "₱ 0.00",
+  description = null,
   loading = false,
   icon = null,
   iconBgColor = "",
@@ -52,6 +59,16 @@ const PaymentBreakdownEarnings = ({
           </Text>
         )}
       </View>
+
+      {description ? (
+        <Text
+          className="mt-2 text-[11px] leading-[15px]"
+          style={{ color: theme.textSubtle || theme.textSoft }}
+          numberOfLines={2}
+        >
+          {description}
+        </Text>
+      ) : null}
     </>
   );
 
@@ -60,7 +77,7 @@ const PaymentBreakdownEarnings = ({
       <TouchableOpacity
         onPress={onPress}
         activeOpacity={0.85}
-        className="mt-4 w-full rounded-2xl px-3 py-3"
+        className="mt-[8px] w-full rounded-2xl px-3 py-3"
         style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}
       >
         {body}
@@ -69,7 +86,7 @@ const PaymentBreakdownEarnings = ({
   }
 
   return (
-    <View className="mt-4 w-full rounded-2xl px-3 py-3" style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}>
+    <View className="mt-[8px] w-full rounded-2xl px-3 py-3" style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}>
       {body}
     </View>
   );

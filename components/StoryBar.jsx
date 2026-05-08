@@ -567,7 +567,7 @@ const StoryBar = ({ user, forceUpdate }) => {
 
           <View className="absolute bottom-2 left-0 right-0 items-center">
             <Text className="font-psemibold text-[13px] shadow-lg" style={{ color: theme.primaryContrast }}>
-              Your Story
+              Your Moment
             </Text>
           </View>
 

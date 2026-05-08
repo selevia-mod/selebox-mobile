@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, Animated, Keyboard, Platform, Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BottomNavPopup, ThemedStatusBar } from "../../components";
+import ProfileMenuModal from "../../components/ProfileMenuModal";
+import { ProfileDrawerProvider } from "../../context/profile-drawer-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import tabNavigationEvents from "../../lib/tab-navigation-events";
 
@@ -290,7 +292,7 @@ const TabsLayout = () => {
   };
 
   return (
-    <>
+    <ProfileDrawerProvider>
       <Tabs
         screenOptions={{
           headerShown: false,
@@ -447,8 +449,19 @@ const TabsLayout = () => {
       {/* Overlay Popup */}
       {popupVisible && <BottomNavPopup handlePlusPress={handlePlusPress} />}
 
+      {/* FB-style profile drawer — mounted ONCE at the (tabs) layout
+          so it persists across drawer-tap → destination → back round-
+          trips. ProfileMenuModal reads its open-state from the
+          ProfileDrawerProvider context above. With coverScreen=false
+          on the modal, it renders inline within this layout's render
+          tree, so when navigation pushes a destination route group
+          (community / payments / leaderboard / …) the (tabs) layout
+          is covered and the drawer goes with it; on back, both come
+          back together — no remount, no flag, no animation re-trigger. */}
+      <ProfileMenuModal />
+
       <ThemedStatusBar backgroundColor={theme.background} />
-    </>
+    </ProfileDrawerProvider>
   );
 };
 

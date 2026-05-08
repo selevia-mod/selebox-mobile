@@ -74,6 +74,42 @@ const buildVideoPreview = (video, videoId) => {
   };
 };
 
+// Mirror of buildVideoPreview for books. Lets us synthesize a preview
+// from the local book document without round-tripping through
+// getLinkPreview's HTML scrape, which intermittently fails on mobile
+// (network timeouts, SSL quirks, the OG endpoint's redirect script
+// confusing the parser). Surfaces "Failed to load preview" in the
+// post feed even when the book is perfectly intact in Supabase.
+const buildBookPreview = (book, bookId) => {
+  if (!book) return null;
+
+  // BookService returns documents in Appwrite-shaped form across both
+  // backends — author lives at .author or as a populated profile object,
+  // depending on which path served the row. Defensive read covers both.
+  const authorName =
+    book?.author?.username ||
+    book?.profiles?.username ||
+    book?.creator?.username ||
+    "Selebox Author";
+  const title = book.title || "Book";
+  const description = book.description || `Read ${title} by ${authorName} on Selebox.`;
+  const image = book.cover_url || book.cover || book.thumbnail || "https://www.selebox.com/logo/icon.png";
+  const tags = Array.isArray(book.tags) ? book.tags.filter(Boolean) : [];
+
+  return {
+    url: `https://www.selebox.com/books/${bookId || book.$id || book.id}`,
+    title,
+    description,
+    images: [image],
+    siteName: "Selebox",
+    mediaType: "book",
+    source: "selebox-book",
+    book,
+    authorName,
+    tags,
+  };
+};
+
 const LinkPreviewCard = ({ url, imageOnly = false }) => {
   const { theme } = useAppTheme();
   const bookService = useRef(new BookService()).current;
@@ -122,6 +158,28 @@ const LinkPreviewCard = ({ url, imageOnly = false }) => {
     }
   };
 
+  // Fast path for selebox.com book URLs — fetches the book directly
+  // from Supabase via BookService instead of relying on getLinkPreview's
+  // HTML scrape of the website's OG endpoint. The scrape intermittently
+  // fails on mobile (timeout / SSL / OG-page redirect parsing) and was
+  // showing "Failed to load preview" on perfectly valid book posts.
+  // Mirrors the video fast path above. Returns null for non-book URLs
+  // or when the book lookup fails — caller falls through to the
+  // generic getLinkPreview path so external (non-Selebox) URLs still
+  // get a card.
+  const fetchBookPreview = async () => {
+    if (!bookId) return null;
+
+    try {
+      const bookDoc = await bookService.fetchBook({ bookId });
+      const preview = buildBookPreview(bookDoc, bookId);
+      if (preview) return preview;
+    } catch (err) {
+      console.log("Failed to fetch book meta for preview:", err);
+    }
+    return null;
+  };
+
   const fetchPreview = async () => {
     // Synchronous in-memory cache check — no flash on remount.
     const memCached = PREVIEW_MEMORY_CACHE.get(cacheKey);
@@ -143,7 +201,13 @@ const LinkPreviewCard = ({ url, imageOnly = false }) => {
         return;
       }
 
-      const preview = (await fetchVideoPreview()) || (await getLinkPreview(url));
+      // Order: video fast path → book fast path → generic HTML scrape.
+      // The two fast paths handle 99% of selebox.com share URLs and are
+      // immune to the network/parsing flakiness of getLinkPreview.
+      const preview =
+        (await fetchVideoPreview()) ||
+        (await fetchBookPreview()) ||
+        (await getLinkPreview(url));
       if (preview) PREVIEW_MEMORY_CACHE.set(cacheKey, preview);
       setData(preview);
       await AsyncStorage.setItem(cacheKey, JSON.stringify({ data: preview, timestamp: Date.now() }));

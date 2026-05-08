@@ -3381,17 +3381,28 @@ const VideoPlayer = () => {
     } catch {}
   };
 
+  // Player source is just the URI — no metadata block. expo-video's
+  // native AVMetadata bridge is strict on Android and was hard-crashing
+  // when fed null / undefined fields. The crash showed up on "latest
+  // upload" plays because freshest uploads are most likely to come
+  // from web-signup creators whose profile rows have null avatar_url
+  // (and the wrong field shape: `.username`, not `.name`), which made
+  // `artist: undefined` slip through to the native side.
+  //
+  // metadata is only consumed by the system Now Playing widget /
+  // background-control center. We disable both
+  // (showNowPlayingNotification = false, staysActiveInBackground = false)
+  // in the init callback below, so passing metadata served no UX
+  // purpose anyway — it was pure liability. Drop it entirely.
+  // Reintroduce later only if we wire background playback or PiP and
+  // sanitize every field to a non-empty trimmed string first.
+  const playerSource = useMemo(() => {
+    if (!video?.videoUrl) return null;
+    return { uri: video.videoUrl };
+  }, [video?.videoUrl]);
+
   const player = useVideoPlayer(
-    video?.videoUrl
-      ? {
-          uri: video?.videoUrl,
-          metadata: {
-            title: video?.title,
-            artist: video?.uploader?.name,
-            artwork: video?.uploader?.avatar,
-          },
-        }
-      : null,
+    playerSource,
     (p) => {
       playerRef.current = p;
       try {
@@ -4663,11 +4674,22 @@ const VideoPlayer = () => {
     setIsUnlocked(false);
     setIsUploader(false);
     activateKeepAwakeAsync();
-    processVideo();
+    // Defer the resolveVideoByIdentifier network call until the screen
+    // transition completes. Without this, the fetch fires in the same
+    // JS frame as expo-router's mount and the player screen visibly
+    // stutters during the slide-in. The skeleton is already painted
+    // above (loading=true), so the user sees instant feedback; the
+    // video metadata then loads after the transition lands. Local-
+    // download playback inside processVideo() returns synchronously
+    // before the await, so offline opens stay instant.
+    const interactionHandle = InteractionManager.runAfterInteractions(() => {
+      if (!isCancelled) processVideo();
+    });
 
     return () => {
       deactivateKeepAwake();
       isCancelled = true;
+      interactionHandle?.cancel?.();
     };
   }, [currentVideoUri, currentVideoDocId, user?.$id, playbackLocalDownloadEntry, localVideoUriParam, isOffline]);
 

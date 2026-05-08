@@ -7,6 +7,7 @@ import Modal from "react-native-modal";
 import { CustomAlertModal } from "../../components";
 import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
+import supabase from "../../lib/supabase";
 import UserDocumentsService from "../../lib/user-documents";
 import { formatDate, parseDateOnly } from "../../utils/formatDate";
 
@@ -53,6 +54,21 @@ const PaymentInformation = () => {
   const [pickerModalOpen, setPickerModalOpen] = useState(false);
   const [currentType, setCurrentType] = useState(null);
   const [messageOpen, setMessageOpen] = useState(false);
+
+  // Request-edit flow (May 2026). When the form is locked (isReadOnly,
+  // i.e. the user has already saved their Payment Info), a "Request
+  // edit" button at the bottom opens this modal. The user enters a
+  // reason and the request lands in the admin Payouts → Info change
+  // requests tab via the existing request_payment_info_change RPC.
+  // p_requested_data is sent as an empty object — the user describes
+  // their needed change in plain text in the reason field. Admin can
+  // either reach out via support to collect new values or, for power
+  // users, the web admin UI accepts a richer diff (mobile keeps it
+  // simple to avoid re-implementing the entire form a second time).
+  const [requestModalOpen, setRequestModalOpen] = useState(false);
+  const [requestReason, setRequestReason] = useState("");
+  const [submittingRequest, setSubmittingRequest] = useState(false);
+  const [requestError, setRequestError] = useState("");
 
   // -------------------------
   // Field Validation
@@ -198,6 +214,50 @@ const PaymentInformation = () => {
   // -------------------------
   // Submit Form
   // -------------------------
+  // Submit a payment-info change request. The reason is required;
+  // the server-side RPC validates length and refuses if the user
+  // already has a pending request (returns { ok:false, error:
+  // 'pending_request_exists' }). p_requested_data is sent as an
+  // empty object — admin reads the reason and can either reach
+  // out via support to collect new values, or unlock the form so
+  // the user can resubmit. Mobile keeps it minimal vs. web's
+  // inline-diff modal so we don't have to reimplement the entire
+  // form just to capture changes.
+  const handleSubmitRequest = async () => {
+    const reason = (requestReason || "").trim();
+    if (reason.length < 5) {
+      setRequestError("Please describe what needs to change (at least 5 characters).");
+      return;
+    }
+    setRequestError("");
+    setSubmittingRequest(true);
+    try {
+      const { data, error } = await supabase.rpc("request_payment_info_change", {
+        p_requested_data: {},
+        p_reason: reason,
+      });
+      if (error) throw error;
+      if (!data?.ok) {
+        if (data?.error === "pending_request_exists") {
+          setRequestError("You already have a pending request. We'll review it soon.");
+        } else {
+          setRequestError(data?.error || "Couldn't submit. Please try again.");
+        }
+        return;
+      }
+      setRequestModalOpen(false);
+      setRequestReason("");
+      Alert.alert(
+        "Request submitted",
+        "We received your request. An admin will review it within 24-48 hours.",
+      );
+    } catch (e) {
+      setRequestError(e?.message || "Couldn't submit. Please try again.");
+    } finally {
+      setSubmittingRequest(false);
+    }
+  };
+
   const handleSubmit = async () => {
     if (isReadOnly) return;
     if (!validateForm()) return;
@@ -265,7 +325,7 @@ const PaymentInformation = () => {
   );
 
   const renderAttachment = ({ key, label, iconFamily, iconName, required }) => (
-    <View key={key} className="mb-6 rounded-2xl p-5" style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}>
+    <View key={key} className="mb-[6px] rounded-2xl p-5" style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}>
       <View className="mb-3 flex-row items-center">
         <View className="mr-2 h-8 w-8 items-center justify-center rounded-lg" style={{ backgroundColor: theme.primarySoft }}>
           <AttachmentIcon family={iconFamily} name={iconName} color={theme.primary} />
@@ -320,17 +380,11 @@ const PaymentInformation = () => {
         </View>
       </Modal>
 
-      {/* Disclaimer */}
-      <View className="mb-4 flex-row rounded-2xl p-4" style={{ backgroundColor: theme.accentAmberSoft }}>
-        <Ionicons name="information-circle" size={20} color={theme.accentAmber} style={{ marginTop: 2 }} />
-        <Text className="ml-2 flex-1 text-xs leading-5" style={{ color: theme.accentAmber }}>
-          Once submitted, payment information cannot be changed. For any updates, please contact{" "}
-          <Text className="font-bold" style={{ color: theme.text }}>
-            support@selebox.com
-          </Text>
-          .
-        </Text>
-      </View>
+      {/* Disclaimer removed (May 2026). Replaced with the "Request edit"
+          button at the bottom of the form, gated by isReadOnly — users
+          can now self-serve a change request that lands in the admin
+          Payouts → Info change requests tab instead of having to email
+          support. */}
 
       <CustomAlertModal
         message="Your payment information has been saved!"
@@ -340,7 +394,7 @@ const PaymentInformation = () => {
       />
 
       {/* Basic Info */}
-      <View className="mb-6 rounded-2xl p-5" style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}>
+      <View className="mb-[6px] rounded-2xl p-5" style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}>
         <View className="mb-4 flex-row items-center">
           <View className="mr-2 h-1 w-3 rounded-full" style={{ backgroundColor: theme.primary }} />
           <Text className="text-sm font-semibold" style={{ color: theme.textSoft }}>
@@ -377,7 +431,7 @@ const PaymentInformation = () => {
       </View>
 
       {/* Payment Method */}
-      <View className="mb-6 rounded-2xl p-5" style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}>
+      <View className="mb-[6px] rounded-2xl p-5" style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}>
         <View className="mb-4 flex-row items-center">
           <View className="mr-2 h-1 w-3 rounded-full" style={{ backgroundColor: theme.accentGreen }} />
           <Text className="text-sm font-semibold" style={{ color: theme.textSoft }}>
@@ -413,7 +467,9 @@ const PaymentInformation = () => {
       {/* Attachments */}
       {ATTACHMENTS.map(renderAttachment)}
 
-      {/* Save Button */}
+      {/* Save Button — shown only while the form is editable (first
+          submission). Once saved, isReadOnly flips on and the
+          "Request edit" button below takes its place. */}
       {!isReadOnly && (
         <TouchableOpacity
           className="my-7 flex-row items-center justify-center rounded-xl py-3.5"
@@ -426,6 +482,216 @@ const PaymentInformation = () => {
           </Text>
         </TouchableOpacity>
       )}
+
+      {/* Request edit — shown when the form is locked (info already
+          saved). Opens a modal where the user describes what needs to
+          change. Submission flows through request_payment_info_change
+          to the admin Payouts → Info change requests tab on the web.
+          Premium styling: deep accent base + inner highlight strip
+          (poor-man's gradient, since expo-linear-gradient isn't a
+          dependency), glass-tinted inner border, soft outer shadow,
+          and a press-scale on tap so the affordance feels deliberate
+          rather than a flat CTA. */}
+      {isReadOnly && (
+        <TouchableOpacity
+          activeOpacity={0.92}
+          onPress={() => {
+            setRequestReason("");
+            setRequestError("");
+            setRequestModalOpen(true);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Request to edit payment information"
+          style={{
+            marginTop: 28,
+            marginBottom: 28,
+            borderRadius: 18,
+            overflow: "hidden",
+            backgroundColor: theme.accentPurple || theme.primary,
+            // Soft shadow / elevation — gives the button "weight" so it
+            // reads as the screen's primary action without needing
+            // bright copy or icons to pull the eye.
+            shadowColor: theme.accentPurple || theme.primary,
+            shadowOffset: { width: 0, height: 8 },
+            shadowOpacity: 0.28,
+            shadowRadius: 14,
+            elevation: 8,
+            // Glass-style inner border — subtle white edge that catches
+            // light without competing with the button's body.
+            borderWidth: 1,
+            borderColor: "rgba(255,255,255,0.18)",
+          }}
+        >
+          {/* Top-half highlight overlay — fakes a vertical gradient by
+              painting the upper 50% with a barely-visible white tint.
+              At rest this is invisible on light themes; on the dark
+              accent it adds a top-down sheen that reads as premium. */}
+          <View
+            pointerEvents="none"
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              height: "55%",
+              backgroundColor: "rgba(255,255,255,0.10)",
+            }}
+          />
+
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "center",
+              paddingVertical: 16,
+              paddingHorizontal: 20,
+            }}
+          >
+            {/* Icon chip — round white-tinted bubble around the icon
+                gives it a "badge" feel that pairs with the subtle
+                shadow. Distinct from the flat icon-next-to-text
+                pattern of the Save button so the two CTAs don't
+                visually collide if a user sees them in sequence. */}
+            <View
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 14,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: "rgba(255,255,255,0.18)",
+                marginRight: 10,
+              }}
+            >
+              <Ionicons name="create-outline" size={16} color={theme.primaryContrast} />
+            </View>
+            <Text
+              style={{
+                color: theme.primaryContrast,
+                fontSize: 16,
+                fontWeight: "700",
+                letterSpacing: 0.4,
+              }}
+            >
+              Request edit
+            </Text>
+          </View>
+        </TouchableOpacity>
+      )}
+
+      {/* Request edit modal */}
+      <Modal
+        isVisible={requestModalOpen}
+        onBackdropPress={() => (submittingRequest ? null : setRequestModalOpen(false))}
+        onSwipeComplete={() => (submittingRequest ? null : setRequestModalOpen(false))}
+        swipeDirection={["down"]}
+        backdropOpacity={0.45}
+        style={{ justifyContent: "flex-end", margin: 0 }}
+        useNativeDriver
+        hideModalContentWhileAnimating
+        animationIn="slideInUp"
+        animationOut="slideOutDown"
+        avoidKeyboard
+      >
+        <View
+          style={{
+            backgroundColor: theme.surfaceElevated || theme.background,
+            borderTopLeftRadius: 24,
+            borderTopRightRadius: 24,
+            paddingHorizontal: 18,
+            paddingTop: 12,
+            paddingBottom: 28,
+          }}
+        >
+          {/* Drag handle */}
+          <View
+            style={{
+              alignSelf: "center",
+              width: 40,
+              height: 4,
+              borderRadius: 2,
+              backgroundColor: theme.border,
+              marginBottom: 14,
+            }}
+          />
+
+          <Text style={{ color: theme.text, fontSize: 18, fontWeight: "700", marginBottom: 4 }}>
+            Request to edit
+          </Text>
+          <Text style={{ color: theme.textSoft, fontSize: 12, marginBottom: 16, lineHeight: 16 }}>
+            Tell us what needs to change. An admin will review within 24-48 hours and reach out if more info is needed.
+          </Text>
+
+          <Text style={{ color: theme.textSoft, fontSize: 11, fontWeight: "600", marginBottom: 6 }}>
+            What needs to change? (required)
+          </Text>
+          <TextInput
+            value={requestReason}
+            onChangeText={(t) => {
+              setRequestReason(t);
+              if (requestError) setRequestError("");
+            }}
+            placeholder="e.g. My GCash number changed, please update."
+            placeholderTextColor={theme.placeholder}
+            multiline
+            style={{
+              minHeight: 90,
+              maxHeight: 160,
+              borderRadius: 14,
+              paddingHorizontal: 14,
+              paddingTop: 10,
+              paddingBottom: 10,
+              backgroundColor: theme.inputBackground,
+              borderWidth: 1,
+              borderColor: theme.border,
+              color: theme.inputText,
+              fontSize: 14,
+              textAlignVertical: "top",
+            }}
+            editable={!submittingRequest}
+          />
+
+          {requestError ? (
+            <Text style={{ color: theme.danger, fontSize: 12, marginTop: 8 }}>{requestError}</Text>
+          ) : null}
+
+          <View style={{ flexDirection: "row", gap: 8, marginTop: 16 }}>
+            <TouchableOpacity
+              onPress={() => (submittingRequest ? null : setRequestModalOpen(false))}
+              disabled={submittingRequest}
+              style={{
+                flex: 1,
+                paddingVertical: 13,
+                borderRadius: 14,
+                alignItems: "center",
+                borderWidth: 1,
+                borderColor: theme.border,
+                opacity: submittingRequest ? 0.5 : 1,
+              }}
+            >
+              <Text style={{ color: theme.text, fontSize: 14, fontWeight: "600" }}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={handleSubmitRequest}
+              disabled={submittingRequest || requestReason.trim().length < 5}
+              style={{
+                flex: 1,
+                paddingVertical: 13,
+                borderRadius: 14,
+                alignItems: "center",
+                backgroundColor: theme.primary,
+                opacity: submittingRequest || requestReason.trim().length < 5 ? 0.5 : 1,
+              }}
+            >
+              {submittingRequest ? (
+                <ActivityIndicator size="small" color={theme.primaryContrast} />
+              ) : (
+                <Text style={{ color: theme.primaryContrast, fontSize: 14, fontWeight: "700" }}>Submit</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Date of Birth Calendar Modal (iOS) */}
       {Platform.OS === "ios" && (

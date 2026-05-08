@@ -75,7 +75,13 @@ const Payments = () => {
 
         <ScrollView className="flex-1 px-4" showsVerticalScrollIndicator={false}>
           <View style={{ display: activeTab === "Earnings" ? "flex" : "none" }}>
-            <Earnings />
+            {/* `onSwitchToPaymentInfo` is passed in so Earnings can
+                deep-link the user to the Payment Info tab when the
+                first-Supabase-withdrawal verify gate fires. Routing
+                via setActiveTab keeps the navigation in-screen
+                (faster than router.push to a separate route) and
+                preserves whatever month filter the user had open. */}
+            <Earnings onSwitchToPaymentInfo={() => handleTabChange("Payment Information")} />
           </View>
           {hasLoadedPaymentInfo && (
             <View

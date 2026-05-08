@@ -24,7 +24,7 @@
 import { Feather, MaterialIcons } from "@expo/vector-icons";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Text, TouchableOpacity, View } from "react-native";
+import { InteractionManager, Text, TouchableOpacity, View } from "react-native";
 import { MMKV } from "react-native-mmkv";
 import { Profile, StyledSafeAreaView, StyledTitle } from "../../components";
 import { useGlobalContext } from "../../context/global-provider";
@@ -253,6 +253,7 @@ const CreatorProfile = () => {
       // the in-memory + MMKV cache without ANY network call.
       // First-time-this-session opens still fetch fresh.
       const cacheAge = readCachedUserAge(userId);
+      let fetchHandle = null;
       if (cacheAge < CREATOR_PROFILE_REFRESH_TTL_MS && hasLoadedOnce.current) {
         // Cache is fresh AND we've already painted once in this mount
         // — nothing to do. The on-mount paint already used the cache.
@@ -262,7 +263,15 @@ const CreatorProfile = () => {
         hasLoadedOnce.current = true;
         setLoading(false);
       } else {
-        fetchUserAndVideos();
+        // Defer the 2-fetch user+videos burst until the screen
+        // transition completes. Otherwise tapping an avatar fires the
+        // network calls in the same JS frame as expo-router's mount,
+        // and the parallel awaits stutter the slide-in animation.
+        // Pre-hydrate from cache happens synchronously above (instant
+        // first paint); this defer only affects the fresh-fetch path.
+        fetchHandle = InteractionManager.runAfterInteractions(() => {
+          fetchUserAndVideos();
+        });
       }
 
       // Run the blocked-user check non-blocking. Previously this was awaited
@@ -275,6 +284,7 @@ const CreatorProfile = () => {
           .then((blocked) => setIsBlocked(blocked.includes(userId)))
           .catch(() => setIsBlocked(false));
       }
+      return () => fetchHandle?.cancel?.();
     }, [fetchUserAndVideos, userId, viewer?.$id]),
   );
 

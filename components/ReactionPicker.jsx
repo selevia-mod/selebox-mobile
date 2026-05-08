@@ -1,7 +1,26 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Animated, Dimensions, Easing, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import useAppTheme from "../hooks/useAppTheme";
 import { REACTIONS } from "../lib/reactions";
+import HeartReact from "../assets/reactions/Heart-react.svg";
+import HahaReact from "../assets/reactions/Haha-react.svg";
+import SadReact from "../assets/reactions/Sad-react.svg";
+import CryReact from "../assets/reactions/Cry-react.svg";
+import AngryReact from "../assets/reactions/Angry-react.svg";
+
+// Map the picker's reaction keys to the same custom SVG components
+// the inline action button + stats row use (see PostReaction.jsx).
+// Keeps the picker consistent with the rest of the reaction UI —
+// long-press → pick → the icon you saw in the picker is exactly
+// what shows up next to "Liked" on the action row.
+const PICKER_ICONS = {
+  heart: HeartReact,
+  laugh: HahaReact,
+  sad: SadReact,
+  cry: CryReact,
+  angry: AngryReact,
+};
+const PICKER_ICON_SIZE = 36;
 
 // Floating reaction pill — anchored to the Like button via screen-space
 // coordinates passed in `anchor`. Mirrors the web reaction-picker styling
@@ -12,6 +31,48 @@ const PICKER_WIDTH = 300;
 const PICKER_OFFSET_FROM_ANCHOR = 12;
 const SCREEN_PADDING = 12;
 
+// Single emoji button inside the picker. Owns an Animated.Value for
+// its own scale so press-in / press-out animate as a spring instead
+// of snapping via the CSS `pressed` style. The spring on press-in
+// fires the moment the user's finger touches the emoji — gives
+// instant tactile feedback well before the actual onPress callback
+// runs (which only fires on release).
+const PickerOption = ({ reaction, isActive, Icon, labelColor, onPick }) => {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  const animateTo = (toValue) => {
+    Animated.spring(scaleAnim, {
+      toValue,
+      useNativeDriver: true,
+      friction: 5,
+      tension: 200,
+    }).start();
+  };
+
+  return (
+    <Pressable
+      onPressIn={() => animateTo(1.3)}
+      onPressOut={() => animateTo(1)}
+      onPress={onPick}
+      hitSlop={6}
+      style={[
+        styles.option,
+        isActive && { backgroundColor: "rgba(167, 139, 250, 0.14)" },
+      ]}
+    >
+      <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+        {Icon ? (
+          <Icon width={PICKER_ICON_SIZE} height={PICKER_ICON_SIZE} />
+        ) : (
+          // Defensive fallback — shouldn't trigger with the 5 mapped reactions.
+          <Text style={styles.emoji}>{reaction.emoji}</Text>
+        )}
+      </Animated.View>
+      <Text style={[styles.label, { color: labelColor }]}>{reaction.label}</Text>
+    </Pressable>
+  );
+};
+
 const ReactionPicker = ({ visible, anchor, onSelect, onClose, activeKey }) => {
   const { theme } = useAppTheme();
 
@@ -19,8 +80,31 @@ const ReactionPicker = ({ visible, anchor, onSelect, onClose, activeKey }) => {
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(6)).current;
 
+  // "Armed" gate for the backdrop's onPress. The picker mounts the
+  // moment a long-press fires — but at that instant the user's finger
+  // is STILL DOWN on the like button. When they release, RN routes
+  // that lift through the freshly-mounted backdrop as a tap, which
+  // would close the picker before the user could interact with it
+  // (the bug: "first long-press doesn't show the reaction"). We
+  // disable the backdrop's onPress for the first 350ms after the
+  // picker becomes visible — long enough for the user's finger to
+  // come up, short enough that intentional dismiss-by-tap still feels
+  // immediate.
+  const [armed, setArmed] = useState(false);
+
+  // Render-gate that lags slightly behind the `visible` prop on
+  // close, so we can play a fade-out animation BEFORE unmounting.
+  // Without this, flipping visible→false instantly returned null and
+  // the picker just snapped away — Charles flagged the dismiss as
+  // "could be faster / smoother". Now: visible prop true → render
+  // immediately + fade in. Visible prop false → fade out (130ms),
+  // then drop the mount.
+  const [internalVisible, setInternalVisible] = useState(false);
+
   useEffect(() => {
     if (visible) {
+      setInternalVisible(true);
+      setArmed(false);
       Animated.parallel([
         Animated.timing(opacity, {
           toValue: 1,
@@ -41,14 +125,36 @@ const ReactionPicker = ({ visible, anchor, onSelect, onClose, activeKey }) => {
           useNativeDriver: true,
         }),
       ]).start();
-    } else {
-      opacity.setValue(0);
-      scale.setValue(0.92);
-      translateY.setValue(6);
+      // Arm after the user's lift-from-long-press window has passed.
+      // 350ms covers the slowest natural release.
+      const armTimer = setTimeout(() => setArmed(true), 350);
+      return () => clearTimeout(armTimer);
+    } else if (internalVisible) {
+      // Quick fade-out + scale-down so the dismiss feels deliberate
+      // instead of snapping. 130ms is short enough that the user's
+      // attention has already moved to the action button updating
+      // with their picked reaction.
+      Animated.parallel([
+        Animated.timing(opacity, {
+          toValue: 0,
+          duration: 130,
+          easing: Easing.in(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(scale, {
+          toValue: 0.94,
+          duration: 130,
+          easing: Easing.in(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]).start(({ finished }) => {
+        if (finished) setInternalVisible(false);
+      });
+      setArmed(false);
     }
-  }, [visible, opacity, scale, translateY]);
+  }, [visible, opacity, scale, translateY, internalVisible]);
 
-  if (!visible || !anchor) return null;
+  if (!internalVisible || !anchor) return null;
 
   // Position the picker centered horizontally over the Like button, sitting
   // just above it. Caller supplies anchor.x (left edge of Like in window
@@ -80,26 +186,19 @@ const ReactionPicker = ({ visible, anchor, onSelect, onClose, activeKey }) => {
               },
             ]}
           >
-            {REACTIONS.map((r) => {
-              const isActive = activeKey === r.key;
-              return (
-                <Pressable
-                  key={r.key}
-                  onPress={() => {
-                    onSelect?.(r.key);
-                    onClose?.();
-                  }}
-                  style={({ pressed }) => [
-                    styles.option,
-                    isActive && { backgroundColor: "rgba(167, 139, 250, 0.14)" },
-                    pressed && { transform: [{ scale: 1.35 }, { translateY: -3 }] },
-                  ]}
-                >
-                  <Text style={styles.emoji}>{r.emoji}</Text>
-                  <Text style={[styles.label, { color: theme.textSoft }]}>{r.label}</Text>
-                </Pressable>
-              );
-            })}
+            {REACTIONS.map((r) => (
+              <PickerOption
+                key={r.key}
+                reaction={r}
+                isActive={activeKey === r.key}
+                Icon={PICKER_ICONS[r.key]}
+                labelColor={theme.textSoft}
+                onPick={() => {
+                  onSelect?.(r.key);
+                  onClose?.();
+                }}
+              />
+            ))}
           </Animated.View>
         </View>
       </Pressable>

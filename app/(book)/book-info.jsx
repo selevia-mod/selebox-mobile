@@ -1,7 +1,7 @@
 import { AntDesign, Ionicons, SimpleLineIcons } from "@expo/vector-icons";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Alert, ScrollView, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Alert, InteractionManager, ScrollView, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Share from "react-native-share";
@@ -379,7 +379,22 @@ const BookInfo = () => {
           setLoading(false);
         }
       };
-      fetchBook();
+      // Defer the 7-fetch network burst (book + unlocks + chapters +
+      // continue-reading + ratings + user-rating + isFollowing) until
+      // AFTER the screen transition animation completes. Without this,
+      // the Promise.all kicks off in the same JS frame as the route
+      // mount, and the parallel awaits hold the bridge during expo-
+      // router's slide-in — felt as "tapping a book is laggy / not
+      // smooth" by users. InteractionManager.runAfterInteractions
+      // queues the work behind the active Animated handles, so the
+      // transition runs unblocked and the fetch starts the moment the
+      // book screen is on-screen. Snapshot-cache hydrates already
+      // happen synchronously above (instant first paint); this defer
+      // only affects the fresh-fetch path.
+      const handle = InteractionManager.runAfterInteractions(() => {
+        fetchBook();
+      });
+      return () => handle?.cancel?.();
     }, [resolvedBookId, user?.$id, cachedContinueReading, findCachedBook]),
   );
 
@@ -737,7 +752,12 @@ const BookInfo = () => {
     (Array.isArray(chapters) && chapters.some((c) => c?.is_locked || c?.isLocked)) ||
     (Array.isArray(previewChapters) && previewChapters.some((c) => c?.is_locked || c?.isLocked));
   const isBookPaid = !!book?.isLocked || hasPerChapterLock;
-  const TAGS = [book?.status, book?.contentRating || "Rated PG", isBookPaid ? "Paid" : "Free", isDownloaded ? "Downloaded" : null].filter(
+  // contentRating intentionally has no "Rated PG" fallback. See
+  // lib/books-supabase.js mapRowToBook — when the DB column is NULL
+  // (most pre-Supabase migrated books), we pass null through so the
+  // chip is dropped via .filter(Boolean) instead of mis-labeling
+  // mature content as PG.
+  const TAGS = [book?.status, book?.contentRating, isBookPaid ? "Paid" : "Free", isDownloaded ? "Downloaded" : null].filter(
     Boolean,
   );
 
@@ -841,31 +861,27 @@ const BookInfo = () => {
                 resizeMode={"cover"}
               />
 
-              {/* Rate this Book */}
-              {!userRating && (
-                <TouchableOpacity
-                  disabled={ratingSubmitting}
-                  onPress={() => setRatingVisible(true)}
-                  className="absolute -bottom-0 -right-6 flex-row items-center rounded-full px-3 py-1 shadow-lg"
-                  style={{
-                    backgroundColor: ratingSubmitting ? theme.surfaceStrong : theme.coin,
-                    elevation: 5, // Android shadow
-                  }}
-                >
-                  {ratingSubmitting ? (
-                    <ActivityIndicator color={theme.primaryContrast} />
-                  ) : (
-                    <SimpleLineIcons name="like" size={20} color={theme.textInverse} />
-                  )}
-                </TouchableOpacity>
-              )}
+              {/* Rate-pill removed (May 2026). Tap-to-rate is now wired
+                  through the rating row below the cover, where the
+                  visual hierarchy already invites the action. The
+                  earlier floating pill cluttered the cover and was
+                  redundant once the row itself became the affordance. */}
             </View>
           </View>
 
-          {/* BOOK RATING */}
-          <TouchableOpacity disabled={!!userRating || ratingSubmitting} onPress={() => setRatingVisible(true)}>
-            <BookRating rating={averageRating || 0} starSize={20} spacing={5} />
-          </TouchableOpacity>
+          {/* BOOK RATING — premium revamped row. The component now
+              handles its own tap target + "Tap to rate" hint when
+              onRatePress is provided AND userRating is null. The
+              outer TouchableOpacity wrapper is gone; tapping the
+              row itself opens the rating modal. */}
+          <BookRating
+            rating={averageRating || 0}
+            starSize={22}
+            spacing={5}
+            userRating={userRating}
+            submitting={ratingSubmitting}
+            onRatePress={() => setRatingVisible(true)}
+          />
 
           {/* TITLE + UPLOADER */}
           <View className="mt-3 items-center">

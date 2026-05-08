@@ -2,6 +2,12 @@ import { AntDesign, Feather, FontAwesome, MaterialIcons } from "@expo/vector-ico
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Text, TouchableOpacity, View } from "react-native";
 import Share from "react-native-share";
+
+// LayoutAnimation removed: it's a global API that animates EVERY
+// layout change on the next render frame, which caused the entire
+// screen (Moments strip, FlatList, etc.) to flash whenever the user
+// reacted to a post. If we revisit smooth transitions later, scope
+// them to a single component via Reanimated shared values.
 import { useGlobalContext } from "../context/global-provider";
 import { useVideosStats } from "../context/video-stats-provider";
 import useAppTheme from "../hooks/useAppTheme";
@@ -9,6 +15,7 @@ import useCommentReactionState from "../hooks/useCommentReactionState";
 import FormatNumber from "../lib/utils/format-number";
 import { resolveVideoCommentCount } from "../lib/video";
 import secrets from "../private/secrets";
+import { PostReactionIcon, PostReactionStack } from "./PostReaction";
 import ReactionPicker from "./ReactionPicker";
 import RepostModal from "./RepostModal";
 import StyledDivider from "./StyledDivider";
@@ -136,16 +143,17 @@ export default function StyledLikeCommentShare({
     const safeLikeCount = Number.isFinite(likeCount) ? likeCount : 0;
     const safeCommentCount = Number.isFinite(commentsCount) ? commentsCount : 0;
     const showStatsRow = safeLikeCount > 0 || safeCommentCount > 0;
-    const summaryEmoji = reactions.activeReaction?.emoji ?? "❤️";
     const showLikeAccent = !!reactions.activeReaction;
     const labelColor = theme.textMuted ?? theme.text;
+    // Pink/red text color when the user has an active reaction. The
+    // background tint that used to pair with this was removed per
+    // Charles — see the TouchableOpacity below.
     const reactedColor = theme.isDark ? "#f472b6" : "#db2777";
-    const reactedSoft = theme.isDark ? "rgba(244, 114, 182, 0.10)" : "rgba(219, 39, 119, 0.08)";
     const likeLabel = reactions.activeReaction?.label ?? (liked ? "Liked" : "Like");
 
     return (
       <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
-        {/* Stats row — emoji + count on left, comment count on right */}
+        {/* Stats row — emoji stack + count on left, comment count on right */}
         {showStatsRow && (
           <View
             style={{
@@ -157,10 +165,11 @@ export default function StyledLikeCommentShare({
             }}
           >
             {safeLikeCount > 0 ? (
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <Text style={{ fontSize: 14, marginRight: 6 }}>{summaryEmoji}</Text>
-                <Text style={{ fontSize: 12, fontWeight: "500", color: theme.textSoft ?? labelColor }}>{FormatNumber(safeLikeCount)}</Text>
-              </View>
+              <PostReactionStack
+                reactionKey={reactions.userReactionKey}
+                count={safeLikeCount}
+                textColor={theme.textSoft ?? labelColor}
+              />
             ) : (
               <View />
             )}
@@ -191,7 +200,7 @@ export default function StyledLikeCommentShare({
             ref={reactions.likeButtonRef}
             onPress={handleReactionTap}
             onLongPress={reactions.openTopLevelPicker}
-            delayLongPress={220}
+            delayLongPress={180}
             activeOpacity={0.85}
             style={{
               flexDirection: "row",
@@ -199,16 +208,21 @@ export default function StyledLikeCommentShare({
               paddingVertical: 9,
               paddingHorizontal: 14,
               borderRadius: 12,
-              backgroundColor: showLikeAccent ? reactedSoft : "transparent",
+              // Background stays transparent in both reacted + unreacted
+              // states. The previous reactedSoft pink/red wash read as
+              // "selected" but felt loud against the rest of the feed
+              // — Charles asked for the chip to stay clean. The active
+              // state is now signaled by the emoji itself + the
+              // accent-tinted label color below.
+              backgroundColor: "transparent",
             }}
           >
-            {reactions.activeReaction ? (
-              <Text style={{ fontSize: 18, marginRight: 8 }}>{reactions.activeReaction.emoji}</Text>
-            ) : (
-              <AntDesign name="hearto" size={18} color={theme.icon} style={{ marginRight: 8 }} />
-            )}
+            {/* Single-source-of-truth reaction glyph (shared with the
+                home feed). 18×18 layout box, all states matched. */}
+            <PostReactionIcon reactionKey={reactions.userReactionKey} size={18} mutedColor={theme.icon} />
             <Text
               style={{
+                marginLeft: 6,
                 fontSize: 13,
                 fontWeight: showLikeAccent ? "600" : "500",
                 color: showLikeAccent ? reactedColor : labelColor,
@@ -272,7 +286,7 @@ export default function StyledLikeCommentShare({
         ref={reactions.likeButtonRef}
         onPress={handleReactionTap}
         onLongPress={reactions.openTopLevelPicker}
-        delayLongPress={220}
+        delayLongPress={180}
         activeOpacity={0.85}
         className="flex flex-row items-center space-x-1 rounded-full px-3 py-2"
         style={{ backgroundColor: theme.surfaceStrong, opacity: 0.85 }}

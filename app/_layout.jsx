@@ -489,6 +489,7 @@ const InnerLayout = () => {
           <Stack.Screen name="(payments)" options={{ headerShown: false }} />
           <Stack.Screen name="books" options={{ headerShown: false }} />
           <Stack.Screen name="(story)" options={{ headerShown: false }} />
+          <Stack.Screen name="(community)" options={{ headerShown: false }} />
         </Stack>
       </ErrorBoundary>
       <ThemedStatusBar />

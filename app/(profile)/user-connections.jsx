@@ -150,9 +150,26 @@ const UserConnectionsScreen = () => {
     return true;
   };
 
+  // Extract the embedded user object from a follows-table row, regardless
+  // of whether the row came back in Supabase shape (followerUser /
+  // followedUser as nested profile objects, follower_id / following_id as
+  // bare UUIDs) or legacy Appwrite shape (followerId / followingId as
+  // full doc objects). Mirrors the same fallback that renderItem uses.
+  const getRowUserItem = (item, type) =>
+    type === "followers"
+      ? (item.followerUser || item.followerId || {})
+      : (item.followedUser || item.followingId || {});
+
   const fetchFollowRelations = async (list, type) => {
     try {
-      const otherUserIds = list.map((item) => (type === "followers" ? item.followerId?.$id : item.followingId?.$id)).filter(Boolean);
+      // Was: item.followerId?.$id / item.followingId?.$id — those fields
+      // exist on Appwrite shape only. Under Supabase the populated user
+      // object lives at followerUser / followedUser, so the old access
+      // path was always undefined → otherUserIds was always [] → the
+      // followBackStatus map stayed empty → every row showed the default
+      // "Follow" button (instead of "Following" / "Follow Back" /
+      // "Mutual"). Use the shape-aware helper so both backends work.
+      const otherUserIds = list.map((item) => getRowUserItem(item, type)?.$id).filter(Boolean);
 
       if (otherUserIds.length === 0) {
         return {};
@@ -195,6 +212,23 @@ const UserConnectionsScreen = () => {
       // a timestamp. Use $createdAt / created_at instead.
       const lastFollowerDoc = res.documents.length > 0 ? res.documents[res.documents.length - 1] : null;
       const nextCursor = lastFollowerDoc ? (lastFollowerDoc.created_at || lastFollowerDoc.$createdAt) : (append ? followersCursor : null);
+
+      // Pre-populate the relation status with what we already know from
+      // tab context so buttons render with the right label on first
+      // paint instead of flashing "Follow" → "Follow Back". Viewing
+      // your own followers list means every row is, by definition,
+      // someone who follows YOU (theyFollow=true). The fetch below
+      // fills in the unknown direction (whether you follow them back).
+      // For other users' profiles we still wait for the fetch since we
+      // don't know the relationship from context.
+      if (isOwnProfile && res.documents.length > 0) {
+        const inferred = {};
+        res.documents.forEach((item) => {
+          const id = getRowUserItem(item, "followers")?.$id;
+          if (id) inferred[id] = { ...(followBackStatus[id] || {}), theyFollow: true };
+        });
+        setFollowBackStatus((prev) => ({ ...prev, ...inferred }));
+      }
 
       setFollowers((prev) => (append ? [...prev, ...res.documents] : res.documents));
       setFollowersHasMore(res.hasMore);
@@ -245,6 +279,19 @@ const UserConnectionsScreen = () => {
       // is not a timestamp Postgres can use for pagination.
       const lastFollowingDoc = res.documents.length > 0 ? res.documents[res.documents.length - 1] : null;
       const nextCursor = lastFollowingDoc ? (lastFollowingDoc.created_at || lastFollowingDoc.$createdAt) : (append ? followingCursor : null);
+
+      // Pre-populate iFollow=true for own following list — by
+      // definition every row here is someone YOU follow, so the button
+      // can render "Following" immediately without waiting for the
+      // relation fetch. Eliminates the "Follow" → "Following" flash.
+      if (isOwnProfile && res.documents.length > 0) {
+        const inferred = {};
+        res.documents.forEach((item) => {
+          const id = getRowUserItem(item, "following")?.$id;
+          if (id) inferred[id] = { ...(followBackStatus[id] || {}), iFollow: true };
+        });
+        setFollowBackStatus((prev) => ({ ...prev, ...inferred }));
+      }
 
       setFollowing((prev) => (append ? [...prev, ...res.documents] : res.documents));
 
@@ -313,16 +360,25 @@ const UserConnectionsScreen = () => {
 
         if (activeTab === "followers") {
           setFollowing((prev) => {
-            const alreadyInFollowing = prev.some((item) => item.followingId.$id === otherUserId);
+            // Use shape-aware accessor — see getRowUserItem above. The old
+            // .followingId.$id / .followerId.$id paths were Appwrite-only
+            // and silently undefined on Supabase, so this whole optimistic
+            // list-rebuild was a no-op under USE_SUPABASE_FOLLOWS=true.
+            const alreadyInFollowing = prev.some((item) => getRowUserItem(item, "following")?.$id === otherUserId);
             if (alreadyInFollowing) return prev;
 
-            const followerDoc = followers.find((f) => f.followerId.$id === otherUserId);
+            const followerDoc = followers.find((f) => getRowUserItem(f, "followers")?.$id === otherUserId);
             if (!followerDoc) return prev;
 
+            const followerProfile = getRowUserItem(followerDoc, "followers");
             const newRelation = {
               ...followerDoc,
+              // Populate both shapes so cached/legacy consumers and
+              // current renderItem fallbacks both resolve.
+              followerUser: { ...user },
+              followedUser: { ...followerProfile },
               followerId: { ...user },
-              followingId: { ...followerDoc.followerId },
+              followingId: { ...followerProfile },
             };
 
             return [...prev, newRelation];
@@ -363,7 +419,13 @@ const UserConnectionsScreen = () => {
       }));
       if (isOwnProfile) {
         setFollowingCount((prev) => (prev > 0 ? prev - 1 : 0));
-        setFollowing((prev) => prev.filter((item) => item.followingId.$id !== otherUserId));
+        // Shape-aware filter — Supabase rows expose the user at
+        // followedUser, legacy Appwrite rows at followingId. The old
+        // .followingId.$id-only filter silently kept the row in state
+        // under USE_SUPABASE_FOLLOWS=true (predicate always truthy
+        // because undefined !== otherUserId), so optimistic removal
+        // never happened until a full refetch.
+        setFollowing((prev) => prev.filter((item) => getRowUserItem(item, "following")?.$id !== otherUserId));
       }
     } catch (error) {
       console.error("Unfollow error:", error);

@@ -113,10 +113,21 @@ export default function StoryActionBar({
 
   return (
     <View pointerEvents="box-none" style={[styles.wrap, { paddingBottom: insets.bottom + 54 }]}>
-      {/* Bottom scrim removed entirely — both owner and viewer modes
-          now sit transparent over the media. The composer pill and
-          emojis carry their own subtle glass treatments where needed
-          for legibility, so the hard scrim was just visual noise. */}
+      {/* Bottom scrim — three stacked layers approximate a vertical
+          gradient (transparent at top → ~rgba(0,0,0,0.55) at bottom).
+          We don't have expo-linear-gradient as a dependency, so this
+          is the same poor-man's-gradient pattern used in StoryHeader.
+          Why it's back after we removed it: on light / white media
+          (e.g. a "Your chapter is live" success card with mostly
+          white background), the white "Send message…" pill text and
+          the emoji glyphs blended into the background and became
+          unreadable. The scrim stays subtle on dark media (barely
+          perceptible at the very bottom) but saves legibility on
+          bright media. pointerEvents=none so the scrim never
+          intercepts taps from the action bar above it. */}
+      <View pointerEvents="none" style={[styles.scrimLayer, styles.scrimTop]} />
+      <View pointerEvents="none" style={[styles.scrimLayer, styles.scrimMid]} />
+      <View pointerEvents="none" style={[styles.scrimLayer, styles.scrimBottom]} />
 
       {/* Row order swapped (May 2026) — reactions now sit ABOVE the
           composer/activity pill. Reasoning: when a link is attached,
@@ -200,16 +211,33 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingTop: 32,
   },
-  scrimBottom: {
-    backgroundColor: "rgba(0,0,0,0.5)",
-  },
-  scrimTop: {
+  // Bottom-fade scrim — three stacked rectangles approximate a
+  // vertical gradient. Same pattern as StoryHeader's top scrim. The
+  // intent is "lighten on dark media, darken on light media" so the
+  // composer pill text and emoji glyphs stay readable regardless of
+  // what's behind. Numbers are tuned to be barely perceptible on
+  // dark media (so we don't introduce visual noise where it isn't
+  // needed) but heavy enough at the bottom that white-on-white text
+  // never disappears.
+  scrimLayer: {
     position: "absolute",
     left: 0,
     right: 0,
+  },
+  scrimTop: {
     top: 0,
-    height: 32,
-    backgroundColor: "rgba(0,0,0,0.18)",
+    height: "32%",
+    backgroundColor: "rgba(0,0,0,0.10)",
+  },
+  scrimMid: {
+    top: "30%",
+    height: "35%",
+    backgroundColor: "rgba(0,0,0,0.28)",
+  },
+  scrimBottom: {
+    top: "63%",
+    bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.50)",
   },
   row: {
     flexDirection: "row",

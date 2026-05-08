@@ -27,6 +27,18 @@ const CreatorProfileLayout = () => {
             headerShown: false,
           }}
         />
+        <Stack.Screen
+          name="supporter-leaderboard"
+          options={{
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="creator-writer-rankings"
+          options={{
+            headerShown: false,
+          }}
+        />
       </Stack>
 
       <ThemedStatusBar />

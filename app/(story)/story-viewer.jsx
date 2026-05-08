@@ -3,7 +3,7 @@ import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useVideoPlayer, VideoView } from "expo-video";
 import * as WebBrowser from "expo-web-browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Animated, Dimensions, PanResponder, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Alert, Animated, Dimensions, PanResponder, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import FastImage from "react-native-fast-image";
 import { useDispatch, useSelector } from "react-redux";
@@ -21,6 +21,7 @@ import {
 import { useGlobalContext } from "../../context/global-provider";
 import storyEvents from "../../lib/story-events";
 import { StoryService } from "../../lib/story-service";
+import { MOMENTS_VIEWER_SWR } from "../../lib/feature-flags";
 import { useModalMessage } from "../../hooks/useModalMessage";
 import { isViewerStoryCacheFresh, selectViewerStoryCacheEntry, setViewerStories } from "../../store/reducers/story";
 
@@ -31,6 +32,134 @@ const { width: screenWidth, height: screenHeight } = Dimensions.get("window");
 const MAX_VIDEO_DURATION = 30000;
 const LONG_PRESS_THRESHOLD = 300;
 const READY_VIDEO_STATUSES = new Set(["ready", "published"]);
+
+// --------------------------------------------------
+// Pure helpers (module scope)
+//
+// Hoisted out of the component so they can run from a useState
+// initializer (which fires before any of the in-component callbacks
+// are defined). The viewer's SWR pass calls these synchronously to
+// build userGroups directly off the Redux cache, painting the cube
+// instantly with no spinner / no flash.
+// --------------------------------------------------
+
+const isActiveStory = (story) => {
+  if (!story) return false;
+  const now = Date.now();
+  if (story.expiresAt) return new Date(story.expiresAt).getTime() > now;
+  return now - new Date(story.createdAt).getTime() <= 24 * 60 * 60 * 1000;
+};
+
+const sanitizeGroupedStories = (grouped) => {
+  if (!grouped) return {};
+  const result = {};
+  Object.entries(grouped).forEach(([userId, storiesForUser]) => {
+    const cleaned = (storiesForUser || []).filter((s) => {
+      if (!s || !s.user?.id) return false;
+      if (!isActiveStory(s)) return false;
+      if (s.status === "deleted") return false;
+      // Non-ready videos are intentionally KEPT in the stack — see the
+      // filter-fix history above. The viewer renders a "processing"
+      // overlay for owned non-ready videos and uses an image-duration
+      // fallback so auto-advance still works.
+      return true;
+    });
+    if (cleaned.length) {
+      result[userId] = cleaned;
+    }
+  });
+  return result;
+};
+
+// Build the ordered userGroups stack ([Own, …Following, …Discover])
+// from a sanitized groupedObj. `viewerScopeKeys` is the set of userIds
+// that came from fetchViewerStories (own + followings); anyone not in
+// that set is considered Discover. Pure — no closures, no refs.
+const buildUserGroupsFromGroupedObj = (groupedObj, viewerScopeKeys, viewerUserId) => {
+  const groups = Object.entries(groupedObj || {})
+    .map(([groupKey, storiesForUser]) => {
+      const stories = Array.isArray(storiesForUser) ? [...storiesForUser] : [];
+      if (!stories.length) return null;
+      stories.sort((a, b) => {
+        const aTs = new Date(a.createdAt).getTime();
+        const bTs = new Date(b.createdAt).getTime();
+        if (aTs !== bTs) return aTs - bTs; // older first
+        const aId = String(a.id || "");
+        const bId = String(b.id || "");
+        return aId < bId ? -1 : aId > bId ? 1 : 0;
+      });
+      const first = stories[0];
+      const userId = first?.user?.id || groupKey;
+      return {
+        userId,
+        name: first?.user?.name || "Unknown User",
+        avatar: first?.user?.avatar ?? null,
+        stories,
+      };
+    })
+    .filter(Boolean);
+
+  const sortByNewest = (a, b) => {
+    const lastA = a.stories[a.stories.length - 1];
+    const lastB = b.stories[b.stories.length - 1];
+    return new Date(lastB.createdAt) - new Date(lastA.createdAt);
+  };
+
+  const ownGroup = groups.find((u) => u.userId === viewerUserId) || null;
+  const followingGroups = groups
+    .filter((u) => u.userId !== viewerUserId && viewerScopeKeys.has(u.userId))
+    .sort(sortByNewest);
+  const discoverGroups = groups
+    .filter((u) => u.userId !== viewerUserId && !viewerScopeKeys.has(u.userId))
+    .sort(sortByNewest);
+
+  return {
+    userGroups: [
+      ...(ownGroup ? [ownGroup] : []),
+      ...followingGroups,
+      ...discoverGroups,
+    ],
+    bucketByUserId: {
+      ...(ownGroup ? { [ownGroup.userId]: "own" } : {}),
+      ...Object.fromEntries(followingGroups.map((g) => [g.userId, "following"])),
+      ...Object.fromEntries(discoverGroups.map((g) => [g.userId, "discover"])),
+    },
+  };
+};
+
+// Synchronous: pull a fresh userGroups + start index out of the Redux
+// cache for instant first-paint. Returns null when the cache is empty
+// or stale, in which case the caller falls back to the network-first
+// path (and shows the spinner placeholder).
+const seedFromCache = ({
+  cacheEntry,
+  viewerUserId,
+  uploaderId,
+  clickedOwnStory,
+}) => {
+  if (!cacheEntry || !isViewerStoryCacheFresh(cacheEntry) || !cacheEntry.grouped) {
+    return null;
+  }
+  const cleaned = sanitizeGroupedStories(cacheEntry.grouped) || {};
+  const viewerScopeKeys = new Set(Object.keys(cleaned));
+  const { userGroups, bucketByUserId } = buildUserGroupsFromGroupedObj(
+    cleaned,
+    viewerScopeKeys,
+    viewerUserId,
+  );
+  if (!userGroups.length) return null;
+
+  let startUserIdx = 0;
+  if (clickedOwnStory) {
+    const ownIdx = userGroups.findIndex((u) => u.userId === viewerUserId);
+    if (ownIdx >= 0) startUserIdx = ownIdx;
+  } else if (uploaderId) {
+    const idx = userGroups.findIndex((u) => u.userId === uploaderId);
+    if (idx >= 0) startUserIdx = idx;
+  }
+
+  return { userGroups, bucketByUserId, startUserIdx };
+};
 
 // --------------------------------------------------
 // Swipe-up hint pill — shown above the StoryBottomBar when the active
@@ -123,10 +252,26 @@ const StoryViewer = () => {
   // --------------------------------------------------
   // State
   // --------------------------------------------------
-  const [users, setUsers] = useState([]);
-  const [currentUserIndex, setCurrentUserIndex] = useState(0);
+  // SWR seed — when MOMENTS_VIEWER_SWR is on and the Redux storyCache
+  // has a fresh entry for this viewer, we hydrate users + the start
+  // index synchronously here. The cube renders the cached stack on the
+  // very first paint, no spinner, and loadAllStories below just runs
+  // a background refresh. When the cache is missing/stale we fall
+  // through to the legacy network-first path (loading: true → spinner
+  // → setUsers when fetch returns).
+  const swrSeed = MOMENTS_VIEWER_SWR
+    ? seedFromCache({
+        cacheEntry,
+        viewerUserId: viewerUserId,
+        uploaderId,
+        clickedOwnStory,
+      })
+    : null;
+
+  const [users, setUsers] = useState(() => swrSeed?.userGroups || []);
+  const [currentUserIndex, setCurrentUserIndex] = useState(() => swrSeed?.startUserIdx || 0);
   const [currentStoryIndex, setCurrentStoryIndex] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !swrSeed);
   const [storyMusic, setStoryMusic] = useState(null);
   const musicRef = useRef(null);
   const musicLoadIdRef = useRef(0);
@@ -164,8 +309,19 @@ const StoryViewer = () => {
   // --------------------------------------------------
   // Refs
   // --------------------------------------------------
-  const usersRef = useRef([]);
-  const currentUserIndexRef = useRef(0);
+  const usersRef = useRef(swrSeed?.userGroups || []);
+  const currentUserIndexRef = useRef(swrSeed?.startUserIdx || 0);
+  // Mirrors currentStoryIndex so loadAllStories' SWR shape-mismatch
+  // branch can preserve the user's playback position across network
+  // refreshes (without depending on stale closure state).
+  const currentStoryIndexRef = useRef(0);
+  // Maps userId → "own" | "following" | "discover", populated by
+  // loadAllStories once the buckets are computed. Lets handleNextStory
+  // emit a log line when the cube transitions from one bucket to the
+  // next (e.g. "advancing from following to discover"). Seeded from
+  // the SWR cache pass so the very first cross-bucket transition has
+  // the right labels even before the network refresh lands.
+  const userBucketsRef = useRef(swrSeed?.bucketByUserId || {});
   const pausedRef = useRef(false);
   const lastStoryIndexRef = useRef({});
   const videoLoadedRef = useRef(false);
@@ -233,6 +389,10 @@ const StoryViewer = () => {
   useEffect(() => {
     currentUserIndexRef.current = currentUserIndex;
   }, [currentUserIndex]);
+
+  useEffect(() => {
+    currentStoryIndexRef.current = currentStoryIndex;
+  }, [currentStoryIndex]);
 
   // Keep currentLinkRef in sync with the active story's link so the
   // panResponder's swipe-up handler can read the latest value without
@@ -347,32 +507,10 @@ const StoryViewer = () => {
   // --------------------------------------------------
   // Helpers
   // --------------------------------------------------
-  const isActiveStory = (story) => {
-    const now = new Date();
-    if (story.expiresAt) return new Date(story.expiresAt) > now;
-
-    return now - new Date(story.createdAt) <= 24 * 60 * 60 * 1000;
-  };
-
+  // isActiveStory + sanitizeGroupedStories live at module scope (top
+  // of file) so they're callable from useState initializers for the
+  // SWR seed pass. The component-local helpers used to live here.
   const getSavedIndex = (user) => (user ? (lastStoryIndexRef.current[user.userId] ?? 0) : 0);
-
-  const sanitizeGroupedStories = (grouped) => {
-    if (!grouped) return {};
-    const result = {};
-    Object.entries(grouped).forEach(([userId, storiesForUser]) => {
-      const cleaned = (storiesForUser || []).filter((s) => {
-        if (!s || !s.user?.id) return false;
-        if (!isActiveStory(s)) return false;
-        if (s.status === "deleted") return false;
-        if (s.type === "video" && !READY_VIDEO_STATUSES.has(s.status)) return false;
-        return true;
-      });
-      if (cleaned.length) {
-        result[userId] = cleaned;
-      }
-    });
-    return result;
-  };
 
   // --------------------------------------------------
   // Like toggle (legacy — kept while older surfaces still consume it)
@@ -506,61 +644,301 @@ const StoryViewer = () => {
             offset: 0,
           });
           groupedObj = sanitizeGroupedStories(grouped) || {};
+          // Dispatch the viewer-scope (own + following only) to Redux
+          // BEFORE we touch groupedObj further, and pass a SHALLOW
+          // CLONE so the local mutations below (discover merge, per-
+          // creator fallback) don't bleed into Redux state. Without
+          // this clone, the discover merge below mutated the same
+          // object reference Redux now held → next focus,
+          // `seedFromCache` would read the merged shape from cache,
+          // build viewerScopeKeys = `Object.keys(merged)` (which
+          // contains discover users), and misclassify those discover
+          // users as "following" — landing the cube on the wrong
+          // bucket and the wrong moment when users tapped a tile.
           dispatch(
             setViewerStories({
               viewerId: cacheKey,
-              grouped: groupedObj,
+              grouped: { ...groupedObj },
             }),
           );
         } catch (networkErr) {
           console.log("Network fetch failed, falling back to cache", networkErr);
           if (!forceNetwork && cacheEntryRef.current && isViewerStoryCacheFresh(cacheEntryRef.current)) {
-            groupedObj = sanitizeGroupedStories(cacheEntryRef.current.grouped);
+            // Clone here too — local merges below shouldn't mutate
+            // the cache entry through `cleaned`'s nested references.
+            groupedObj = { ...(sanitizeGroupedStories(cacheEntryRef.current.grouped) || {}) };
           }
         }
 
         if (!groupedObj) groupedObj = {};
 
-        let userGroups = Object.values(groupedObj)
-          .map((storiesForUser) => {
-            const activeStories = (storiesForUser || []).filter(isActiveStory);
-            if (!activeStories.length) return null;
+        // Snapshot the viewer-scope keys (own + followings) BEFORE we
+        // merge discover users, so we can later partition userGroups
+        // into [Own, …Following, …Discover] sections — that's the
+        // FB-style strip order users expect when navigating between
+        // creators in the viewer.
+        const viewerScopeKeys = new Set(Object.keys(groupedObj));
 
-            activeStories.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        // Mirror the home StoryBar: viewer + followings + discover.
+        //
+        // fetchViewerStories returns viewer + followings only. Without
+        // the merge below, two flows broke:
+        //   1. Tap a discover creator's tile → groupedObj wouldn't
+        //      contain them, the reorder would be a no-op, and the
+        //      viewer would land on whichever following happened to be
+        //      first (typically a 1-moment creator → "plays one then
+        //      closes").
+        //   2. Tap your OWN story when you don't follow anyone with an
+        //      active moment → groupedObj contains only you, usersLen
+        //      = 1, and after your stack auto-advance hits the close
+        //      branch immediately. The handleNextStory log line
+        //      `usersLen: 1, storiesLen: 1` is exactly that case.
+        //
+        // The fix: also fetch the public/discover feed (same call the
+        // StoryBar makes) and merge every creator we don't already
+        // have. The reorder-tapped-creator-to-index-0 logic below
+        // still runs, so the tapped tile lands you on that creator
+        // first and then auto-advances through everyone else, just
+        // like FB.
+        try {
+          // Bumped from 50 → 200 to match the viewer-scope fetch's
+          // limit. With 50 we were occasionally truncating the list
+          // before the tapped creator's stories appeared, which then
+          // forced the per-creator fallback below to fire — fine for
+          // correctness, but wasteful. 200 covers all realistic
+          // strip sizes (FB shows ~15-20).
+          const discoverList = await StoryService.fetchStories({ limit: 200, offset: 0 });
+          let newDiscoverUsers = 0;
+          if (Array.isArray(discoverList) && discoverList.length) {
+            // Group the flat list by uploader, sanitize per-user the
+            // same way the viewer-scope branch does so consumers see
+            // a uniform shape.
+            const discoverGrouped = {};
+            for (const s of discoverList) {
+              const uid = s?.user?.id;
+              if (!uid) continue;
+              if (!discoverGrouped[uid]) discoverGrouped[uid] = [];
+              discoverGrouped[uid].push(s);
+            }
+            const cleanedDiscover = sanitizeGroupedStories(discoverGrouped) || {};
+            // Merge — only add creators we don't already have so we
+            // don't clobber the (likely fresher) viewer-scope payload.
+            for (const [uid, stories] of Object.entries(cleanedDiscover)) {
+              if (!groupedObj[uid] && stories?.length) {
+                groupedObj[uid] = stories;
+                newDiscoverUsers += 1;
+              }
+            }
+          }
+          // Diagnostic — when "tap own → close after own" is reported,
+          // this line tells us whether discover came back empty
+          // (server / status filter dropping rows), or returned data
+          // but every creator was already in the viewer-scope payload.
+          console.log("[story-viewer] discover fetched", {
+            rawCount: discoverList?.length || 0,
+            newDiscoverUsers,
+            viewerScopeUsers: viewerScopeKeys.size,
+          });
+        } catch (discoverErr) {
+          console.log("[story-viewer] discover merge failed:", discoverErr?.message);
+        }
 
-            const first = activeStories[0];
+        // Last-chance per-creator fallback. If the tapped uploader
+        // isn't in viewer-scope OR the discover merge (e.g. their
+        // stories are paginated past the 50-item discover slice we
+        // just fetched), pull just their stories directly so we
+        // never end up with a stack that doesn't include the
+        // creator the user actually tapped.
+        if (uploaderId && !groupedObj[uploaderId]) {
+          try {
+            const creatorStories = await StoryService.fetchUserStories(uploaderId);
+            if (creatorStories?.length) {
+              const cleaned = sanitizeGroupedStories({ [uploaderId]: creatorStories });
+              if (cleaned[uploaderId]?.length) {
+                groupedObj = { ...groupedObj, [uploaderId]: cleaned[uploaderId] };
+              }
+            }
+          } catch (creatorErr) {
+            console.log("[story-viewer] tapped-creator fetch failed:", creatorErr?.message);
+          }
+        }
+
+        let userGroups = Object.entries(groupedObj)
+          .map(([groupKey, storiesForUser]) => {
+            // Trust sanitize. groupedObj already passed through
+            // sanitizeGroupedStories on both the viewer-scope branch
+            // and the discover merge branch — re-running isActiveStory
+            // here was double-filtering, and a near-expiry story that
+            // squeaked past sanitize at T0 could fail the redundant
+            // check at T0+ε and silently drop the entire group. Symptom
+            // we hit: `newDiscoverUsers: 1` from the merge, but
+            // `discover: 0` once the buckets were built.
+            const stories = Array.isArray(storiesForUser) ? [...storiesForUser] : [];
+            if (!stories.length) {
+              console.log("[story-viewer] empty group dropped", { groupKey });
+              return null;
+            }
+
+            // Chronological order (oldest → newest) per user, matching
+            // Instagram / Facebook / TikTok convention. Tap a creator's
+            // tile and you start at their oldest active moment, then
+            // auto-advance forward in time to the latest. Tie-break by
+            // id so two moments with the exact same createdAt always
+            // land in a deterministic order — without this the sort
+            // would be stable but the input order (which varies
+            // between cold loads, cache loads, and network responses)
+            // would leak into the viewer.
+            stories.sort((a, b) => {
+              const aTs = new Date(a.createdAt).getTime();
+              const bTs = new Date(b.createdAt).getTime();
+              if (aTs !== bTs) return aTs - bTs; // older first
+              const aId = String(a.id || "");
+              const bId = String(b.id || "");
+              return aId < bId ? -1 : aId > bId ? 1 : 0;
+            });
+
+            const first = stories[0];
+            // Fall back to the groupKey if for any reason the story
+            // row doesn't carry a user.id — that way the group still
+            // gets bucketed correctly (groupKey is the userId we
+            // grouped under in the first place).
+            const userId = first?.user?.id || groupKey;
             return {
-              userId: first.user?.id,
-              name: first.user?.name || "Unknown User",
-              avatar: first.user?.avatar ?? null,
-              stories: activeStories,
+              userId,
+              name: first?.user?.name || "Unknown User",
+              avatar: first?.user?.avatar ?? null,
+              stories,
             };
           })
           .filter(Boolean);
 
-        userGroups.sort((a, b) => {
+        // FB-strip ordering. Three buckets:
+        //   • Own       — viewer's own group (always first if present).
+        //   • Following — creators the viewer follows, sorted by their
+        //                 newest moment first (recency-DESC).
+        //   • Discover  — creators the viewer doesn't follow (came in
+        //                 via the discover merge), same recency-DESC.
+        //
+        // The buckets are concatenated in that fixed order so navigating
+        // forward (tap right / swipe left) walks Own → Following → Discover
+        // → end, and navigating backward (tap left / swipe right) walks
+        // the reverse. Tapping any tile lands you at THAT creator's
+        // position in the ordered list (not at 0), so the rest of the
+        // strip naturally extends to either side of the moment you
+        // started on — same as Facebook / Instagram / TikTok.
+        const sortByNewest = (a, b) => {
           const lastA = a.stories[a.stories.length - 1];
           const lastB = b.stories[b.stories.length - 1];
           return new Date(lastB.createdAt) - new Date(lastA.createdAt);
-        });
+        };
 
-        if (clickedOwnStory && viewerUserId) {
-          const idx = userGroups.findIndex((u) => u.userId === viewerUserId);
-          if (idx > 0) {
-            const [ownGroup] = userGroups.splice(idx, 1);
-            userGroups.unshift(ownGroup);
-          }
+        const ownGroup = userGroups.find((u) => u.userId === viewerUserId) || null;
+        const followingGroups = userGroups
+          .filter((u) => u.userId !== viewerUserId && viewerScopeKeys.has(u.userId))
+          .sort(sortByNewest);
+        const discoverGroups = userGroups
+          .filter((u) => u.userId !== viewerUserId && !viewerScopeKeys.has(u.userId))
+          .sort(sortByNewest);
+
+        userGroups = [
+          ...(ownGroup ? [ownGroup] : []),
+          ...followingGroups,
+          ...discoverGroups,
+        ];
+
+        // Track each user's bucket so handleNextStory's diagnostic log
+        // can call out cross-bucket transitions (Own → Following,
+        // Following → Discover, etc.). Stored on the bucketsRef so it
+        // survives re-renders without needing a state update.
+        const bucketByUserId = {};
+        if (ownGroup) bucketByUserId[ownGroup.userId] = "own";
+        for (const g of followingGroups) bucketByUserId[g.userId] = "following";
+        for (const g of discoverGroups) bucketByUserId[g.userId] = "discover";
+        userBucketsRef.current = bucketByUserId;
+
+        // Pick the starting position. clickedOwnStory short-circuits to
+        // the own group (always at index 0 above when present); otherwise
+        // we look up the tapped uploader in the reordered list. If the
+        // uploader didn't survive the merge for any reason (e.g. their
+        // moments all expired between the StoryBar render and now) we
+        // fall back to index 0 so the viewer at least opens with
+        // something instead of blanking out.
+        let startUserIdx = 0;
+        if (clickedOwnStory && ownGroup) {
+          startUserIdx = 0;
         } else if (uploaderId) {
           const idx = userGroups.findIndex((u) => u.userId === uploaderId);
-          if (idx > 0) {
-            const [clickedGroup] = userGroups.splice(idx, 1);
-            userGroups.unshift(clickedGroup);
-          }
+          if (idx >= 0) startUserIdx = idx;
         }
 
-        setUsers(userGroups);
-        setCurrentUserIndex(0);
-        setCurrentStoryIndex(0);
+        // Bucket-structure log — fires once per loadAllStories so we can
+        // verify the strip composition matches what the home StoryBar
+        // showed. If "Own → Following → Discover" feels off when
+        // navigating, this log tells you whether the issue is:
+        //   - the buckets coming back empty (server / filter issue), or
+        //   - the navigation logic skipping ahead (handleNextStory bug).
+        console.log("[story-viewer] userGroups built", {
+          own: ownGroup ? 1 : 0,
+          following: followingGroups.length,
+          discover: discoverGroups.length,
+          total: userGroups.length,
+          startUserIdx,
+          startBucket: userGroups[startUserIdx] ? bucketByUserId[userGroups[startUserIdx].userId] : null,
+        });
+
+        // Race protection for SWR. If we already painted the cube
+        // synchronously from cache (useState initializer), the cube is
+        // already on-screen — possibly mid-playback — by the time the
+        // network refresh resolves. Compare shape (userIds + per-user
+        // story counts in order):
+        //   • Same shape → cache and network agree. Do NOTHING.
+        //     Cube stays exactly where the user left it.
+        //   • Different shape → fresh data; replace the user list,
+        //     but PRESERVE the user's current position whenever
+        //     possible. Snapping back to startUserIdx on every
+        //     network refresh was the May 2026 "viewer jumps back to
+        //     the originally-tapped moment mid-playback" bug — it
+        //     fired any time discover added/removed a creator while
+        //     the user was watching, which is constantly.
+        const prevUsers = usersRef.current;
+        const sameShape =
+          Array.isArray(prevUsers) &&
+          prevUsers.length === userGroups.length &&
+          prevUsers.every((u, i) =>
+            u?.userId === userGroups[i]?.userId &&
+            (u?.stories?.length ?? 0) === (userGroups[i]?.stories?.length ?? 0),
+          );
+
+        if (!sameShape) {
+          // Try to preserve the currently-displayed user across the
+          // shape change. Look up their userId in the new userGroups;
+          // if they're still on the board, set the index to their NEW
+          // position (which may have shifted as discover users were
+          // added/removed). Only fall back to startUserIdx when the
+          // current user has truly vanished (story expired, was
+          // deleted, etc.).
+          const prevUserId = prevUsers?.[currentUserIndexRef.current]?.userId || null;
+          let nextUserIdx = startUserIdx;
+          if (prevUserId) {
+            const preservedIdx = userGroups.findIndex((u) => u.userId === prevUserId);
+            if (preservedIdx >= 0) {
+              nextUserIdx = preservedIdx;
+            }
+          }
+          // Story index — preserve only if we kept the same user AND
+          // their stories list is at least as long as where we were.
+          // Otherwise reset to story 0 of whichever user we landed on.
+          const sameUser = prevUserId && nextUserIdx >= 0 && userGroups[nextUserIdx]?.userId === prevUserId;
+          const prevStoryIdx = currentStoryIndexRef.current ?? 0;
+          const preservedStoryIdx =
+            sameUser && (userGroups[nextUserIdx]?.stories?.length ?? 0) > prevStoryIdx
+              ? prevStoryIdx
+              : 0;
+
+          setUsers(userGroups);
+          setCurrentUserIndex(nextUserIdx);
+          setCurrentStoryIndex(preservedStoryIdx);
+        }
       } catch (err) {
         console.log("loadAllStories error:", err);
       } finally {
@@ -604,6 +982,25 @@ const StoryViewer = () => {
         const likedDoc = await StoryService.checkIfUserLiked(currentStory.id, viewerUserId);
         if (disposed || closingRef.current || loadId !== musicLoadIdRef.current) return;
         setHasLiked(!!likedDoc);
+
+        // Load the real aggregate view count from story_stats. Without
+        // this, totalViews started at 0 and only ever incremented when
+        // a NEW view was created on the current device — which never
+        // fires for the owner viewing their own moment, so the activity
+        // pill always read "0 views" no matter how many people had
+        // actually watched. Now we seed it with the persisted count
+        // and any new-view increment below stacks on top.
+        try {
+          const stats = await StoryService.getStoryStats(currentStory.id);
+          if (disposed || closingRef.current || loadId !== musicLoadIdRef.current) return;
+          setStoryStats((prev) => ({
+            ...prev,
+            totalViews: stats?.viewCount ?? 0,
+            totalLikes: stats?.likeCount ?? prev.totalLikes,
+          }));
+        } catch (statsErr) {
+          console.log("[story-viewer] getStoryStats error:", statsErr?.message);
+        }
 
         // Reactions — fetched on every story change so the action
         // bar reflects the viewer's existing reaction (if any) and
@@ -746,6 +1143,21 @@ const StoryViewer = () => {
   // --------------------------------------------------
   // Story Navigation
   // --------------------------------------------------
+  // Story navigation. Two constraints we have to satisfy together:
+  //   1. Read the freshest currentStoryIndex even if multiple advance
+  //      calls fire close together (e.g. animation finish + a delete-
+  //      driven advance). The setState updater pattern reads the
+  //      committed/queued state directly, which is more reliable than
+  //      a ref that's only updated by a mirroring useEffect.
+  //   2. Don't call router.back() (via safeClose) from inside the
+  //      updater — that fires a parent navigator state change during
+  //      our render commit and trips React's "Cannot update a
+  //      component while rendering a different component" warning.
+  //
+  // We satisfy both by setting a `shouldClose` flag from inside the
+  // updater (the updater stays close to pure — it returns the same
+  // `prev` value when it would have closed) and invoking safeClose()
+  // AFTER the updater returns, outside the render phase.
   const handleNextStory = useCallback(() => {
     if (closingRef.current) return;
 
@@ -754,21 +1166,61 @@ const StoryViewer = () => {
     const user = usersLocal[userIdx];
     if (!user) return;
 
+    let shouldClose = false;
     setCurrentStoryIndex((prev) => {
       const nextIndex = prev + 1;
+      const len = user.stories.length;
+      const buckets = userBucketsRef.current || {};
+      const fromBucket = buckets[user.userId] || null;
 
-      if (nextIndex < user.stories.length) return nextIndex;
+      if (nextIndex < len) {
+        // Same-user advance — staying within the active stack.
+        console.log("[story-viewer] handleNextStory", {
+          decision: "next-story",
+          userIdx,
+          prev,
+          nextIndex,
+          storiesLen: len,
+          usersLen: usersLocal.length,
+          bucket: fromBucket,
+        });
+        return nextIndex;
+      }
 
       const nextUserIndex = userIdx + 1;
       if (nextUserIndex < usersLocal.length) {
+        const nextUser = usersLocal[nextUserIndex];
+        const toBucket = buckets[nextUser?.userId] || null;
+        // Cross-user transition — call out bucket changes so we can
+        // confirm the Own → Following → Discover progression matches
+        // what the user expects.
+        console.log("[story-viewer] handleNextStory", {
+          decision: "next-user",
+          userIdx,
+          nextUserIndex,
+          fromBucket,
+          toBucket,
+          crossedBucket: fromBucket !== toBucket,
+          usersLen: usersLocal.length,
+        });
         setCurrentUserIndex(nextUserIndex);
-        return 0; // FIXED: Always start at first story when auto-advancing to next user
+        return 0; // start at oldest moment of next user (chronological)
       }
 
-      safeClose();
-      return prev;
+      // End of the stack — close. Logged so we can distinguish a
+      // legitimate end (Own → Following → Discover → end) from a
+      // premature close caused by an incomplete merge.
+      console.log("[story-viewer] handleNextStory", {
+        decision: "close",
+        userIdx,
+        usersLen: usersLocal.length,
+        fromBucket,
+      });
+      shouldClose = true;
+      return prev; // hold the index — close fires below
     });
-  }, []);
+    if (shouldClose) safeClose();
+  }, [safeClose]);
 
   const handlePrevStory = useCallback(() => {
     if (closingRef.current) return;
@@ -778,22 +1230,23 @@ const StoryViewer = () => {
     const user = usersLocal[userIdx];
     if (!user) return;
 
+    let shouldClose = false;
     setCurrentStoryIndex((prev) => {
       const prevIndex = prev - 1;
-
       if (prevIndex >= 0) return prevIndex;
 
       const prevUserIndex = userIdx - 1;
       if (prevUserIndex >= 0) {
         const prevUser = usersLocal[prevUserIndex];
         setCurrentUserIndex(prevUserIndex);
-        return prevUser.stories.length - 1; // FIXED: Always go to last story when tapping back to previous user
+        return prevUser.stories.length - 1; // newest moment of prev user
       }
 
-      safeClose();
+      shouldClose = true;
       return prev;
     });
-  }, []);
+    if (shouldClose) safeClose();
+  }, [safeClose]);
 
   const handleTap = (x) => {
     if (closingRef.current) return;
@@ -837,8 +1290,13 @@ const StoryViewer = () => {
   useEffect(() => {
     if (!users.length || !currentStory || closingRef.current) return;
 
-    if (currentStory.type === "video" && !isVideoReady(currentStory)) return;
-
+    // For non-ready videos we used to bail entirely — that left the
+    // progress bar frozen and the stack never advanced (the user just
+    // sat on a "Video is still processing…" overlay forever). Now we
+    // start an image-length animation so the placeholder eventually
+    // auto-advances to the next moment. When the video finishes
+    // encoding mid-view, the readyToPlay listener inside useVideoPlayer
+    // will call startProgressAnimation again with the real duration.
     startProgressAnimation();
   }, [currentStory?.id, users.length]);
 
@@ -859,14 +1317,45 @@ const StoryViewer = () => {
       // we push the next route. Without this Expo Router occasionally
       // collapses the two transitions and lands on the wrong stack frame.
       setTimeout(() => {
+        // Resolve the destination from explicit resourceType/resourceId
+        // first (set by LinkPickerModal at attach time), then fall back
+        // to parsing link.url. The URL fallback covers:
+        //   - older Moments stored before LinkPickerModal extracted
+        //     resourceType
+        //   - links pasted with query strings / fragments that didn't
+        //     match the modal's strict regex
+        //   - any future case where resourceType is missing for any
+        //     reason — better to deep-link from the URL than open
+        //     selebox.com in a browser when we have all the data needed.
+        let resolvedType = null;
+        let resolvedId = null;
+
         if (link.resourceType === "book" && link.resourceId) {
-          router.push({ pathname: "/(book)/book-info", params: { bookId: link.resourceId } });
+          resolvedType = "book";
+          resolvedId = link.resourceId;
         } else if (link.resourceType === "video" && link.resourceId) {
-          router.push({ pathname: "/(video)/video-player", params: { docId: link.resourceId } });
+          resolvedType = "video";
+          resolvedId = link.resourceId;
+        } else if (link.url) {
+          // Permissive Selebox-URL match — accepts UUID + legacy hex IDs
+          // and tolerates ?query / #fragment suffixes. Mirrors the regex
+          // in utils/appLinks.js so both surfaces stay in sync.
+          const match = link.url.match(/^https?:\/\/(?:www\.)?selebox\.com\/(books|videos)\/([\w-]+)/i);
+          if (match) {
+            resolvedType = match[1] === "books" ? "book" : "video";
+            resolvedId = match[2];
+          }
+        }
+
+        if (resolvedType === "book" && resolvedId) {
+          router.push({ pathname: "/(book)/book-info", params: { bookId: resolvedId } });
+        } else if (resolvedType === "video" && resolvedId) {
+          router.push({ pathname: "/(video)/video-player", params: { docId: resolvedId } });
         } else {
-          // External — open in the system browser. WebBrowser keeps
-          // the in-app context (no tab spam) while still respecting
-          // the user's default browser preference on Android.
+          // Genuinely external (non-Selebox) URL — open in the system
+          // browser. WebBrowser keeps the in-app context (no tab spam)
+          // while still respecting the user's default browser preference
+          // on Android.
           WebBrowser.openBrowserAsync(link.url).catch((err) => {
             console.log("[story-viewer] failed to open link", err?.message);
           });
@@ -1143,7 +1632,23 @@ const StoryViewer = () => {
     })();
   };
 
-  const askDelete = () => showMessage("Delete this story?", 0, doDeleteStory);
+  // Two-button confirm with explicit Cancel — the previous CustomAlertModal
+  // path treated backdrop tap (and "Okay") identically and ALWAYS fired
+  // doDeleteStory, so there was no way to back out once the trash icon
+  // was tapped. Alert.alert is the native API and gives us a real
+  // destructive Delete + non-destructive Cancel. iOS auto-styles the
+  // destructive button red.
+  const askDelete = () => {
+    Alert.alert(
+      "Delete this moment?",
+      "It will be removed from your story and your viewers won't see it anymore.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: doDeleteStory },
+      ],
+      { cancelable: true },
+    );
+  };
 
   // --------------------------------------------------
   // Render
@@ -1156,10 +1661,17 @@ const StoryViewer = () => {
 
   const missingStory = !currentUser || !currentStory;
 
+  // Brief loading placeholder — silent, no copy. The previous version
+  // showed "Loading stories…" centered on a black screen, which felt
+  // like an error/loading screen every time the user tapped a tile.
+  // FB / IG / TikTok all use a near-instant fade-in instead. We match
+  // that by rendering just a small low-contrast spinner over a black
+  // backdrop while the network fetch resolves; the user reads it as
+  // a transition shimmer, not a blocking screen.
   if (loading && missingStory) {
     return (
-      <StyledSafeAreaView className="flex-1 items-center justify-center bg-black">
-        <Text className="text-white">Loading stories…</Text>
+      <StyledSafeAreaView className="flex-1 items-center justify-center bg-black" edges={["top"]}>
+        <ActivityIndicator size="small" color="rgba(255,255,255,0.55)" />
       </StyledSafeAreaView>
     );
   }
@@ -1234,20 +1746,33 @@ const StoryViewer = () => {
     </View>
   );
 
-  // PREVIOUS
+  // PREVIOUS / NEXT preview faces — shown briefly during the cube
+  // swipe between users. These are static previews, not interactive,
+  // so they only need the media + a minimal header (avatar/name).
+  // Previously they rendered `<StoryBottomBar>` and `<StoryHeader>`
+  // with `currentUser`/`currentStory` (the active user's data, not
+  // the prev/next user's — leftover from an earlier refactor). The
+  // bottom bar reference also crashed the screen because StoryBottomBar
+  // was retired in the May 2026 action-bar revamp and never imported
+  // here. The crash only surfaced once we started loading discover
+  // creators alongside followings (cube has > 1 face), so this branch
+  // had been silently broken for a while.
+  //
+  // Fix: drop the bottom bar entirely on preview faces (the user only
+  // sees them during a 220ms swipe animation — they don't need it),
+  // and pass the correct prev/next user + story to the header so the
+  // preview shows the right avatar/name during the swipe.
   const prevFace =
     prevUser && prevStory ? (
       <View style={styles.faceInner}>
-        <View style={styles.headerArea}>
+        <View style={styles.headerArea} pointerEvents="none">
           <StoryHeader
-            user={currentUser}
-            story={currentStory}
-            storyMusic={storyMusic}
-            stories={currentUser.stories}
-            currentStoryIndex={currentStoryIndex}
+            user={prevUser}
+            story={prevStory}
+            stories={prevUser.stories || [prevStory]}
+            currentStoryIndex={getSavedIndex(prevUser)}
             progressWidth={progressWidth}
             onClose={safeClose}
-            onDelete={askDelete}
             viewerUserId={viewerUserId}
           />
         </View>
@@ -1255,33 +1780,20 @@ const StoryViewer = () => {
         <View style={styles.mediaArea}>
           <View style={styles.mediaFrame}>{renderStoryMedia(prevStory, false)}</View>
         </View>
-
-        <View style={styles.bottomArea}>
-          <StoryBottomBar
-            isOwnStory={prevStory.user.id === viewerUserId}
-            totalViews={prevStory?.storiesStats?.totalViews}
-            totalLikes={prevStory?.storiesStats?.totalLikes}
-            hasLiked={false}
-            onToggleLike={() => {}}
-          />
-        </View>
       </View>
     ) : null;
 
-  // NEXT
   const nextFace =
     nextUser && nextStory ? (
       <View style={styles.faceInner}>
-        <View style={styles.headerArea}>
+        <View style={styles.headerArea} pointerEvents="none">
           <StoryHeader
-            user={currentUser}
-            story={currentStory}
-            storyMusic={storyMusic}
-            stories={currentUser.stories}
-            currentStoryIndex={currentStoryIndex}
+            user={nextUser}
+            story={nextStory}
+            stories={nextUser.stories || [nextStory]}
+            currentStoryIndex={getSavedIndex(nextUser)}
             progressWidth={progressWidth}
             onClose={safeClose}
-            onDelete={askDelete}
             viewerUserId={viewerUserId}
           />
         </View>
@@ -1289,21 +1801,22 @@ const StoryViewer = () => {
         <View style={styles.mediaArea}>
           <View style={styles.mediaFrame}>{renderStoryMedia(nextStory, false)}</View>
         </View>
-
-        <View style={styles.bottomArea}>
-          <StoryBottomBar
-            isOwnStory={nextStory.user.id === viewerUserId}
-            totalViews={nextStory?.storiesStats?.totalViews}
-            totalLikes={nextStory?.storiesStats?.totalLikes}
-            hasLiked={false}
-            onToggleLike={() => {}}
-          />
-        </View>
       </View>
     ) : null;
 
   return (
-    <StyledSafeAreaView className="flex-1 bg-black">
+    // edges={["top"]} so the safe-area padding only protects the
+    // notch/status bar at the top. Without this constraint the wrapper
+    // also reserves insets.bottom of black at the screen bottom — and
+    // because StoryActionBar already adds insets.bottom + 54 of its
+    // own padding to lift its controls above the home indicator, we
+    // were double-counting the bottom inset. The visible symptom was
+    // a chunky black strip below the views/send-message pill that
+    // looked like it was overlaying the controls. Restricting the
+    // safe area to "top" lets the cube + action bar extend all the
+    // way to the screen bottom, and the action bar handles its own
+    // home-indicator clearance.
+    <StyledSafeAreaView className="flex-1 bg-black" edges={["top"]}>
       <View style={styles.root}>
         <StoryCubeFaces cubeAnim={cubeAnim} currentFace={currentFace} prevFace={prevFace} nextFace={nextFace} />
       </View>

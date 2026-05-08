@@ -1,4 +1,4 @@
-import { MaterialCommunityIcons, MaterialIcons } from "@expo/vector-icons";
+import { AntDesign, MaterialCommunityIcons, MaterialIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -15,6 +15,24 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
+// Color tints for the reacted state — matches FB: Love=red,
+// Haha/Sad/Cry/Angry use a neutral blue-ish accent. Keep them in
+// sync with web by leaving Love red and others a single accent.
+//
+// We deliberately do NOT use LayoutAnimation.configureNext to smooth
+// the React→emoji swap. LayoutAnimation is a *global* API — it
+// animates every layout change on the screen for the next render,
+// not just the comment row. When the user reacts and React re-renders,
+// any other on-screen view that's mid-update (the Moments strip
+// auto-advancing, FlatList recycling rows, scroll position) gets
+// animated too, causing a full-screen flash. Snap behavior here is
+// the lesser evil; if we want smoothness later we'll use Reanimated
+// shared values scoped to this component.
+const getReactionColor = (key) => {
+  if (key === "heart") return "#ef4444"; // red — Love
+  return "#3b82f6"; // blue — Haha / Sad / Cry / Angry
+};
 import { Query } from "react-native-appwrite";
 import FastImage from "react-native-fast-image";
 import UserAvatar from "./UserAvatar";
@@ -452,14 +470,34 @@ const PostCommentItem = memo(
                   style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
                 >
                   {activeReaction ? (
-                    <Text style={{ fontSize: 13, lineHeight: 16 }}>{activeReaction.emoji}</Text>
+                    // FB-style reacted state: emoji + reaction label
+                    // (e.g. "Love", "Haha"), label tinted in the
+                    // reaction's accent color. Heart specifically
+                    // swaps to AntDesign filled icon to dodge Apple's
+                    // built-in white shine on ❤️ at small font sizes.
+                    <>
+                      {activeReaction.key === "heart" ? (
+                        <AntDesign name="heart" size={13} color={getReactionColor("heart")} />
+                      ) : (
+                        <Text style={{ fontSize: 13, lineHeight: 16, includeFontPadding: false }}>{activeReaction.emoji}</Text>
+                      )}
+                      <Text
+                        className="font-sans text-xs font-semibold"
+                        style={{ color: getReactionColor(activeReaction.key) }}
+                      >
+                        {activeReaction.label}
+                      </Text>
+                    </>
                   ) : (
                     <Text className="font-sans text-xs font-semibold" style={{ color: theme.textSoft }}>
                       React
                     </Text>
                   )}
                   {likeCount > 0 ? (
-                    <Text className="font-sans text-xs font-semibold" style={{ color: activeReaction ? theme.like : theme.textSoft }}>
+                    <Text
+                      className="font-sans text-xs font-semibold"
+                      style={{ color: activeReaction ? getReactionColor(activeReaction.key) : theme.textSoft }}
+                    >
                       {likeCount}
                     </Text>
                   ) : null}
@@ -538,15 +576,34 @@ const PostCommentItem = memo(
                                 delayLongPress={220}
                                 disabled={!normalizedCurrentUserId}
                                 hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
-                                style={{ flexDirection: "row", alignItems: "center" }}
+                                style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
                               >
-                                {replyReactions[reply.$id] ? (
-                                  <Text style={{ fontSize: 13, lineHeight: 16 }}>{getReactionByKey(replyReactions[reply.$id])?.emoji}</Text>
-                                ) : (
-                                  <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.textSoft }}>
-                                    React
-                                  </Text>
-                                )}
+                                {(() => {
+                                  const replyKey = replyReactions[reply.$id];
+                                  const replyMeta = replyKey ? getReactionByKey(replyKey) : null;
+                                  if (!replyMeta) {
+                                    return (
+                                      <Text className="font-sans text-[11px] font-semibold" style={{ color: theme.textSoft }}>
+                                        React
+                                      </Text>
+                                    );
+                                  }
+                                  return (
+                                    <>
+                                      {replyMeta.key === "heart" ? (
+                                        <AntDesign name="heart" size={12} color={getReactionColor("heart")} />
+                                      ) : (
+                                        <Text style={{ fontSize: 12, lineHeight: 15, includeFontPadding: false }}>{replyMeta.emoji}</Text>
+                                      )}
+                                      <Text
+                                        className="font-sans text-[11px] font-semibold"
+                                        style={{ color: getReactionColor(replyMeta.key) }}
+                                      >
+                                        {replyMeta.label}
+                                      </Text>
+                                    </>
+                                  );
+                                })()}
                               </TouchableOpacity>
                               {normalizedCurrentUserId ? (
                                 <TouchableOpacity
