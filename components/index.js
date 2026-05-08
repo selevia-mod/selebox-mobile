@@ -8,8 +8,6 @@ import BookChapterPublishSuccessModal from "./BookChapterPublishSuccessModal";
 import BookChaptersModal from "./BookChaptersModal";
 import BookChapterStats from "./BookChapterStats";
 import BookChaptersUnlockModal from "./BookChaptersUnlockModal";
-import BookCommentItem from "./BookCommentItem";
-import BookCommentModal from "./BookCommentModal";
 import BookInfoStats from "./BookInfoStats";
 import BookLibraryCard from "./BookLibraryCard";
 import BookRankingCard from "./BookRankingCard";
@@ -145,8 +143,6 @@ export {
   BookChaptersModal,
   BookChapterStats,
   BookChaptersUnlockModal,
-  BookCommentItem,
-  BookCommentModal,
   BookInfoStats,
   BookLibraryCard,
   BookRankingCard,

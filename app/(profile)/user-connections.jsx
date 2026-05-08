@@ -234,9 +234,16 @@ const UserConnectionsScreen = () => {
       setFollowersHasMore(res.hasMore);
       setFollowersCursor(nextCursor);
 
-      const followBackStatus = await fetchFollowRelations(res.documents, "followers");
+      // Renamed from `followBackStatus` to `relations` — earlier the
+      // local declaration shadowed the state variable from line 79.
+      // The `inferred` block above reads followBackStatus[id] from
+      // closure, but const block-hoisting put the local in TDZ for
+      // the whole try block, so Hermes threw "Cannot convert
+      // undefined value to object" before the local was initialized.
+      // Different name = closure correctly resolves to state.
+      const relations = await fetchFollowRelations(res.documents, "followers");
 
-      if (!append && followBackStatus) {
+      if (!append && relations) {
         setConnectionCache(
           getConnectionCacheKey({
             viewerId: user?.$id,
@@ -247,7 +254,10 @@ const UserConnectionsScreen = () => {
             documents: res.documents,
             hasMore: res.hasMore,
             cursor: nextCursor,
-            followBackStatus,
+            // Keep the cache key as `followBackStatus` so the
+            // hydration path on screen mount (which reads
+            // cached.followBackStatus) doesn't need to change.
+            followBackStatus: relations,
           },
         );
       }
@@ -298,9 +308,12 @@ const UserConnectionsScreen = () => {
       setFollowingHasMore(res.hasMore);
       setFollowingCursor(nextCursor);
 
-      const followBackStatus = await fetchFollowRelations(res.documents, "following");
+      // Renamed local for the same reason as fetchFollowers above —
+      // const shadowing put the state variable in TDZ for the whole
+      // try block, breaking the inferred-block read.
+      const relations = await fetchFollowRelations(res.documents, "following");
 
-      if (!append && followBackStatus) {
+      if (!append && relations) {
         setConnectionCache(
           getConnectionCacheKey({
             viewerId: user?.$id,
@@ -311,7 +324,7 @@ const UserConnectionsScreen = () => {
             documents: res.documents,
             hasMore: res.hasMore,
             cursor: nextCursor,
-            followBackStatus,
+            followBackStatus: relations,
           },
         );
       }

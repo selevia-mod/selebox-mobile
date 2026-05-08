@@ -346,8 +346,36 @@ const DiscoverPickCard = memo(({ item, onPressBook }) => {
 });
 
 // Grid card extracted as a memoized component (was an inline render fn in BooksDiscover).
-// Reason: it now needs its own `loadFailed` state so a dead thumbnail URL or a missing
-// thumbnail field renders a book-outline placeholder instead of a blank rectangle.
+//
+// Layout (matches the high-end iOS reference):
+//   ┌──────────┬──────────────────────────┐
+//   │          │  Title (2 lines, 15pt)   │
+//   │  Cover   │  Author + role badge     │
+//   │  fills   │                          │
+//   │  full    │  🔥 1.6K Views           │
+//   │  card    │  ✓ Completed             │
+//   │  height  │  ─────────────────────   │
+//   │          │  Tag 1                   │
+//   │          │  Tag 2                   │
+//   │          │  Tag 3                   │
+//   └──────────┴──────────────────────────┘
+//
+// Why this shape (vs the previous 88×132 absolute-positioned cover inside
+// a 156-tall card):
+//
+//   * On narrow phones the old layout cramped the right column to ~72dp of
+//     usable text width — titles wrapped mid-word, "Views" and "Completed"
+//     ran off the edge. iOS happened to render larger so it fit; Android
+//     low/mid devices clipped.
+//   * Cover now fills the full card height (~32% width) and the right
+//     column gets the rest, with comfortable padding. Title scales up
+//     to 15pt, status / views / tags get one row each with breathing room.
+//   * Card aspect goes from ~0.78:1 (wide-short) to ~1:1.45 (tall-portrait),
+//     which is also closer to the natural 2:3 book-cover aspect.
+//
+// The cover image is `resizeMode: cover` — a 2:3 source filling a
+// taller-than-2:3 slot will crop top/bottom. That's intentional: it
+// matches how Wattpad/Inkitt render full-bleed covers in the same shape.
 const DiscoverGridCard = memo(({ cardItem, cardWidth, cardHeight, onPressBook }) => {
   const { theme } = useAppTheme();
   const [thumbnailFailed, setThumbnailFailed] = useState(false);
@@ -361,95 +389,95 @@ const DiscoverGridCard = memo(({ cardItem, cardWidth, cardHeight, onPressBook })
 
   const safeTags = Array.isArray(book?.tags) ? book.tags.filter(Boolean).slice(0, 3) : [];
   const statusMeta = getStatusMeta(book?.status, theme);
-  const coverTop = Math.max(8, (cardHeight - 132) / 2);
+  // Cover takes ~33% of card width. On a 184dp card that's ~60dp, on a
+  // 200dp card ~66dp — proportional to card size so narrow and wide
+  // phones both leave the right column with meaningful text room
+  // (cardWidth - coverWidth - 24dp padding).
+  const coverWidth = Math.floor(cardWidth * 0.33);
 
   return (
     <TouchableOpacity
       onPress={() => onPressBook(book.$id)}
       activeOpacity={0.9}
-      className="mr-2 overflow-hidden rounded-xl"
+      className="mr-2 flex-row overflow-hidden rounded-xl"
       style={{ width: cardWidth, height: cardHeight, backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }}
     >
-      <View className="relative h-full flex-row">
-        {/* Book covers have a natural 2:3 aspect ratio. The 88×132 cover scales the
-            previous 74×111 up by ~20% so it fills more of the card's vertical real
-            estate while remaining uncropped. Vertically centered for snug alignment
-            when the card height runs slightly taller than the cover. */}
-        {book?.thumbnail && !thumbnailFailed ? (
-          <FastImage
-            source={{ uri: book.thumbnail, priority: FastImage.priority.normal }}
-            style={{
-              position: "absolute",
-              top: coverTop,
-              left: 8,
-              width: 88,
-              height: 132,
-              borderRadius: 8,
-              backgroundColor: theme.surfaceMuted,
-            }}
-            resizeMode={FastImage.resizeMode.cover}
-            onError={() => setThumbnailFailed(true)}
-          />
-        ) : (
-          <View
-            style={{
-              position: "absolute",
-              top: coverTop,
-              left: 8,
-              width: 88,
-              height: 132,
-              borderRadius: 8,
-              backgroundColor: theme.surfaceMuted,
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <Ionicons name="book-outline" size={32} color={theme.iconMuted} />
-          </View>
-        )}
-        <View className="h-full flex-1 px-2 py-2 space-y-2" style={{ paddingLeft: 104 }}>
-          <View>
-            <Text className="text-[13px] font-bold" style={{ color: theme.text }} numberOfLines={2}>
-              {book?.title || "Untitled"}
+      {/* Cover — full card height, fixed cover-width on the left. */}
+      {book?.thumbnail && !thumbnailFailed ? (
+        <FastImage
+          source={{ uri: book.thumbnail, priority: FastImage.priority.normal }}
+          style={{
+            width: coverWidth,
+            height: cardHeight,
+            backgroundColor: theme.surfaceMuted,
+          }}
+          resizeMode={FastImage.resizeMode.cover}
+          onError={() => setThumbnailFailed(true)}
+        />
+      ) : (
+        <View
+          style={{
+            width: coverWidth,
+            height: cardHeight,
+            backgroundColor: theme.surfaceMuted,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Ionicons name="book-outline" size={Math.max(28, Math.floor(coverWidth * 0.4))} color={theme.iconMuted} />
+        </View>
+      )}
+
+      {/* Right column — title + author block on top, stats in the middle,
+          tags pinned to the bottom. justify-between distributes the
+          three so the card never has dead vertical space. */}
+      <View className="flex-1 justify-between px-3 py-3">
+        <View>
+          <Text className="text-[15px] font-bold leading-[19px]" style={{ color: theme.text }} numberOfLines={2}>
+            {book?.title || "Untitled"}
+          </Text>
+          <View className="mt-1 flex-row items-center">
+            <Text className="text-[12px]" style={{ color: theme.textSoft }} numberOfLines={1}>
+              {book?.uploader?.username}
             </Text>
-            <View className="mt-0.5 flex-row items-center">
-              <Text className="text-[11px]" style={{ color: theme.textSoft }} numberOfLines={1}>
-                {book?.uploader?.username}
-              </Text>
-              <UserRoleBadgeIcons user={book?.uploader} size={10} />
-            </View>
+            <UserRoleBadgeIcons user={book?.uploader} size={11} />
+          </View>
+        </View>
+
+        <View>
+          <View className="flex-row items-center">
+            <Ionicons name="flame" size={14} color={theme.accentAmber} />
+            <Text className="ml-1.5 text-[12px] font-medium" style={{ color: theme.accentPurple }} numberOfLines={1}>
+              {FormatNumber(cardItem?.totalReads || 0)} Views
+            </Text>
           </View>
 
-          <View>
-            <View className="mt-1 flex-row items-center">
-              <Ionicons name="flame" size={12} color={theme.accentAmber} />
-              <Text className="ml-1 text-[11px] font-medium" style={{ color: theme.accentPurple }}>
-                {FormatNumber(cardItem?.totalReads || 0)} Views
-              </Text>
-            </View>
-
-            <View className="mt-1 flex-row items-center">
-              <MaterialCommunityIcons name={statusMeta.icon} size={13} color={statusMeta.iconColor} />
-              <Text className="ml-1 text-[11px]" style={{ color: statusMeta.textColor }}>
-                {statusMeta.label}
-              </Text>
-            </View>
+          <View className="mt-1 flex-row items-center">
+            <MaterialCommunityIcons name={statusMeta.icon} size={14} color={statusMeta.iconColor} />
+            <Text className="ml-1.5 text-[12px]" style={{ color: statusMeta.textColor }} numberOfLines={1}>
+              {statusMeta.label}
+            </Text>
           </View>
-          <View>
-            <View className="my-1 border-t" style={{ borderColor: theme.divider }} />
+        </View>
 
-            {safeTags.length > 0 ? (
-              safeTags.map((tag, index) => (
-                <Text key={`${cardItem.id}-tag-${index}`} className="text-[11px] leading-4" style={{ color: theme.textSoft }} numberOfLines={1}>
-                  {tag}
-                </Text>
-              ))
-            ) : (
-              <Text className="text-[11px] leading-4" style={{ color: theme.textSubtle }} numberOfLines={1}>
-                General
+        <View>
+          <View className="mb-1.5 border-t" style={{ borderColor: theme.divider }} />
+          {safeTags.length > 0 ? (
+            safeTags.map((tag, index) => (
+              <Text
+                key={`${cardItem.id}-tag-${index}`}
+                className="text-[12px] leading-[16px]"
+                style={{ color: theme.textSoft }}
+                numberOfLines={1}
+              >
+                {tag}
               </Text>
-            )}
-          </View>
+            ))
+          ) : (
+            <Text className="text-[12px] leading-[16px]" style={{ color: theme.textSubtle }} numberOfLines={1}>
+              General
+            </Text>
+          )}
         </View>
       </View>
     </TouchableOpacity>
@@ -996,12 +1024,24 @@ const BooksDiscover = ({ isActive = false, onRefresh, refreshing = false }) => {
 
   const gridItems = useMemo(() => selectedDiscoverItems.slice(0, GRID_LIMIT), [selectedDiscoverItems]);
   const gridRows = useMemo(() => chunkIntoRows(gridItems, GRID_ITEMS_PER_ROW), [gridItems]);
-  // Wider, more rectangular cards so the 88×132 cover (proper 2:3 book ratio) fills the
-  // card height naturally — the previous 165×168 squares left obvious empty rows above
-  // and below a too-small thumbnail. Card width follows screen width so layouts stay
-  // proportional across phone sizes.
-  const gridCardWidth = useMemo(() => Math.max(180, Math.floor(windowWidth / 1.95)), [windowWidth]);
-  const gridCardHeight = useMemo(() => Math.max(150, Math.min(168, Math.floor(gridCardWidth * 0.78))), [gridCardWidth]);
+  // Tall portrait card — matches the iOS reference design.
+  //
+  //   width  = screen / 2.05 → fits two cards comfortably side-by-side
+  //            with the 8dp gap (`mr-2`) and 8dp ScrollView paddingRight.
+  //            On a 360dp phone (Galaxy A-series) that's ~175dp; on a
+  //            393dp iPhone, ~191dp. Both leave the right column enough
+  //            room for the 15pt title without mid-word wraps.
+  //
+  //   height = width × 1.45 → 1:1.45 portrait aspect, same ratio as the
+  //            high-end design. On 175dp wide → ~254dp tall; on 191dp →
+  //            ~277dp tall. Tall enough that title (2 lines), author,
+  //            views, status, and 3 tag rows all fit with breathing room.
+  //
+  // Lower bound 180dp on width (tiny phones) and 250dp on height
+  // (proportional fallback) so the card never collapses below
+  // legibility on rare small viewports.
+  const gridCardWidth = useMemo(() => Math.max(180, Math.floor(windowWidth / 2.05)), [windowWidth]);
+  const gridCardHeight = useMemo(() => Math.max(250, Math.floor(gridCardWidth * 1.45)), [gridCardWidth]);
   const gridBookIds = useMemo(() => new Set(gridItems.map((item) => item?.book?.$id).filter(Boolean)), [gridItems]);
 
   const picksForYouSource = useMemo(() => {

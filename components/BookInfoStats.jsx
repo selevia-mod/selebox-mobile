@@ -1,16 +1,15 @@
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
-import { useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { useBookStats } from "../context/book-stats-provider";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
+import { BookChapterCommentsService } from "../lib/book-chapter-comments";
 import { BookReadService } from "../lib/book-reads";
 import { BookService } from "../lib/books";
 import FormatNumber from "../lib/utils/format-number";
-import { consumePostCommentModalResume } from "../lib/post-comment-modal-resume";
 import AnimatedSkeleton from "./AnimatedSkeleton";
-import BookCommentModal from "./BookCommentModal";
+import BookAggregatedCommentsModal from "./BookAggregatedCommentsModal";
 import BookReadingListModal from "./BookReadingListModal";
 
 const BookInfoStats = ({
@@ -29,30 +28,22 @@ const BookInfoStats = ({
   const [bookmarkTotal, setBookmarkTotal] = useState(0);
   const [isBookStatsLoading, setIsBookStatsLoading] = useState(true);
   const [isCommentModalVisible, setCommentModalVisible] = useState(false);
-  const [commentModalFocus, setCommentModalFocus] = useState({ focusCommentId: null, focusReplyId: null });
-  const [commentModalResumeToken, setCommentModalResumeToken] = useState(null);
   const [isReadingListModalVisible, setReadingListModalVisible] = useState(false);
   const [readTotal, setReadTotal] = useState(0);
 
   const bookService = new BookService();
   const disableActions = book?.status === "Draft";
   const bookId = book?.$id;
-  const commentResumeScope = useMemo(() => `book-info-comment:${String(bookId || "unknown")}`, [bookId]);
   const sharedStats = getBookStats(bookId);
   const autoOpenKeyRef = useRef(null);
 
-  useFocusEffect(
-    useCallback(() => {
-      if (!bookId) return;
-      const pendingResume = consumePostCommentModalResume(commentResumeScope);
-      if (!pendingResume?.postId) return;
-      if (String(pendingResume.postId) !== String(bookId)) return;
-      setCommentModalFocus({ focusCommentId: null, focusReplyId: null });
-      setCommentModalResumeToken(pendingResume.token || null);
-      setCommentModalVisible(true);
-    }, [bookId, commentResumeScope]),
-  );
-
+  // Notification deep-links pass focusCommentId / focusReplyId to scroll
+  // and highlight a specific comment when the screen opens. With the
+  // new aggregated chapter-comments modal we don't yet honor those
+  // params (the per-comment scroll target lives inside book-reading,
+  // not in this modal). The auto-open behavior is preserved so users
+  // tapping a "comment on book" notification still see the comments
+  // surface — just without the scroll-and-highlight.
   useEffect(() => {
     if (!bookId) return;
 
@@ -63,15 +54,7 @@ const BookInfoStats = ({
     if (autoOpenKeyRef.current === openKey) return;
 
     autoOpenKeyRef.current = openKey;
-    setCommentModalFocus({
-      focusCommentId: focusCommentId || null,
-      focusReplyId: focusReplyId || null,
-    });
-
-    const timer = setTimeout(() => {
-      setCommentModalResumeToken(null);
-      setCommentModalVisible(true);
-    }, 120);
+    const timer = setTimeout(() => setCommentModalVisible(true), 120);
 
     return () => clearTimeout(timer);
   }, [bookId, focusCommentId, focusReplyId, openComments]);
@@ -142,10 +125,16 @@ const BookInfoStats = ({
     }
   };
 
+  // The Comments count + modal both source from the new chapter-comments
+  // aggregator (May 2026). The book-level book_comments table is no
+  // longer surfaced to readers — engagement happens at the chapter level
+  // and we aggregate up to the book for visibility. This count is the
+  // total of every top-level chapter comment across every chapter of
+  // the book; replies aren't counted (matches the legacy semantics).
   const fetchBookComments = async () => {
     try {
-      const bookComments = await bookService.getBookComments({ bookId });
-      updateBookStats(bookId, { commentCount: bookComments.total });
+      const result = await BookChapterCommentsService.fetchBookAggregatedChapterComments?.({ bookId });
+      updateBookStats(bookId, { commentCount: result?.total ?? 0 });
     } catch (error) {
       console.log("fetchBookComments: error", error);
     }
@@ -245,11 +234,7 @@ const BookInfoStats = ({
             </TouchableOpacity>
             <TouchableOpacity
               disabled={disableActions}
-              onPress={() => {
-                setCommentModalFocus({ focusCommentId: null, focusReplyId: null });
-                setCommentModalResumeToken(null);
-                setCommentModalVisible(true);
-              }}
+              onPress={() => setCommentModalVisible(true)}
               className="flex-1 items-center"
             >
               <Ionicons name="chatbubble-outline" size={20} color={theme.iconMuted} />
@@ -293,18 +278,10 @@ const BookInfoStats = ({
         isBookInLibrary={bookmarked}
         onAddToLibrary={handleAddToLibrary}
       />
-      <BookCommentModal
+      <BookAggregatedCommentsModal
         isVisible={isCommentModalVisible}
         book={book}
-        focusCommentId={commentModalFocus.focusCommentId}
-        focusReplyId={commentModalFocus.focusReplyId}
-        onClose={() => {
-          setCommentModalVisible(false);
-          setCommentModalFocus({ focusCommentId: null, focusReplyId: null });
-          setCommentModalResumeToken(null);
-        }}
-        resumeScope={commentResumeScope}
-        resumeToken={commentModalResumeToken}
+        onClose={() => setCommentModalVisible(false)}
       />
     </>
   );

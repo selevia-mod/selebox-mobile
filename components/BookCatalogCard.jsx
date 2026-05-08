@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import useAppTheme from "../hooks/useAppTheme";
+import { BookChapterCommentsService } from "../lib/book-chapter-comments";
 import { BookService } from "../lib/books";
 import BookTag from "./BookTag";
 
@@ -92,9 +93,16 @@ const BookCatalogCard = ({
 
     const fetchData = async () => {
       try {
+        // Comments shown on the catalog card aggregate across every
+        // chapter of the book (May 2026) — same source as the book-info
+        // Comments button. Falls back to 0 if the aggregator throws or
+        // returns nothing, so a transient backend hiccup doesn't blank
+        // the card.
         const [bookmarksRes, commentsRes, chaptersRes] = await Promise.all([
           bookService.getBookLibraries({ bookId: item.$id }).catch(() => ({ total: 0 })),
-          bookService.getBookComments({ bookId: item.$id }).catch(() => ({ total: 0 })),
+          BookChapterCommentsService.fetchBookAggregatedChapterComments?.({ bookId: item.$id }).catch(() => ({
+            total: 0,
+          })) ?? Promise.resolve({ total: 0 }),
           bookService.fetchBookChapters({ bookId: item.$id }).catch(() => ({ total: 0 })),
         ]);
         if (cancelled) return;

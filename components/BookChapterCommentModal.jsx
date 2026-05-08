@@ -21,7 +21,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { databases } from "../lib/appwrite";
-import { BookCommentsService } from "../lib/book-comments";
+import { BookChapterCommentsService } from "../lib/book-chapter-comments";
 import { BookService } from "../lib/books";
 import { buildBookChapterNotificationResourceId, NotificationService } from "../lib/notifications";
 import {
@@ -1072,7 +1072,7 @@ const BookChapterCommentModal = ({ chapter, isVisible, onClose, onCommentPosted,
 
     try {
       if (replyContext?.id) {
-        const newReply = await BookCommentsService.createReplyChapterComment({
+        const newReply = await BookChapterCommentsService.createReplyChapterComment({
           comment: persistedCommentText,
           commentOwner: user.$id,
           bookChapterComment: replyContext.id,

@@ -1,5 +1,21 @@
 import { createContext, useCallback, useContext, useRef, useState } from "react";
+import { BookChapterCommentsService } from "../lib/book-chapter-comments";
 import { BookService } from "../lib/books";
+
+// Comment counts (May 2026 onward) come from the chapter-comments
+// aggregator across every chapter of the book, NOT from the legacy
+// book_comments table. Centralized here so every consumer of book
+// stats (BookInfoStats, BookCatalogCard, BookCard via context) sees
+// the same number.
+const fetchAggregatedCommentCount = async (bookId) => {
+  try {
+    const result = await BookChapterCommentsService.fetchBookAggregatedChapterComments?.({ bookId });
+    return result?.total || 0;
+  } catch (error) {
+    console.warn("[book-stats-provider] aggregated comment count failed:", error?.message);
+    return 0;
+  }
+};
 
 const BookStatsContext = createContext();
 
@@ -84,14 +100,8 @@ export const BookStatsProvider = ({ children }) => {
    */
   const syncBookComments = useCallback(
     async (bookId) => {
-      try {
-        const result = await bookService.getBookComments({ bookId });
-        updateBookStats(bookId, {
-          commentCount: result?.total || 0,
-        });
-      } catch (error) {
-        console.error("syncBookComments error:", error);
-      }
+      const total = await fetchAggregatedCommentCount(bookId);
+      updateBookStats(bookId, { commentCount: total });
     },
     [updateBookStats],
   );
@@ -110,14 +120,16 @@ export const BookStatsProvider = ({ children }) => {
       }
 
       try {
-        const [likeCountRes, commentCountRes, likeStatusRes] = await Promise.all([
+        // Comment count fans out to the chapter-comments aggregator;
+        // the other two stay on the bookService since they're book-row
+        // direct (likes_count column / per-user like-status row).
+        const [likeCountRes, actualCommentCount, likeStatusRes] = await Promise.all([
           bookService.getBookLikes({ bookId }),
-          bookService.getBookComments({ bookId }),
+          fetchAggregatedCommentCount(bookId),
           bookService.getBookLikeByOwner({ bookId, likeOwner: userId }),
         ]);
 
         const actualLikeCount = likeCountRes?.total || 0;
-        const actualCommentCount = commentCountRes?.total || 0;
         const isLiked = likeStatusRes?.documents?.length > 0;
 
         updateBookStats(bookId, {

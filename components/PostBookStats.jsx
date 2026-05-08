@@ -1,24 +1,27 @@
 import { AntDesign, FontAwesome } from "@expo/vector-icons";
-import { useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { useBookStats } from "../context/book-stats-provider";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import FormatNumber from "../lib/utils/format-number";
-import { consumePostCommentModalResume } from "../lib/post-comment-modal-resume";
-import BookCommentModal from "./BookCommentModal";
+import BookAggregatedCommentsModal from "./BookAggregatedCommentsModal";
 import StyledDivider from "./StyledDivider";
 
+// Home/profile feed stats strip for a book post. Mirrors the comments
+// behavior of the book-info screen: tapping the comment button opens
+// the aggregated chapter-comments modal (every chapter's top-level
+// comments in one list). The legacy BookCommentModal + per-book
+// post-comment-modal-resume plumbing was removed when book-level
+// comments were retired May 2026 — there's no composer in the
+// aggregated modal, so there's nothing to "resume" back into.
 const PostBookStats = ({ book, onSharePress }) => {
   const { user } = useGlobalContext();
   const { theme } = useAppTheme();
   const { getBookStats, toggleLike } = useBookStats();
   const [isCommentModalVisible, setCommentModalVisible] = useState(false);
-  const [commentModalResumeToken, setCommentModalResumeToken] = useState(null);
 
   const bookId = book?.$id;
-  const commentResumeScope = useMemo(() => `post-book-comment:${String(bookId || "unknown")}`, [bookId]);
   const stats = getBookStats(bookId) || {};
 
   // Fallback to book data if stats not loaded yet
@@ -33,16 +36,7 @@ const PostBookStats = ({ book, onSharePress }) => {
     await toggleLike(bookId, user.$id);
   };
 
-  useFocusEffect(
-    useCallback(() => {
-      if (!bookId) return;
-      const pendingResume = consumePostCommentModalResume(commentResumeScope);
-      if (!pendingResume?.postId) return;
-      if (String(pendingResume.postId) !== String(bookId)) return;
-      setCommentModalResumeToken(pendingResume.token || null);
-      setCommentModalVisible(true);
-    }, [bookId, commentResumeScope]),
-  );
+  const handleOpenComments = () => setCommentModalVisible(true);
 
   return (
     <View className="flex flex-col space-y-2 px-4 pb-2">
@@ -55,10 +49,7 @@ const PostBookStats = ({ book, onSharePress }) => {
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          onPress={() => {
-            setCommentModalResumeToken(null);
-            setCommentModalVisible(true);
-          }}
+          onPress={handleOpenComments}
           className="flex-row items-center space-x-1 rounded-full px-3 py-1"
           style={{ backgroundColor: theme.commentSoft }}
         >
@@ -81,10 +72,7 @@ const PostBookStats = ({ book, onSharePress }) => {
         </TouchableOpacity>
 
         <TouchableOpacity
-          onPress={() => {
-            setCommentModalResumeToken(null);
-            setCommentModalVisible(true);
-          }}
+          onPress={handleOpenComments}
           className="flex-1 flex-row items-center justify-center space-x-1 px-3 py-2 opacity-80"
         >
           <FontAwesome name="comments" size={15} color={theme.icon} />
@@ -101,16 +89,10 @@ const PostBookStats = ({ book, onSharePress }) => {
         </TouchableOpacity>
       </View>
 
-      {/* Comment Modal */}
-      <BookCommentModal
+      <BookAggregatedCommentsModal
         isVisible={isCommentModalVisible}
         book={book}
-        onClose={() => {
-          setCommentModalVisible(false);
-          setCommentModalResumeToken(null);
-        }}
-        resumeScope={commentResumeScope}
-        resumeToken={commentModalResumeToken}
+        onClose={() => setCommentModalVisible(false)}
       />
     </View>
   );

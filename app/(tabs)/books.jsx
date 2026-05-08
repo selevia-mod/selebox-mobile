@@ -28,7 +28,6 @@ import tabNavigationEvents from "../../lib/tab-navigation-events";
 import {
   setCategoryBooks,
   setCompletedExcellent,
-  setContinueReading,
   setFreshRead,
   setLastFetchedAt,
   setRecentlyUploaded,
@@ -49,19 +48,9 @@ const takeUniqueBooks = ({ books = [], seenBookIds, limit = 30 }) => {
   return uniqueBooks;
 };
 
-const takeUniqueContinueReading = ({ entries = [], seenBookIds, limit = 30 }) => {
-  const uniqueEntries = [];
-
-  for (const entry of entries) {
-    const bookId = entry?.book?.$id;
-    if (!bookId || seenBookIds.has(bookId)) continue;
-    seenBookIds.add(bookId);
-    uniqueEntries.push(entry);
-    if (uniqueEntries.length >= limit) break;
-  }
-
-  return uniqueEntries;
-};
+// takeUniqueContinueReading was removed when continueReading moved out
+// of Redux into BooksContinueReading's self-fetched cache. The shelf
+// applies its own dedup by user_id+book_id pair.
 
 const parseBookCategories = (rawBookCategories) => {
   if (!rawBookCategories) return [];
@@ -195,11 +184,14 @@ const Books = () => {
     const now = Date.now();
     const TWELVE_HOURS = 12 * 60 * 60 * 1000;
 
+    // Note: continueReading was dropped from this emptiness check when
+    // the home "Continue Reading" shelf moved to its own self-fetching
+    // SWR cache (BooksContinueReading.jsx). The other sections still
+    // gate cold-load on Redux being empty.
     const isEmpty =
       !booksState.weeklyFeatured.length &&
       !booksState.freshRead.length &&
       !booksState.completedExcellent.length &&
-      !booksState.continueReading.length &&
       !booksState.recentlyUploaded.length;
 
     const isStale = !booksState.lastFetchedAt || now - booksState.lastFetchedAt > TWELVE_HOURS;
@@ -291,17 +283,20 @@ const Books = () => {
         const weeklyPromise = fetchRandomBook({ limit: 30 });
         const freshPromise = fetchRandomBook({ limit: 60 });
         const completedPromise = fetchRandomBook({ limit: 30, status: "Completed" });
-        const continueReadingPromise = bookService.fetchContinueReadingBooks({ userId: user?.$id });
+        // continueReading no longer fetched here — the home shelf
+        // (components/BooksContinueReading.jsx) self-fetches via
+        // BookReadService.fetchRecentReads with its own SWR cache,
+        // which keeps the resume row in sync with what
+        // useBookProgress shows on book-info.
         const recentlyUploadedPromise = bookService.fetchPublishedBooks({ limit: 120 });
         const categoryPromise = Promise.allSettled(
           bookCategories.map((categoryName) => bookService.fetchPublishedBooks({ limit: 60, category: categoryName })),
         );
 
-        const [weekly, fresh, completed, continueRead, recently] = await Promise.all([
+        const [weekly, fresh, completed, recently] = await Promise.all([
           weeklyPromise,
           freshPromise,
           completedPromise,
-          continueReadingPromise,
           recentlyUploadedPromise,
         ]);
 
@@ -309,17 +304,13 @@ const Books = () => {
         const dedupedWeekly = takeUniqueBooks({ books: weekly.documents || [], seenBookIds, limit: 30 });
         const dedupedFresh = takeUniqueBooks({ books: fresh.documents || [], seenBookIds, limit: 30 });
         const dedupedCompleted = takeUniqueBooks({ books: completed.documents || [], seenBookIds, limit: 30 });
-        const dedupedContinueReading = takeUniqueContinueReading({
-          entries: continueRead.documents || [],
-          seenBookIds,
-          limit: 30,
-        });
         const dedupedRecently = takeUniqueBooks({ books: recently.documents || [], seenBookIds, limit: 30 });
 
         dispatch(setWeeklyFeatured(dedupedWeekly));
         dispatch(setFreshRead(dedupedFresh));
         dispatch(setCompletedExcellent(dedupedCompleted));
-        dispatch(setContinueReading(dedupedContinueReading));
+        // continueReading dispatch removed — see continueReadingPromise
+        // comment above. The shelf reads from its own cache now.
         dispatch(setRecentlyUploaded(dedupedRecently));
         dispatch(setLastFetchedAt(Date.now()));
 

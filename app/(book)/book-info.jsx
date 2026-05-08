@@ -1,6 +1,6 @@
 import { AntDesign, Ionicons, SimpleLineIcons } from "@expo/vector-icons";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, InteractionManager, ScrollView, Text, TouchableOpacity, View } from "react-native";
 import FastImage from "react-native-fast-image";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -21,8 +21,10 @@ import {
 } from "../../components";
 import AnimatedSkeleton, { getRandomSkeletonWidth } from "../../components/AnimatedSkeleton";
 import useAppTheme from "../../hooks/useAppTheme";
+import useBookProgress from "../../hooks/useBookProgress";
 import { getDownloadedBook, isBookDownloaded, saveDownloadedBook } from "../../lib/book-downloads";
 import { BookRatingService } from "../../lib/book-rating";
+import { BookReadService } from "../../lib/book-reads";
 import { BookUnlocksService } from "../../lib/book-unlocks";
 import { BOOK_CHAPTER_LIST_SELECT, BookService, getBookChapterOrder, getBookChapterSectionLabel, isIntroductionChapter } from "../../lib/books";
 import { FollowService } from "../../lib/follows";
@@ -100,7 +102,70 @@ const BookInfo = () => {
   const [chaptersVisible, setChaptersVisible] = useState(false);
   const [chapterUnlockVisible, setChapterUnlockVisible] = useState(false);
   const [selectedChapter, setSelectedChapter] = useState(null);
-  const [continueReadingChapter, setContinueReadingChapter] = useState(null);
+  // Wattpad-style resume — single source of truth for "where did the
+  // reader leave off in this book?" Replaces the older Redux
+  // continueReading slice + per-screen state, both of which had drift
+  // problems. The hook does its own SWR caching internally so opening
+  // book-info repeatedly doesn't hammer the network.
+  const bookProgress = useBookProgress(user?.$id, resolvedBookId);
+  // Derive the chapter object from `chapters` so the CTA can keep using
+  // `continueReadingChapter.lastChapter.$id` and the section label
+  // helper unchanged. Returns null when the saved chapter isn't in the
+  // currently-loaded chapter list (e.g. unloaded paged data, or the
+  // chapter has since been deleted by the writer) — falling back to
+  // "Start Reading" rather than rendering a broken state.
+  const continueReadingChapter = useMemo(() => {
+    if (!bookProgress?.lastChapterId) return null;
+    if (!Array.isArray(chapters) || chapters.length === 0) return null;
+    const target = String(bookProgress.lastChapterId);
+    const match = chapters.find((c) => String(c?.id || "") === target || String(c?.$id || "") === target);
+    if (!match) return null;
+    return { lastChapter: match };
+  }, [bookProgress?.lastChapterId, chapters]);
+
+  // Resolves the chapter id we'd navigate to if the user tapped Start
+  // Reading right now. Memoized so press-in prefetch + the actual
+  // handler can both reference the same target without re-deriving.
+  // MUST be declared at the top level (not after the loading skeleton
+  // early return) so the hook order stays stable across renders.
+  const startReadingChapterId = useMemo(() => {
+    if (continueReadingChapter?.lastChapter?.$id) return continueReadingChapter.lastChapter.$id;
+    if (chapters[0]?.$id) return chapters[0].$id;
+    return null;
+  }, [continueReadingChapter, chapters]);
+
+  // Prefetch the resume chapter into BOOK_CHAPTER_CACHE as soon as
+  // book-info knows where the reader will land. The lib cache has a
+  // 30s TTL and 200-entry cap so this is essentially free; the payoff
+  // is that book-reading.jsx's fetchChapter resolves from cache the
+  // moment it mounts (no network wait → reader paints immediately
+  // after the slide-in transition).
+  //
+  // We trigger this from a useEffect AND from the button's onPressIn —
+  // belt-and-suspenders. The effect handles the common case where
+  // book-info has been on screen for >100ms before the user taps;
+  // the press-in handler covers the case where the user taps while
+  // chapters[] is still loading.
+  const prefetchedChapterIdRef = useRef(null);
+  useEffect(() => {
+    if (!startReadingChapterId) return;
+    if (prefetchedChapterIdRef.current === startReadingChapterId) return;
+    prefetchedChapterIdRef.current = startReadingChapterId;
+    // Fire-and-forget — the lib service caches internally; failures
+    // are non-critical (book-reading will retry from cold).
+    bookService
+      .fetchBookChapter({ chapterId: startReadingChapterId, actorUserId: user?.$id })
+      .catch(() => {});
+  }, [startReadingChapterId, user?.$id]);
+
+  const handleStartReadingPressIn = useCallback(() => {
+    if (!startReadingChapterId) return;
+    if (prefetchedChapterIdRef.current === startReadingChapterId) return;
+    prefetchedChapterIdRef.current = startReadingChapterId;
+    bookService
+      .fetchBookChapter({ chapterId: startReadingChapterId, actorUserId: user?.$id })
+      .catch(() => {});
+  }, [startReadingChapterId, user?.$id]);
   const [isFollowing, setIsFollowing] = useState(false);
   const [ratingVisible, setRatingVisible] = useState(false);
   const displayedChaptersTotal = useMemo(() => {
@@ -136,9 +201,6 @@ const BookInfo = () => {
   // here too makes the very first paint correct (no Paid → Free flash).
   const bookChapterLockStart = book?.bookChapterLockStart ?? globalSettings?.["BOOKS_CHAPTER_LOCK_START"];
 
-  const cachedContinueReading = useMemo(() => {
-    return booksState?.continueReading?.find((entry) => entry?.book?.$id === resolvedBookId) || null;
-  }, [booksState?.continueReading, resolvedBookId]);
   const cachedAllRanking = useMemo(() => {
     const allRankingCache = booksState?.rankingCacheByTag?.__ALL__?.items;
     if (Array.isArray(allRankingCache) && allRankingCache.length > 0) {
@@ -164,9 +226,9 @@ const BookInfo = () => {
       .find((cachedBook) => cachedBook?.$id === resolvedBookId);
     if (categoryMatch) return categoryMatch;
 
-    const continueMatch = booksState?.continueReading?.find((entry) => entry?.book?.$id === resolvedBookId)?.book;
-    if (continueMatch) return continueMatch;
-
+    // Note: Redux state.books.continueReading was removed when we moved
+    // to useBookProgress hook for resume semantics. The library cache
+    // below still has the book object; that's enough for findCachedBook.
     const libraryMatch = booksState?.library?.find((entry) => entry?.book?.$id === resolvedBookId)?.book;
     if (libraryMatch) return libraryMatch;
 
@@ -179,6 +241,16 @@ const BookInfo = () => {
     }
   }, [resolvedBookId]);
 
+  // Record a book view on every screen open — bumps books.views_count
+  // by 1 via the record_book_view RPC. Per the May 2026 simplified
+  // views model: no per-user dedup, no cooldown, every open counts.
+  // Fires once per resolvedBookId change, so navigating book → book
+  // contributes a view to each. Best-effort — failures don't block UI.
+  useEffect(() => {
+    if (!resolvedBookId) return;
+    BookReadService.recordBookView?.({ bookId: resolvedBookId });
+  }, [resolvedBookId]);
+
   useFocusEffect(
     useCallback(() => {
       if (!resolvedBookId) {
@@ -187,7 +259,6 @@ const BookInfo = () => {
         setPreviewChapters([]);
         setChaptersTotal(0);
         setUnlocks(null);
-        setContinueReadingChapter(null);
         setLoading(false);
         return;
       }
@@ -214,19 +285,20 @@ const BookInfo = () => {
 
       if (shouldHydrateFromSnapshot) {
         // Full hydrate from snapshot — no skeleton, no resets.
+        // continueReadingChapter is derived from useBookProgress + the
+        // chapters list, so we don't hydrate it from the snapshot —
+        // the hook serves it directly.
         setBook(snapshot.book);
         setChapters(snapshot.chapters || []);
         setPreviewChapters(snapshot.previewChapters || []);
         setChaptersTotal(snapshot.chaptersTotal || 0);
         setUnlocks(snapshot.unlocks || null);
-        setContinueReadingChapter(snapshot.continueReadingChapter || null);
         setAverageRating(snapshot.averageRating || 0);
         if (snapshot.userRating) setUserRating(snapshot.userRating);
         if (typeof snapshot.isFollowing === "boolean") setIsFollowing(snapshot.isFollowing);
       } else if (!snapshot && cachedBook) {
         // Partial hydrate — book metadata only (from Redux/rankings/library).
         setBook(cachedBook);
-        if (cachedContinueReading) setContinueReadingChapter(cachedContinueReading);
       } else if (!downloadedEntry) {
         // First visit, no cache, no offline copy — clear everything.
         setBook(null);
@@ -234,7 +306,6 @@ const BookInfo = () => {
         setPreviewChapters([]);
         setChaptersTotal(0);
         setUnlocks(null);
-        setContinueReadingChapter(null);
       }
 
       // Offline-download path — fully self-contained, doesn't need
@@ -281,7 +352,10 @@ const BookInfo = () => {
           // were calling the same query with the same params (same
           // bookId, status, limit, select). Folded into one call;
           // the preview is derived from the same response below.
-          const [booksData, unlocksData, chaptersData, bookProgressResponse, averageRes, ratingRes] = await Promise.all([
+          // Reading progress is fetched separately by useBookProgress
+          // hook (with its own SWR cache); no need to include it in the
+          // Promise.all here. One less round-trip per book-info paint.
+          const [booksData, unlocksData, chaptersData, averageRes, ratingRes] = await Promise.all([
             // Pass actorUserId so authors viewing their own draft books
             // get a real result instead of an RLS-filtered null.
             bookService.fetchBook({ bookId: resolvedBookId, actorUserId: user?.$id }),
@@ -292,7 +366,6 @@ const BookInfo = () => {
               limit: previewChaptersLimit,
               select: BOOK_CHAPTER_LIST_SELECT,
             }),
-            bookService.getContinueReadingBook({ userId: user?.$id, bookId: resolvedBookId }),
             BookRatingService.getBookRatings({ bookId: resolvedBookId }),
             BookRatingService.getUserRating({ bookId: resolvedBookId, userId: user?.$id }),
           ]);
@@ -319,10 +392,6 @@ const BookInfo = () => {
           setPreviewChapters(nextPreviewChapters);
           setChaptersTotal(nextChaptersTotal);
 
-          const nextContinueReading =
-            (bookProgressResponse?.documents?.length ?? 0) > 0 ? bookProgressResponse.documents[0] : null;
-          if (nextContinueReading) setContinueReadingChapter(nextContinueReading);
-
           let nextIsFollowing = false;
           if (booksData?.uploader?.$id) {
             nextIsFollowing = await FollowService.isFollowing({
@@ -345,7 +414,8 @@ const BookInfo = () => {
             previewChapters: nextPreviewChapters,
             chaptersTotal: nextChaptersTotal,
             unlocks: nextUnlocks,
-            continueReadingChapter: nextContinueReading,
+            // Resume position is no longer cached here — the
+            // useBookProgress hook owns that read path now.
             averageRating: averageRes?.averageRating || 0,
             userRating: ratingRes || null,
             isFollowing: nextIsFollowing,
@@ -360,7 +430,6 @@ const BookInfo = () => {
           }
 
           setBook(offlineBook);
-          if (cachedContinueReading) setContinueReadingChapter(cachedContinueReading);
 
           if (offlineDownload?.chapters?.length) {
             setChapters(offlineDownload.chapters);
@@ -395,7 +464,7 @@ const BookInfo = () => {
         fetchBook();
       });
       return () => handle?.cancel?.();
-    }, [resolvedBookId, user?.$id, cachedContinueReading, findCachedBook]),
+    }, [resolvedBookId, user?.$id, findCachedBook]),
   );
 
   if (loading) {
@@ -718,20 +787,19 @@ const BookInfo = () => {
     else router.push({ pathname: "/creator-profile", params: { userId: book?.uploader?.$id } });
   };
 
+  // startReadingChapterId, prefetchedChapterIdRef, the prefetch effect,
+  // and handleStartReadingPressIn all live BEFORE the `if (loading)
+  // return ...` block (declared higher in this component, near
+  // continueReadingChapter) — Rules of Hooks: every hook must run on
+  // every render in the same order, including the loading-skeleton
+  // render. Putting them down here meant they'd be skipped during the
+  // initial loading paint and then appear on the next render, blowing
+  // up with "Rendered more hooks than during the previous render."
   const handleStartReading = () => {
-    if (continueReadingChapter?.lastChapter?.$id) {
+    if (startReadingChapterId) {
       router.push({
         pathname: "book-reading",
-        params: {
-          chapterId: continueReadingChapter.lastChapter.$id,
-        },
-      });
-    } else if (chapters[0]?.$id) {
-      router.push({
-        pathname: "book-reading",
-        params: {
-          chapterId: chapters[0]?.$id,
-        },
+        params: { chapterId: startReadingChapterId },
       });
     } else {
       Alert.alert("No chapters available", "This book has no readable chapters yet.");
@@ -921,6 +989,7 @@ const BookInfo = () => {
           <View className="mt-6 px-4">
             <TouchableOpacity
               onPress={handleStartReading}
+              onPressIn={handleStartReadingPressIn}
               className="flex-row items-center justify-center rounded-full py-3"
               style={{ backgroundColor: theme.accentPurple }}
             >

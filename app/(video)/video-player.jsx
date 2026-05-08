@@ -3396,6 +3396,24 @@ const VideoPlayer = () => {
   // purpose anyway — it was pure liability. Drop it entirely.
   // Reintroduce later only if we wire background playback or PiP and
   // sanitize every field to a non-empty trimmed string first.
+  // Reverted to the raw Bunny HLS master URL (May 2026). Two earlier
+  // attempts at capping playback at 480p both broke playback in
+  // production:
+  //   • Force-MP4: replaced /playlist.m3u8 with /play_480p.mp4. Failed
+  //     for any video where Bunny hadn't transcoded that specific
+  //     rendition (404 → player error → black screen).
+  //   • Filtered HLS master via file://: built a local master that
+  //     only listed 240p/360p/480p variants pointing at Bunny's
+  //     absolute https:// URLs. AVPlayer (iOS) appears to reject
+  //     cross-scheme variant resolution from a file:// master, so the
+  //     player loaded the manifest but never started playback.
+  //
+  // Restoring the original adaptive-bitrate behavior unblocks users.
+  // Quality-cap is deferred until we have a confirmed-working path
+  // (most likely options: a server-side filter that re-emits the
+  // master, or a Bunny URL parameter — needs verification with their
+  // support team since their docs are ambiguous on HLS quality
+  // restriction params).
   const playerSource = useMemo(() => {
     if (!video?.videoUrl) return null;
     return { uri: video.videoUrl };

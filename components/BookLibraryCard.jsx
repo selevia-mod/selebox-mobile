@@ -28,11 +28,14 @@ import Modal from "react-native-modal";
 import Share from "react-native-share";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
+import useBookProgress from "../hooks/useBookProgress";
+import { BookChapterCommentsService } from "../lib/book-chapter-comments";
 import { isBookDownloaded, removeDownloadedBook, saveDownloadedBook } from "../lib/book-downloads";
 import { BookReadService } from "../lib/book-reads";
 import { BookUnlocksService } from "../lib/book-unlocks";
 import { BookService } from "../lib/books";
 import FormatNumber from "../lib/utils/format-number";
+import TimeAgo from "../lib/utils/time-ago";
 import secrets from "../private/secrets";
 import BookTag from "./BookTag";
 import ReportModal from "./ReportModal";
@@ -53,6 +56,10 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
   const [isDownloaded, setIsDownloaded] = useState(false);
 
   const { user, globalSettings } = useGlobalContext();
+  // Wattpad-style progress strip — sourced from the same hook the
+  // book-info CTA uses, so the library card and book-info screen never
+  // disagree about which chapter the reader was last on.
+  const progress = useBookProgress(user?.$id, item?.$id);
   // Prefer the per-book threshold (mapped from `lock_from_chapter` on
   // the book row) over globalSettings — the latter sometimes hadn't
   // rehydrated yet, leaving bookChapterLockStart undefined and making
@@ -97,10 +104,14 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
     }
   };
 
+  // Comments shown on the library card aggregate across every chapter
+  // of the book — same source as the book-info Comments button (May
+  // 2026). The legacy book-level book_comments table is no longer
+  // surfaced anywhere in the app.
   const fetchBookComments = async () => {
     try {
-      const bookComments = await bookService.getBookComments({ bookId: item.$id });
-      setCommentTotal(bookComments.total);
+      const result = await BookChapterCommentsService.fetchBookAggregatedChapterComments?.({ bookId: item.$id });
+      setCommentTotal(result?.total ?? 0);
     } catch (error) {
       console.log("fetchBookComments: error", error);
     }
@@ -524,6 +535,43 @@ const BookLibraryCard = React.memo(({ item, hideRemove, hideSettings, hideStats,
                   </View>
                 )}
               </View>
+
+              {/* Wattpad-style progress strip — shown only when the
+                  reader has actual progress on this book. The label
+                  reads "Chapter 5 • 2h ago", and a thin progress bar
+                  underneath fills to last_scroll_pct (chapter-level
+                  position, NOT book-level). Hidden entirely when no
+                  progress exists so brand-new library entries don't
+                  render an empty 0% bar. */}
+              {progress?.hasProgress && (
+                <View className="mt-2">
+                  <Text
+                    className="text-[10px] font-semibold uppercase"
+                    style={{ color: theme.primary, letterSpacing: 0.6 }}
+                    numberOfLines={1}
+                  >
+                    {progress.lastChapterNumber ? `Chapter ${progress.lastChapterNumber}` : "Reading"}
+                    {progress.lastReadAt ? ` • ${TimeAgo(progress.lastReadAt)}` : ""}
+                  </Text>
+                  <View
+                    style={{
+                      marginTop: 4,
+                      height: 2,
+                      borderRadius: 1,
+                      backgroundColor: theme.surfaceMuted,
+                      overflow: "hidden",
+                    }}
+                  >
+                    <View
+                      style={{
+                        width: `${Math.max(2, Math.min(100, Math.round((progress.lastScrollPct || 0) * 100)))}%`,
+                        height: "100%",
+                        backgroundColor: theme.primary,
+                      }}
+                    />
+                  </View>
+                </View>
+              )}
             </View>
 
             {/* Stats Row — theme-aware icon color so the row reads as one

@@ -1,13 +1,14 @@
 import { Ionicons, MaterialCommunityIcons, MaterialIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useNavigation, usePreventRemove } from "@react-navigation/native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Animated,
   Dimensions,
+  InteractionManager,
   Modal,
   Platform,
   Pressable,
@@ -30,9 +31,10 @@ import { normalizeBookContentToHtml } from "../../lib/book-content";
 import { createInlineCommentDomVisitors, INLINE_COMMENT_ATTRS } from "../../lib/book-inline-comment-anchors";
 import { BookInlineCommentsService } from "../../lib/book-inline-comments";
 import { BookReadService } from "../../lib/book-reads";
+import { invalidateBookProgress } from "../../hooks/useBookProgress";
 import { tickGoalUnique } from "../../lib/goals-store";
 import { BookUnlocksService } from "../../lib/book-unlocks";
-import { BOOK_CHAPTER_LIST_SELECT, BookService } from "../../lib/books";
+import { BOOK_CHAPTER_LIST_SELECT, BookService, getBookChapterOrder } from "../../lib/books";
 import { THEME_MODES, themeColors } from "../../theme/colors";
 
 const sanitizeImageTag = (tag = "") => {
@@ -161,10 +163,15 @@ export default function ReadingScreen() {
   const [inlineCommentThreads, setInlineCommentThreads] = useState({});
   const [inlineCommentVisible, setInlineCommentVisible] = useState(false);
   const [selectedInlineAnchor, setSelectedInlineAnchor] = useState(null);
-  const [exitPromptVisible, setExitPromptVisible] = useState(false);
   const [isBookInLibrary, setIsBookInLibrary] = useState(null);
+  const [exitPromptVisible, setExitPromptVisible] = useState(false);
   const [savingToLibrary, setSavingToLibrary] = useState(false);
   const [exitGuardBypassed, setExitGuardBypassed] = useState(false);
+  // Tracks whether the chapter-4 prompt has already been shown today for
+  // this (user, book). Hydrated from AsyncStorage on mount; if today's
+  // YYYY-MM-DD already lives under the key, the exit guard stays
+  // disengaged and back navigates straight away.
+  const [promptThrottledForToday, setPromptThrottledForToday] = useState(false);
 
   const [pageColor, setPageColor] = useState(isDarkMode ? "dark" : "light");
   const [readingMode, setReadingMode] = useState("scroll");
@@ -184,7 +191,31 @@ export default function ReadingScreen() {
   const scrollMetricsRef = useRef({ contentHeight: 0, viewportHeight: 0 });
   const handledInlineNotificationRef = useRef("");
   const activeInlineThreadChapterIdRef = useRef("");
+  // Holds the pending navigation action that triggered the exit prompt
+  // so we can replay it once the user picks Save / Don't Save.
   const pendingNavigationActionRef = useRef(null);
+  // Wattpad-style scroll persistence:
+  //   • scrollPositionRef.current.pct — fraction of contentHeight (0-1)
+  //     where the reader currently is. Updated cheaply on every scroll
+  //     tick; the actual write to book_reads is debounced.
+  //   • scrollPositionRef.current.dirty — true when there's an unsaved
+  //     position waiting to be flushed. Set on scroll, cleared on flush.
+  //   • scrollPositionRef.current.chapterId — which chapter the position
+  //     belongs to. Captured at scroll time so a flush that fires after
+  //     a chapter change still writes to the correct chapter row.
+  //   • scrollPersistTimerRef — the debounce handle. Reset on each scroll
+  //     event so the write fires once the reader has been still for ~1.5s.
+  const scrollPositionRef = useRef({ pct: 0, dirty: false, chapterId: null });
+  const scrollPersistTimerRef = useRef(null);
+  const SCROLL_PERSIST_DEBOUNCE_MS = 1500;
+  // Holds a pending Wattpad-style resume — the saved scroll pct for the
+  // chapter currently mounting. Set asynchronously when the user opens
+  // a book/chapter that matches their saved last_chapter_id; consumed
+  // by onContentSizeChange once the chapter HTML has laid out and we
+  // know the final contentHeight to multiply against. Cleared after
+  // the scrollTo so a re-render of the same chapter doesn't replay
+  // the seek (which would be jarring if the user had scrolled away).
+  const pendingScrollRestoreRef = useRef({ chapterId: null, pct: 0 });
   const minimumFont = 16;
   const maximumFont = 20;
   const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get("window");
@@ -198,32 +229,56 @@ export default function ReadingScreen() {
   const currentPageTheme = bookReadingTheme[pageColor];
   const skeletonBaseColor = currentPageTheme.skeletonBase;
   const lineHeight = Math.round(fontSize * 1.6);
-  const htmlBaseStyle = { color: currentPageTheme.fontColor, fontSize, lineHeight };
-  const htmlTagsStyles = {
-    p: { marginTop: 0, marginBottom: 12 },
-    h1: { color: currentPageTheme.fontColor, fontSize: fontSize + 10, marginTop: 12, marginBottom: 8 },
-    h2: { color: currentPageTheme.fontColor, fontSize: fontSize + 6, marginTop: 12, marginBottom: 8 },
-    h3: { color: currentPageTheme.fontColor, fontSize: fontSize + 3, marginTop: 12, marginBottom: 6 },
-    strong: { color: currentPageTheme.fontColor },
-    em: { color: currentPageTheme.fontColor },
-    u: { textDecorationLine: "underline" },
-    s: { textDecorationLine: "underline" },
-    span: { color: currentPageTheme.fontColor },
-    // Clamp embedded chapter images to the reader column width and let
-    // height auto-scale so aspect ratio is preserved. tagsStyles wins
-    // over the inline `max-width:100%` in the HTML, so without an
-    // explicit width here intrinsic-sized images blow past the screen
-    // and push body text off-screen.
-    img: {
-      width: "100%",
-      height: "auto",
-      maxWidth: "100%",
-      alignSelf: "center",
-      marginTop: 10,
-      marginBottom: 16,
-      borderRadius: 12,
-    },
-  };
+  // Memoized RenderHTML props. Without these the prop refs change on
+  // EVERY render — including each scroll tick (handleScroll calls
+  // setState multiple times per second) — which forces RenderHTML to
+  // re-parse and re-flatten the entire chapter HTML each time. On a
+  // 100KB chapter that's ~20-40ms of synchronous work per scroll
+  // event, which is exactly what made scrolling feel "laggy."
+  const htmlBaseStyle = useMemo(
+    () => ({ color: currentPageTheme.fontColor, fontSize, lineHeight }),
+    [currentPageTheme.fontColor, fontSize, lineHeight],
+  );
+  const htmlTagsStyles = useMemo(
+    () => ({
+      p: { marginTop: 0, marginBottom: 12 },
+      h1: { color: currentPageTheme.fontColor, fontSize: fontSize + 10, marginTop: 12, marginBottom: 8 },
+      h2: { color: currentPageTheme.fontColor, fontSize: fontSize + 6, marginTop: 12, marginBottom: 8 },
+      h3: { color: currentPageTheme.fontColor, fontSize: fontSize + 3, marginTop: 12, marginBottom: 6 },
+      strong: { color: currentPageTheme.fontColor },
+      em: { color: currentPageTheme.fontColor },
+      u: { textDecorationLine: "underline" },
+      s: { textDecorationLine: "underline" },
+      span: { color: currentPageTheme.fontColor },
+      // Clamp embedded chapter images to the reader column width and let
+      // height auto-scale so aspect ratio is preserved. tagsStyles wins
+      // over the inline `max-width:100%` in the HTML, so without an
+      // explicit width here intrinsic-sized images blow past the screen
+      // and push body text off-screen.
+      img: {
+        width: "100%",
+        height: "auto",
+        maxWidth: "100%",
+        alignSelf: "center",
+        marginTop: 10,
+        marginBottom: 16,
+        borderRadius: 12,
+      },
+    }),
+    [currentPageTheme.fontColor, fontSize],
+  );
+
+  // Pre-process the chapter HTML once per chapter, not once per render.
+  // sanitizeImageTag + stripBackgroundStyles + normalizeBookContentToHtml
+  // are all regex-heavy on long chapters; running them inside the JSX
+  // source prop meant they fired on every parent re-render. Keyed on
+  // chapter $id + a length sentinel so a writer's edit (rare during a
+  // user's reading session) still triggers a re-process if the screen
+  // happens to be open.
+  const processedChapterHtml = useMemo(() => {
+    if (!chapter?.content) return "";
+    return stripBackgroundStyles(normalizeBookContentToHtml(chapter.content));
+  }, [chapter?.$id, chapter?.content]);
 
   useEffect(() => {
     const fetchChapter = async () => {
@@ -365,10 +420,24 @@ export default function ReadingScreen() {
       if (bookTheme.readingMode) setReadingMode(bookTheme.readingMode);
     };
 
-    fetchChapter();
+    // Theme hydration is fast (single AsyncStorage multiGet, no
+    // network) so it stays on the synchronous mount path — needed for
+    // the first render to honor the user's saved pageColor + fontSize.
     fetchPersistedBookReadingThemeData();
+    // Defer the chapter fetch until after the screen-transition
+    // animation settles. Without this, the network call (and downstream
+    // setState fanout) shares the JS bridge with expo-router's
+    // slide-in, which is exactly the "tap → reader feels laggy" the
+    // user reported. The lib's BOOK_CHAPTER_CACHE has a 30s TTL so
+    // resume-tap on a freshly-prefetched chapter still resolves
+    // synchronously here. book-info.jsx uses the same pattern for the
+    // same reason (its 7-fetch Promise.all was tanking transitions).
+    const interactionHandle = InteractionManager.runAfterInteractions(() => {
+      fetchChapter();
+    });
 
     return () => {
+      interactionHandle?.cancel?.();
       const { pageColor, fontSize, readingMode } = latestThemeRef.current;
       const bookReadingThemeData = [
         ["pageColor", pageColor],
@@ -384,10 +453,6 @@ export default function ReadingScreen() {
   useEffect(() => {
     latestThemeRef.current = { pageColor, fontSize, readingMode };
   }, [pageColor, fontSize, readingMode]);
-
-  useEffect(() => {
-    activeInlineThreadChapterIdRef.current = String(chapter?.$id || "");
-  }, [chapter?.$id]);
 
   useEffect(() => {
     activeInlineThreadChapterIdRef.current = String(chapter?.$id || "");
@@ -457,7 +522,78 @@ export default function ReadingScreen() {
     };
   }, [book?.$id, bookService, user?.$id]);
 
-  const shouldPreventExit = Boolean(book?.$id && user?.$id && !isOffline && isBookInLibrary !== true && !exitGuardBypassed);
+  // ── Save-to-library prompt on exit, gated to chapter 4+ + once-per-day ──
+  //
+  // History — three iterations of this UX:
+  //   v1: prompt fired on EVERY exit from EVERY chapter regardless of how
+  //       far the user had read. Users complained it was spam.
+  //   v2: silent auto-save the moment the user reached chapter 4. Charles
+  //       pushed back: forcing the book into the library means a user
+  //       who's not interested has to take a manual action to remove it.
+  //   v3 (this): explicit prompt on exit, but ONLY when (a) the user has
+  //       made it to chapter order >= 4 (a real "committed reader" signal)
+  //       AND (b) we haven't already shown the prompt for this (user, book)
+  //       today. Picking either Save or Don't Save sets the daily key, so
+  //       re-entering the same book in the same day exits silently.
+  //
+  // The reading-progress side of "remember where I left off" is handled
+  // entirely outside this screen: every chapter open already calls
+  // BookReadService.readBookChapter, which upserts book_reads with
+  // last_chapter_id. The book-info screen reads from that table and
+  // shows "Continue Reading: <chapter>" instead of "Start Reading", so
+  // when the user returns they pick up at their last stop. No extra
+  // resume bookkeeping needed in this file.
+  const chapterOrder = chapter ? getBookChapterOrder(chapter, chapterIndex) : null;
+  const hasReachedPromptThreshold = Number.isFinite(chapterOrder) && chapterOrder >= 4;
+
+  // Hydrate the "already prompted today?" flag from AsyncStorage. Runs
+  // when the (user, book) pair changes; if today's date already lives
+  // under the throttle key we keep the guard disengaged for the rest of
+  // the session on this book.
+  useEffect(() => {
+    if (!book?.$id || !user?.$id) return;
+    let cancelled = false;
+    const storageKey = `book_lib_prompt:${user.$id}:${book.$id}`;
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
+    (async () => {
+      try {
+        const lastShown = await AsyncStorage.getItem(storageKey);
+        if (cancelled) return;
+        setPromptThrottledForToday(lastShown === today);
+      } catch {
+        // AsyncStorage hiccups shouldn't accidentally trap the user — if
+        // we can't read the throttle key, default to "not throttled" and
+        // let them see the prompt once. Picking either button will set
+        // the key and silence it for the rest of the day.
+        if (!cancelled) setPromptThrottledForToday(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [book?.$id, user?.$id]);
+
+  const shouldPreventExit = Boolean(
+    book?.$id &&
+      user?.$id &&
+      !isOffline &&
+      isBookInLibrary === false && // explicit false — null still loading
+      hasReachedPromptThreshold &&
+      !promptThrottledForToday &&
+      !exitGuardBypassed,
+  );
+
+  const markPromptShownForToday = useCallback(async () => {
+    if (!book?.$id || !user?.$id) return;
+    const storageKey = `book_lib_prompt:${user.$id}:${book.$id}`;
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      await AsyncStorage.setItem(storageKey, today);
+    } catch (error) {
+      console.warn("[book-reading] could not persist prompt throttle:", error?.message);
+    }
+    setPromptThrottledForToday(true);
+  }, [book?.$id, user?.$id]);
 
   const proceedPendingExit = useCallback(() => {
     setExitPromptVisible(false);
@@ -469,6 +605,9 @@ export default function ReadingScreen() {
     setExitPromptVisible(true);
   });
 
+  // Replays the deferred navigation action once the user has chosen Save
+  // or Don't Save. Driven by exitGuardBypassed flipping true so the
+  // <usePreventRemove> hook stops blocking before we redispatch.
   useEffect(() => {
     if (!exitGuardBypassed) return;
 
@@ -487,25 +626,26 @@ export default function ReadingScreen() {
     return () => cancelAnimationFrame(frameId);
   }, [exitGuardBypassed, navigation]);
 
-  const handleContinueReading = () => {
+  const handleDismissPrompt = useCallback(() => {
     pendingNavigationActionRef.current = null;
     setExitPromptVisible(false);
-  };
+  }, []);
 
-  const handleExitWithoutSaving = () => {
+  const handleDontSaveAndExit = useCallback(async () => {
+    await markPromptShownForToday();
     proceedPendingExit();
-  };
+  }, [markPromptShownForToday, proceedPendingExit]);
 
-  const handleSaveToLibraryAndExit = async () => {
+  const handleSaveToLibraryAndExit = useCallback(async () => {
     if (!book?.$id || !user?.$id || savingToLibrary) return;
-
     try {
       setSavingToLibrary(true);
-      const existingBookMark = await bookService.getBookLibrayByUser({ bookId: book.$id, userId: user.$id });
-      if (existingBookMark?.documents?.length === 0) {
+      const existing = await bookService.getBookLibrayByUser({ bookId: book.$id, userId: user.$id });
+      if ((existing?.documents?.length ?? 0) === 0) {
         await bookService.createBookLibrary({ bookId: book.$id, userId: user.$id });
       }
       setIsBookInLibrary(true);
+      await markPromptShownForToday();
       setSavingToLibrary(false);
       proceedPendingExit();
     } catch (error) {
@@ -513,7 +653,7 @@ export default function ReadingScreen() {
       console.error("handleSaveToLibraryAndExit: error", error);
       Alert.alert("Error", "Unable to add this book to your library right now.");
     }
-  };
+  }, [book?.$id, bookService, markPromptShownForToday, proceedPendingExit, savingToLibrary, user?.$id]);
 
   const loadInlineCommentThreads = useCallback(async (bookChapterId) => {
     const normalizedChapterId = String(bookChapterId || "");
@@ -564,6 +704,57 @@ export default function ReadingScreen() {
     setInlineCommentVisible(true);
   }, [chapter?.$id, inlineCommentThreads, resolvedChapterId, resolvedInlineCommentAnchorKey, resolvedInlineCommentOpen]);
 
+  // ── Scroll-position persistence (Wattpad-style resume) ──
+  //
+  // flushScrollPosition is the only thing that actually talks to the
+  // backend. Called from:
+  //   1. The 1.5s scroll-idle debounce (the common path — writes while
+  //      the reader is still reading the same chapter).
+  //   2. useFocusEffect cleanup when the screen blurs (so backgrounding
+  //      / navigating away during active reading still flushes).
+  //   3. Chapter-change cleanup before readBookChapter resets to 0 (so
+  //      we don't drop a few seconds of unsaved scroll on transition).
+  //
+  // The `chapterId` snapshot in the ref protects against the case where
+  // a flush queued for chapter A fires AFTER the reader has navigated
+  // to chapter B — we still upsert against chapter A's id, which keeps
+  // the row coherent even if the user is now on a different chapter.
+  const flushScrollPosition = useCallback(async () => {
+    if (scrollPersistTimerRef.current) {
+      clearTimeout(scrollPersistTimerRef.current);
+      scrollPersistTimerRef.current = null;
+    }
+    const snapshot = scrollPositionRef.current;
+    if (!snapshot.dirty) return;
+    if (!user?.$id || !book?.$id || !snapshot.chapterId) return;
+
+    // Mark clean BEFORE the await so a fast follow-up scroll doesn't
+    // duplicate this same write.
+    scrollPositionRef.current = { ...snapshot, dirty: false };
+
+    try {
+      // Calls through the dispatcher so the Appwrite path silently
+      // no-ops (its BookReadService doesn't expose upsertBookRead).
+      await BookReadService.upsertBookRead?.({
+        userId: user.$id,
+        bookId: book.$id,
+        chapterId: snapshot.chapterId,
+        lastScrollPct: snapshot.pct,
+      });
+      // Bust the useBookProgress cache so book-info / library cards
+      // pick up the new last_scroll_pct on next render. Without this
+      // the SWR cache would happily serve the stale row for up to
+      // 5min after the user closed the reader, making "Continue from
+      // Chapter X" look like it forgot the scroll position.
+      invalidateBookProgress({ userId: user.$id, bookId: book.$id });
+    } catch (error) {
+      console.warn("[book-reading] scroll-pct flush failed:", error?.message);
+      // Don't re-mark dirty — a failed write isn't worth retry-storming.
+      // Next scroll tick will mark dirty again and the next debounce
+      // round will try fresh.
+    }
+  }, [book?.$id, user?.$id]);
+
   const handleScroll = (e) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
     scrollMetricsRef.current = {
@@ -581,6 +772,29 @@ export default function ReadingScreen() {
       setUiVisible(true);
     }
 
+    // Track the current scroll position for Wattpad-style resume. Cheap:
+    // ref update + clamp, no React state churn. Only persisted when the
+    // reader has been still for SCROLL_PERSIST_DEBOUNCE_MS.
+    if (readingMode === "scroll" && chapter?.$id) {
+      const scrollableRange = contentSize.height - layoutMeasurement.height;
+      // Short content (chapter fits on a single screen) → there's
+      // nothing to "resume" — keep pct at 0 and don't bother writing.
+      if (scrollableRange > 0) {
+        const pct = Math.max(0, Math.min(1, y / scrollableRange));
+        scrollPositionRef.current = {
+          pct,
+          dirty: true,
+          chapterId: chapter.$id,
+        };
+        if (scrollPersistTimerRef.current) {
+          clearTimeout(scrollPersistTimerRef.current);
+        }
+        scrollPersistTimerRef.current = setTimeout(() => {
+          flushScrollPosition();
+        }, SCROLL_PERSIST_DEBOUNCE_MS);
+      }
+    }
+
     if (readingMode !== "scroll") {
       if (showBottomSwipeIndicator) setShowBottomSwipeIndicator(false);
       return;
@@ -592,6 +806,76 @@ export default function ReadingScreen() {
 
     setShowBottomSwipeIndicator(shouldShowIndicator);
   };
+
+  // Flush on screen blur (back nav / tab switch / app background). Pairs
+  // with the debounce-write so a reader who taps back mid-chapter still
+  // gets their position saved before the screen unmounts.
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        flushScrollPosition();
+      };
+    }, [flushScrollPosition]),
+  );
+
+  // Hard cleanup on unmount — kill any pending debounce timer so it
+  // can't fire after the component is gone (would log a noisy warning
+  // about setting state on an unmounted component, and worse, leak
+  // a closure capture of the old book/chapter ids).
+  useEffect(() => {
+    return () => {
+      if (scrollPersistTimerRef.current) {
+        clearTimeout(scrollPersistTimerRef.current);
+        scrollPersistTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // Flush on chapter change. readBookChapter then resets last_scroll_pct
+  // to 0 for the new chapter; this ensures the OLD chapter's final
+  // position lands in the row before that reset overwrites it.
+  useEffect(() => {
+    return () => {
+      flushScrollPosition();
+    };
+  }, [chapter?.$id, flushScrollPosition]);
+
+  // ── Wattpad-style resume: load saved scroll pct on chapter mount ──
+  //
+  // When the reader opens a chapter that matches their last_chapter_id,
+  // fetch the saved last_scroll_pct and stash it in pendingScrollRestoreRef.
+  // The actual scrollTo can't run yet — contentHeight isn't known until
+  // the chapter HTML renders — so we defer it to onContentSizeChange.
+  //
+  // We only restore if pct > 0.05 (about 5% in). Below that the user
+  // was effectively at the top, and forcing a tiny scroll seek makes
+  // the restore feel buggy more than helpful.
+  useEffect(() => {
+    if (!chapter?.$id || !user?.$id || !book?.$id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const saved = await BookReadService.getBookRead?.({ userId: user.$id, bookId: book.$id });
+        if (cancelled) return;
+        if (!saved) return;
+        // The saved row's last_chapter_id is in UUID form; the mobile
+        // chapter object's $id is `legacy_appwrite_id || id`. We can't
+        // compare directly. Instead, match against `chapter.id`
+        // (Supabase UUID) when present, falling back to $id.
+        const savedChapterId = String(saved.last_chapter_id || "");
+        const candidates = [String(chapter.id || ""), String(chapter.$id || "")].filter(Boolean);
+        if (!candidates.includes(savedChapterId)) return;
+        const pct = Number(saved.last_scroll_pct);
+        if (!Number.isFinite(pct) || pct <= 0.05) return;
+        pendingScrollRestoreRef.current = { chapterId: chapter.$id, pct };
+      } catch (error) {
+        console.warn("[book-reading] could not load saved scroll pct:", error?.message);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chapter?.$id, chapter?.id, book?.$id, user?.$id]);
 
   const animateChapterChange = (newChapter, newIndex) => {
     if (transitioning) return;
@@ -900,13 +1184,15 @@ export default function ReadingScreen() {
     }
   };
 
-  const handleOpenInlineCommentThread = (anchor, event) => {
+  // Stable callback ref so renderInlineCommentableBlock's useCallback
+  // dep set doesn't churn on every render.
+  const handleOpenInlineCommentThread = useCallback((anchor, event) => {
     event?.stopPropagation?.();
     if (!anchor?.anchorKey) return;
 
     setSelectedInlineAnchor(anchor);
     setInlineCommentVisible(true);
-  };
+  }, []);
 
   const handleCloseInlineCommentThread = () => {
     setInlineCommentVisible(false);
@@ -934,73 +1220,96 @@ export default function ReadingScreen() {
     });
   };
 
-  const renderInlineCommentableBlock = ({ tnode, InternalRenderer, ...rendererProps }) => {
-    const anchorKey = tnode.attributes?.[INLINE_COMMENT_ATTRS.key];
-    const anchorPreview = tnode.attributes?.[INLINE_COMMENT_ATTRS.preview];
-    const anchorPath = tnode.attributes?.[INLINE_COMMENT_ATTRS.path];
-    const anchorTag = tnode.attributes?.[INLINE_COMMENT_ATTRS.tag] || tnode.tagName;
-    const anchorOrdinal = Number(tnode.attributes?.[INLINE_COMMENT_ATTRS.ordinal] || 0);
-    const anchorTextHash = tnode.attributes?.[INLINE_COMMENT_ATTRS.textHash];
-    const anchorTrigger = tnode.attributes?.[INLINE_COMMENT_ATTRS.trigger] === "1";
-    const anchorVersion = tnode.attributes?.[INLINE_COMMENT_ATTRS.version] || "v1";
-    const threadDocument = anchorKey ? inlineCommentThreads[anchorKey] : null;
-    const commentCount = Math.max(threadDocument?.totalCommentCount ?? threadDocument?.commentsCount ?? 0, 0);
-    const shouldShowInlineComment = Boolean(anchorKey && (anchorTrigger || commentCount > 0));
-    const iconColor = currentPageTheme.iconMuted;
-    const countColor = currentPageTheme.textSoft;
+  // Memoized custom block renderer — called by RenderHTML for every
+  // <p>, <h1>, <li>, etc. node. Without useCallback the function ref
+  // changes every parent render, which (a) breaks RenderHTML's
+  // internal memoization across renderers and (b) means every chapter
+  // node re-resolves its renderer on each render. With the memo, only
+  // changes to inlineCommentThreads or theme colors invalidate it.
+  const renderInlineCommentableBlock = useCallback(
+    ({ tnode, InternalRenderer, ...rendererProps }) => {
+      const anchorKey = tnode.attributes?.[INLINE_COMMENT_ATTRS.key];
+      const anchorPreview = tnode.attributes?.[INLINE_COMMENT_ATTRS.preview];
+      const anchorPath = tnode.attributes?.[INLINE_COMMENT_ATTRS.path];
+      const anchorTag = tnode.attributes?.[INLINE_COMMENT_ATTRS.tag] || tnode.tagName;
+      const anchorOrdinal = Number(tnode.attributes?.[INLINE_COMMENT_ATTRS.ordinal] || 0);
+      const anchorTextHash = tnode.attributes?.[INLINE_COMMENT_ATTRS.textHash];
+      const anchorTrigger = tnode.attributes?.[INLINE_COMMENT_ATTRS.trigger] === "1";
+      const anchorVersion = tnode.attributes?.[INLINE_COMMENT_ATTRS.version] || "v1";
+      const threadDocument = anchorKey ? inlineCommentThreads[anchorKey] : null;
+      const commentCount = Math.max(threadDocument?.totalCommentCount ?? threadDocument?.commentsCount ?? 0, 0);
+      const shouldShowInlineComment = Boolean(anchorKey && (anchorTrigger || commentCount > 0));
+      const iconColor = currentPageTheme.iconMuted;
+      const countColor = currentPageTheme.textSoft;
 
-    if (!shouldShowInlineComment) {
-      return <InternalRenderer tnode={tnode} {...rendererProps} />;
-    }
+      if (!shouldShowInlineComment) {
+        return <InternalRenderer tnode={tnode} {...rendererProps} />;
+      }
 
-    return (
-      <View>
-        <InternalRenderer tnode={tnode} {...rendererProps} />
-        <View className="mt-1 flex-row justify-end">
-          <TouchableOpacity
-            onPress={(event) =>
-              handleOpenInlineCommentThread(
-                {
-                  anchorKey,
-                  anchorVersion,
-                  ordinal: anchorOrdinal,
-                  path: anchorPath,
-                  preview: anchorPreview,
-                  tagName: anchorTag,
-                  textHash: anchorTextHash,
-                },
-                event,
-              )
-            }
-            hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
-            className="mr-[-6px] flex-row items-center"
-          >
-            <MaterialCommunityIcons name={commentCount > 0 ? "comment-outline" : "comment-plus-outline"} size={20} color={iconColor} />
-            {commentCount > 0 ? (
-              <Text className="ml-1 text-[11px] font-semibold" style={{ color: countColor }}>
-                {commentCount}
-              </Text>
-            ) : null}
-          </TouchableOpacity>
+      return (
+        <View>
+          <InternalRenderer tnode={tnode} {...rendererProps} />
+          <View className="mt-1 flex-row justify-end">
+            <TouchableOpacity
+              onPress={(event) =>
+                handleOpenInlineCommentThread(
+                  {
+                    anchorKey,
+                    anchorVersion,
+                    ordinal: anchorOrdinal,
+                    path: anchorPath,
+                    preview: anchorPreview,
+                    tagName: anchorTag,
+                    textHash: anchorTextHash,
+                  },
+                  event,
+                )
+              }
+              hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+              className="mr-[-6px] flex-row items-center"
+            >
+              <MaterialCommunityIcons name={commentCount > 0 ? "comment-outline" : "comment-plus-outline"} size={20} color={iconColor} />
+              {commentCount > 0 ? (
+                <Text className="ml-1 text-[11px] font-semibold" style={{ color: countColor }}>
+                  {commentCount}
+                </Text>
+              ) : null}
+            </TouchableOpacity>
+          </View>
         </View>
-      </View>
-    );
-  };
+      );
+    },
+    [inlineCommentThreads, currentPageTheme.iconMuted, currentPageTheme.textSoft, handleOpenInlineCommentThread],
+  );
 
-  const inlineCommentDomVisitors = createInlineCommentDomVisitors({ globalSettings });
-  const inlineCommentRenderers = {
-    p: renderInlineCommentableBlock,
-    h1: renderInlineCommentableBlock,
-    h2: renderInlineCommentableBlock,
-    h3: renderInlineCommentableBlock,
-    h4: renderInlineCommentableBlock,
-    h5: renderInlineCommentableBlock,
-    h6: renderInlineCommentableBlock,
-    blockquote: renderInlineCommentableBlock,
-    pre: renderInlineCommentableBlock,
-    li: renderInlineCommentableBlock,
-    div: renderInlineCommentableBlock,
-  };
+  // domVisitors only depends on globalSettings (specifically the inline-
+  // comment ordinal config). Without memoization a new visitor object
+  // every render → RenderHTML's source equality check fails → full re-
+  // parse of the chapter HTML on every parent state change.
+  const inlineCommentDomVisitors = useMemo(
+    () => createInlineCommentDomVisitors({ globalSettings }),
+    [globalSettings],
+  );
+  // Renderer map. The 11-key object was previously rebuilt every render
+  // pointing at a fresh function ref, breaking RenderHTML's renderer
+  // resolution cache. Now: renderer ref stable until inline-comment
+  // state actually changes.
+  const inlineCommentRenderers = useMemo(
+    () => ({
+      p: renderInlineCommentableBlock,
+      h1: renderInlineCommentableBlock,
+      h2: renderInlineCommentableBlock,
+      h3: renderInlineCommentableBlock,
+      h4: renderInlineCommentableBlock,
+      h5: renderInlineCommentableBlock,
+      h6: renderInlineCommentableBlock,
+      blockquote: renderInlineCommentableBlock,
+      pre: renderInlineCommentableBlock,
+      li: renderInlineCommentableBlock,
+      div: renderInlineCommentableBlock,
+    }),
+    [renderInlineCommentableBlock],
+  );
 
   if (loading) {
     return (
@@ -1216,6 +1525,28 @@ export default function ReadingScreen() {
         }}
         onContentSizeChange={(_, height) => {
           scrollMetricsRef.current.contentHeight = height;
+          // Wattpad-style resume — apply the pending scroll restore now
+          // that we know the final contentHeight. We multiply against
+          // (height - viewportHeight) rather than (height) so a 100%
+          // pct lands at the bottom of the chapter, not past it. The
+          // restore fires once per chapter mount (cleared after seek)
+          // so a layout reflow from a font-size change doesn't snap
+          // the user back to their old position mid-read.
+          const pending = pendingScrollRestoreRef.current;
+          if (pending.chapterId && pending.chapterId === chapter?.$id && pending.pct > 0) {
+            const viewport = scrollMetricsRef.current.viewportHeight || 0;
+            const scrollableRange = Math.max(0, height - viewport);
+            const targetY = Math.round(scrollableRange * pending.pct);
+            if (targetY > 0 && scrollRef.current?.scrollTo) {
+              // requestAnimationFrame defers the seek by one frame so the
+              // ScrollView's internal layout pass has time to settle,
+              // avoiding a no-op scrollTo on a still-laying-out child.
+              requestAnimationFrame(() => {
+                scrollRef.current?.scrollTo({ y: targetY, animated: false });
+              });
+            }
+            pendingScrollRestoreRef.current = { chapterId: null, pct: 0 };
+          }
         }}
         scrollEventThrottle={16}
         onScroll={handleScroll}
@@ -1251,9 +1582,7 @@ export default function ReadingScreen() {
             <RenderHTML
               contentWidth={Math.max(SCREEN_WIDTH - 32, 0)}
               source={{
-                html: chapterUnlockVisible
-                  ? ""
-                  : stripBackgroundStyles(normalizeBookContentToHtml(chapter?.content ?? "")),
+                html: chapterUnlockVisible ? "" : processedChapterHtml,
               }}
               baseStyle={htmlBaseStyle}
               domVisitors={inlineCommentDomVisitors}
@@ -1389,8 +1718,8 @@ export default function ReadingScreen() {
         bookReadingTheme={bookReadingTheme}
         pageColor={pageColor}
       />
-      <Modal visible={exitPromptVisible} transparent animationType="fade" onRequestClose={handleContinueReading}>
-        <TouchableWithoutFeedback onPress={savingToLibrary ? undefined : handleContinueReading}>
+      <Modal visible={exitPromptVisible} transparent animationType="fade" onRequestClose={savingToLibrary ? undefined : handleDismissPrompt}>
+        <TouchableWithoutFeedback onPress={savingToLibrary ? undefined : handleDismissPrompt}>
           <View className="flex-1 items-center justify-end" style={{ backgroundColor: theme.backdrop }}>
             <TouchableWithoutFeedback onPress={() => {}}>
               <View
@@ -1398,10 +1727,10 @@ export default function ReadingScreen() {
                 style={{ backgroundColor: theme.surfaceElevated, borderTopWidth: 1, borderTopColor: theme.border }}
               >
                 <Text className="text-center text-lg font-bold" style={{ color: theme.text }}>
-                  Save this book?
+                  Save this book to your library?
                 </Text>
                 <Text className="mt-2 text-center text-sm" style={{ color: theme.textSoft }}>
-                  Add this book to your library before you leave this screen.
+                  Looks like you're enjoying this one. Save it to your library so you can pick up right where you left off later.
                 </Text>
 
                 <TouchableOpacity
@@ -1419,30 +1748,19 @@ export default function ReadingScreen() {
                     </View>
                   ) : (
                     <Text className="text-base font-semibold" style={{ color: theme.primaryContrast }}>
-                      Add to Library & Exit
+                      Save to Library
                     </Text>
                   )}
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   disabled={savingToLibrary}
-                  onPress={handleExitWithoutSaving}
-                  className="mt-3 items-center rounded-2xl py-3"
-                  style={{ backgroundColor: theme.surfaceStrong }}
-                >
-                  <Text className="text-base font-semibold" style={{ color: theme.text }}>
-                    Exit Without Saving
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  disabled={savingToLibrary}
-                  onPress={handleContinueReading}
+                  onPress={handleDontSaveAndExit}
                   className="mt-3 items-center rounded-2xl py-3"
                   style={{ backgroundColor: theme.surfaceMuted }}
                 >
                   <Text className="text-base font-medium" style={{ color: theme.textSoft }}>
-                    Continue Reading
+                    Don't Save
                   </Text>
                 </TouchableOpacity>
               </View>

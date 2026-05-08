@@ -52,6 +52,13 @@ const booksSlice = createSlice({
     setCompletedExcellent: (state, action) => {
       state.completedExcellent = action.payload;
     },
+    // DEPRECATED — kept only because app/(book)/book-category.jsx still
+    // dispatches this for the Continue Reading "see all" page render
+    // cache. The home shelf (BooksContinueReading.jsx) and book-info
+    // CTA (useBookProgress hook) no longer read from this slice. Once
+    // book-category migrates to fetchRecentReads, this action + the
+    // continueReading state field can be removed entirely along with
+    // the persist whitelist entry.
     setContinueReading: (state, action) => {
       state.continueReading = action.payload;
     },

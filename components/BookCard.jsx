@@ -6,6 +6,7 @@ import FastImage from "react-native-fast-image";
 import useAppTheme from "../hooks/useAppTheme";
 import { BookReadService } from "../lib/book-reads";
 import FormatNumber from "../lib/utils/format-number";
+import TimeAgo from "../lib/utils/time-ago";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -154,7 +155,34 @@ const BookCard = ({ item, progress, customWidth, customHeight, customFontSize, h
     });
   };
 
+  // Two progress shapes are supported, in priority order:
+  //
+  //   1. Wattpad-style (preferred) — caller passed { lastScrollPct,
+  //      lastChapterNumber, lastReadAt }. Used by the new
+  //      BooksContinueReading shelf which batch-fetches book_reads
+  //      rows. The progress bar fills to last_scroll_pct (chapter
+  //      progress, not book progress) so the visual matches what the
+  //      reader saw inside the chapter when they walked away.
+  //
+  //   2. Legacy book-level — caller passed { lastChapter: { order },
+  //      bookChapters }. Used by older shelves that still hand a
+  //      hand-built progress object down. We compute order/total as a
+  //      percentage so existing callers don't break.
+  //
+  // The Wattpad-shape check uses Number.isFinite on lastScrollPct so
+  // a value of 0 (top of chapter) doesn't fall through to the legacy
+  // path — both paths can produce 0; we just prefer the new shape
+  // when present.
+  const hasWattpadProgress =
+    progress != null &&
+    (Number.isFinite(Number(progress?.lastScrollPct)) || Number.isFinite(Number(progress?.lastChapterNumber)));
+
   const getProgressPercentage = () => {
+    if (hasWattpadProgress) {
+      const pct = Number(progress?.lastScrollPct);
+      if (!Number.isFinite(pct)) return 0;
+      return Math.min(100, Math.max(0, Math.round(pct * 100)));
+    }
     const currentProgress = Number(progress?.lastChapter?.order);
     const totalProgress = Number(progress?.bookChapters);
 
@@ -246,9 +274,26 @@ const BookCard = ({ item, progress, customWidth, customHeight, customFontSize, h
         </View>
 
         {progress && (
-          <View className="h-1 flex-row">
-            <View style={{ backgroundColor: theme.accentPurple, width: getProgressPercentage() }} />
-            <View style={{ backgroundColor: theme.surfaceStrong, width: "100%" }} />
+          // Single-element bar (was previously two side-by-side Views
+          // that never actually rendered the percentage as a width —
+          // the first View used the integer 0-100 which RN treats as
+          // pixels, so the bar was effectively invisible past low
+          // percentages). One container with an inner fill = correct
+          // visual + half the views.
+          <View
+            style={{
+              height: 3,
+              backgroundColor: theme.surfaceStrong,
+              overflow: "hidden",
+            }}
+          >
+            <View
+              style={{
+                width: `${getProgressPercentage()}%`,
+                height: "100%",
+                backgroundColor: theme.accentPurple,
+              }}
+            />
           </View>
         )}
 
@@ -264,6 +309,22 @@ const BookCard = ({ item, progress, customWidth, customHeight, customFontSize, h
               {item?.title || "Untitled"}
             </Text>
           </View>
+
+          {/* Wattpad-style progress label — shown only when progress
+              uses the new shape (lastChapterNumber / lastReadAt). The
+              older { lastChapter, bookChapters } shape doesn't carry a
+              timestamp so it would render an awkward partial label;
+              cleaner to skip it for legacy callers. */}
+          {hasWattpadProgress && (progress?.lastChapterNumber || progress?.lastReadAt) && (
+            <Text
+              className="mb-1 text-[9px] font-bold uppercase"
+              style={{ color: theme.primary, letterSpacing: 0.5 }}
+              numberOfLines={1}
+            >
+              {progress?.lastChapterNumber ? `Ch. ${progress.lastChapterNumber}` : "Reading"}
+              {progress?.lastReadAt ? ` • ${TimeAgo(progress.lastReadAt)}` : ""}
+            </Text>
+          )}
 
           <View className="mt-1 flex-row flex-wrap items-center gap-1.5">
             <View className="flex-row items-center rounded-full bg-yellow-400/20 px-2 py-0.5">

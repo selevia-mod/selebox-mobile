@@ -1,13 +1,15 @@
 import { Ionicons, MaterialCommunityIcons, MaterialIcons } from "@expo/vector-icons";
-import { router, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, FlatList, Text, TouchableOpacity, View } from "react-native";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ActivityIndicator, FlatList, RefreshControl, Text, TouchableOpacity, View } from "react-native";
 import { StyledSafeAreaView, StyledTitle } from "../../components";
+import { useGlobalContext } from "../../context/global-provider";
 import useAppTheme from "../../hooks/useAppTheme";
 import {
   getAuthorEarningsSummary,
   getAuthorEarningsTransactions,
 } from "../../lib/earnings-supabase";
+import supabase from "../../lib/supabase";
 
 // Per-category transaction log. Each row is one unlock event:
 //
@@ -46,6 +48,7 @@ const EarningsBreakdown = () => {
   const label = String(params.label || "Earnings");
   const monthYear = String(params.monthYear || "");
 
+  const { user } = useGlobalContext();
   const [summary, setSummary] = useState({
     total_pesos: 0,
     total_coins: 0,
@@ -56,37 +59,128 @@ const EarningsBreakdown = () => {
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  // Cancellation token shared across all "refresh" entry points (mount,
+  // focus, realtime INSERT, pull-to-refresh). Each refresh increments
+  // the token; in-flight loads compare and bail if their token is
+  // stale, preventing setState on an unmounted component or out-of-
+  // order responses overwriting newer data.
+  const refreshTokenRef = useRef(0);
 
-  // Initial load — summary + first page in parallel.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      setItems([]);
-      setHasMore(false);
+  // Refetch the first page + summary. Used on mount, on focus, on
+  // realtime INSERTs, and on pull-to-refresh. Does NOT show the
+  // skeleton spinner unless `showSkeleton` is true — silent refreshes
+  // (focus, realtime) keep the existing items rendered until the new
+  // data arrives.
+  const loadFirstPage = useCallback(
+    async ({ showSkeleton = false } = {}) => {
+      const token = ++refreshTokenRef.current;
+      if (showSkeleton) setLoading(true);
       try {
         const [sum, page] = await Promise.all([
           getAuthorEarningsSummary({ category, monthYear }),
           getAuthorEarningsTransactions({ category, monthYear, limit: PAGE_SIZE, offset: 0 }),
         ]);
-        if (cancelled) return;
+        if (token !== refreshTokenRef.current) return; // stale
         setSummary(sum);
         setItems(page.items);
         setHasMore(page.hasMore);
       } catch (err) {
-        if (!cancelled) {
+        if (token !== refreshTokenRef.current) return;
+        if (showSkeleton) {
+          // Only blank state on the cold-load path; silent refreshes
+          // keep showing whatever was there before so a transient
+          // network blip doesn't make the screen flash empty.
           setSummary({ total_pesos: 0, total_coins: 0, total_stars: 0, total_unlocks: 0 });
           setItems([]);
           setHasMore(false);
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (token === refreshTokenRef.current && showSkeleton) setLoading(false);
       }
-    })();
+    },
+    [category, monthYear],
+  );
+
+  // Initial cold load — show the spinner, blank items.
+  useEffect(() => {
+    setItems([]);
+    setHasMore(false);
+    loadFirstPage({ showSkeleton: true });
+  }, [loadFirstPage]);
+
+  // Re-fetch on focus — covers the "writer navigates away, an unlock
+  // happens, they navigate back" case.
+  //
+  // The first focus event fires on initial mount, racing with the
+  // cold-load useEffect above. If both run, the cold load (token=1)
+  // gets superseded by the focus load (token=2), and the focus load
+  // runs with showSkeleton=false so the loading flag never clears
+  // → screen stuck on spinner with empty items. The earlier
+  // refreshTokenRef-based guard didn't work because the cold load
+  // increments the token synchronously before the focus check runs.
+  //
+  // Simple fix: a one-shot ref that swallows the initial focus event.
+  // The cold-load useEffect owns the first fetch; subsequent real
+  // focus events (after navigating away and back) trigger refetches
+  // as intended.
+  const isInitialFocusRef = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      if (isInitialFocusRef.current) {
+        isInitialFocusRef.current = false;
+        return;
+      }
+      loadFirstPage({ showSkeleton: false });
+    }, [loadFirstPage]),
+  );
+
+  // Realtime — subscribe to author_earnings INSERTs for THIS user.
+  // When a new earnings row lands (a reader unlocked the writer's
+  // content), refetch the first page so the new entry appears at the
+  // top + the summary card updates. We use refetch instead of
+  // optimistically prepending payload.new because the raw author_
+  // earnings row doesn't carry the resolved chapter/book title that
+  // each item card needs — getAuthorEarningsTransactions joins those
+  // in. One extra read per realtime event is cheap.
+  useEffect(() => {
+    if (!user?.$id) return;
+    const channel = supabase
+      .channel(`author-earnings-${user.$id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "author_earnings",
+          filter: `author_id=eq.${user.$id}`,
+        },
+        () => {
+          loadFirstPage({ showSkeleton: false });
+        },
+      )
+      .subscribe();
     return () => {
-      cancelled = true;
+      try {
+        supabase.removeChannel(channel);
+      } catch (_) {
+        // Defensive — removeChannel can throw on some SDK versions
+        // when the channel is mid-subscribe. Same pattern as
+        // messages-supabase realtime cleanup.
+      }
     };
-  }, [category, monthYear]);
+  }, [user?.$id, loadFirstPage]);
+
+  // Pull-to-refresh — manual escape hatch. Same fetch as everything
+  // else; just toggles the spinner so the user gets visual confirmation.
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadFirstPage({ showSkeleton: false });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadFirstPage]);
 
   // Lazy-load the next page when the user scrolls near the bottom.
   // Server-side offset paging — simple, stable for the time scale
@@ -244,6 +338,13 @@ const EarningsBreakdown = () => {
             maxToRenderPerBatch={PAGE_SIZE}
             windowSize={5}
             removeClippedSubviews
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                tintColor={theme.primary}
+              />
+            }
             // Server-side pagination — fetch the next PAGE_SIZE when
             // the user scrolls within half a screen of the bottom.
             onEndReached={handleEndReached}
