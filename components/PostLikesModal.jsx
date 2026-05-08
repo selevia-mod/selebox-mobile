@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useGlobalContext } from "../context/global-provider";
 import useAppTheme from "../hooks/useAppTheme";
 import { fetchPostLikes } from "../lib/posts";
-import TimeAgo from "../lib/utils/time-ago";
+import { PostReactionIcon } from "./PostReaction";
 
 const SCREEN_HEIGHT = Dimensions.get("window").height;
 
@@ -87,6 +87,12 @@ const PostLikesModal = ({ item, isVisible, onClose, coverScreen = true }) => {
       else router.push({ pathname: "/creator-profile", params: { userId: item?.likeOwner?.$id } });
     };
 
+    // Reaction key → custom SVG glyph (the same brand icons the action
+    // button + stats row use). Appwrite-only legacy rows have no emoji
+    // field, so we default to 'heart' to stay visually consistent
+    // across both backends.
+    const reactionKey = item?.emoji || "heart";
+
     return (
       <TouchableWithoutFeedback>
         <View className="mb-5 flex flex-row space-x-2">
@@ -99,15 +105,20 @@ const PostLikesModal = ({ item, isVisible, onClose, coverScreen = true }) => {
           </TouchableOpacity>
 
           <View className="flex flex-1 flex-col justify-center">
-            <View className="flex flex-row items-center space-x-1">
+            {/* Row: username pinned left, reaction icon pinned right
+                via justify-between. Username TouchableOpacity wraps a
+                Text — to keep the icon on the right edge of the *row*
+                (not the right edge of the username text), we let the
+                touch hit area shrink-to-fit and stretch the gap with
+                an empty `flex-1` spacer. */}
+            <View className="flex flex-row items-center">
               <TouchableOpacity onPress={handleUserPress}>
                 <Text className="font-sans text-sm font-semibold" style={{ color: theme.text }}>
                   {item?.likeOwner?.username || "Deleted User"}
                 </Text>
               </TouchableOpacity>
-              <Text className="font-sans text-xs" style={{ color: theme.textSoft }}>
-                {TimeAgo(item?.$createdAt)}
-              </Text>
+              <View style={{ flex: 1 }} />
+              <PostReactionIcon reactionKey={reactionKey} size={18} />
             </View>
           </View>
         </View>

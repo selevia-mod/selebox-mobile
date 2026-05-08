@@ -34,6 +34,25 @@ npm run submit-ios       # Submit to App Store
 npm run submit-android   # Submit to Play Store
 ```
 
+### OTA Updates
+
+**ALWAYS push OTAs via the EAS CLI directly. NEVER via `git push`.**
+
+The GitHub Actions workflow (`.github/workflows/publish-eas-update.yaml`) is intentionally not the path we use day-to-day — it runs without our hands on the wheel and surprises everyone when a stray push goes to main. Direct CLI push gives us the message, a visible build log, and the ability to abort.
+
+```bash
+cd /Users/arcaracalague/Documents/selebox-mobile-main
+eas update --branch main --message "<short summary of what's in the bundle>"
+```
+
+For the test branch (Appwrite `isTester` flag–gated):
+
+```bash
+eas update --branch test --message "<summary>"
+```
+
+`git commit` + `git push` are for source-history hygiene only — they should never be the trigger for shipping a JS bundle. Commit whenever you like, but the OTA is live the moment `eas update` finishes.
+
 ### Testing
 
 No test suite is configured. Test manually on iOS simulator and Android emulator.

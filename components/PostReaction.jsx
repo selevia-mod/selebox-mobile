@@ -93,15 +93,24 @@ export function PostReactionIcon({ reactionKey, size = 18, mutedColor = "#9ca3af
 // ─────────────────────────────────────────────────────────────────────
 // FB-style stats row: stacked reaction icons + count.
 //
-// Logic:
-//   • count === 0  → render nothing (caller should hide the row).
-//   • count >= 1  + reactionKey is null/heart → just the heart icon.
-//   • count === 1 + reactionKey is non-heart → JUST the user's icon
-//     (don't pretend a heart exists when the user is the sole reactor
-//     with a non-heart pick — that would be a lie).
-//   • count >= 2  + reactionKey is non-heart → stacked: heart icon
-//     followed by user's reaction icon overlapping the heart's right
-//     edge by ~4pt (FB stacking pattern).
+// Inputs:
+//   topEmojis (preferred) — array of emoji keys ordered by count desc,
+//     e.g. ['heart', 'laugh']. This is the post's ACTUAL top reactions
+//     (from byEmoji aggregation), so every viewer sees the same icons.
+//     Up to 2 are stacked.
+//   reactionKey (legacy) — the current viewer's own reaction. Used as
+//     a fallback when topEmojis isn't passed (Appwrite-only posts, or
+//     callers that haven't been updated).
+//   count — total reactor count.
+//
+// Why topEmojis exists:
+//   The previous behavior keyed display off `reactionKey` only. That
+//   meant the post owner (who never reacts to their own post) saw a
+//   plain heart in the stats row even when their post had hahas / sads
+//   from other users, while the reactor saw "their" emoji. The data
+//   was correct on the server; the renderer was just looking at the
+//   wrong field. Pass topEmojis from a byEmoji aggregation so every
+//   viewer sees the actual top reactions.
 //
 // Sizing:
 //   Both icons are 15pt rendered inside identically-sized wrapper
@@ -109,28 +118,34 @@ export function PostReactionIcon({ reactionKey, size = 18, mutedColor = "#9ca3af
 //   heart are vector glyphs at the exact same pixel footprint, so
 //   they line up with no height mismatch.
 // ─────────────────────────────────────────────────────────────────────
-export function PostReactionStack({ reactionKey, count, textColor }) {
+export function PostReactionStack({ reactionKey, topEmojis, count, textColor }) {
   const safeCount = Number.isFinite(count) ? count : 0;
   if (safeCount <= 0) return null;
 
-  const userReactedNonHeart = reactionKey && reactionKey !== "heart";
-  const isLoneUserReaction = userReactedNonHeart && safeCount === 1;
-  const showHeart = !isLoneUserReaction;
-  const showStackedUser = userReactedNonHeart && !isLoneUserReaction;
-  const UserSvg = userReactedNonHeart ? REACTION_ICONS[reactionKey] : null;
+  // Prefer the post's actual top emojis. Fall back to legacy
+  // viewer-reaction-based behavior so callers we haven't migrated yet
+  // (or Appwrite posts without byEmoji data) keep rendering something
+  // sensible.
+  let emojiList;
+  if (Array.isArray(topEmojis) && topEmojis.length > 0) {
+    emojiList = topEmojis.slice(0, 2);
+  } else if (reactionKey && reactionKey !== "heart") {
+    emojiList = ["heart", reactionKey];
+  } else {
+    emojiList = ["heart"];
+  }
 
   return (
     <View style={{ flexDirection: "row", alignItems: "center" }}>
-      {showHeart ? <HeartReact width={15} height={15} /> : null}
-      {(showStackedUser || isLoneUserReaction) && UserSvg ? (
-        <View
-          // Overlap into the heart's right edge when both are shown;
-          // no negative margin when the icon is alone (lone-user case).
-          style={{ marginLeft: showStackedUser ? -4 : 0 }}
-        >
-          <UserSvg width={15} height={15} />
-        </View>
-      ) : null}
+      {emojiList.map((key, i) => {
+        const Svg = REACTION_ICONS[key];
+        if (!Svg) return null;
+        return (
+          <View key={`${key}-${i}`} style={{ marginLeft: i === 0 ? 0 : -4 }}>
+            <Svg width={15} height={15} />
+          </View>
+        );
+      })}
       <Text
         style={{
           marginLeft: 6,

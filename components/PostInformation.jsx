@@ -8,7 +8,7 @@ import logger from "../lib/utils/logger";
 import { tickGoalUnique } from "../lib/goals-store";
 import { createPostLike, deletePostLike, getPostLike, updatePost } from "../lib/posts";
 import { DEFAULT_REACTION_KEY, getReactionByKey } from "../lib/reactions";
-import { getMyReaction, removeMyReaction, setReaction } from "../lib/reactions-supabase";
+import { getMyReaction, getReactionCountsForTargets, removeMyReaction, setReaction } from "../lib/reactions-supabase";
 import { PostReactionIcon, PostReactionStack } from "./PostReaction";
 import ReactionPicker from "./ReactionPicker";
 import RepostModal from "./RepostModal";
@@ -50,6 +50,11 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
   const [liked, setLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(item?.postLikes ?? 0);
   const [userReactionKey, setUserReactionKey] = useState(null);
+  // Top emoji keys from byEmoji aggregation, ordered by count desc.
+  // Drives PostReactionStack so every viewer sees the post's actual top
+  // reactions (e.g. ['laugh','heart']) instead of just their own.
+  // Empty array means "no breakdown yet" → renderer falls back to heart.
+  const [topEmojis, setTopEmojis] = useState([]);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [pickerAnchor, setPickerAnchor] = useState(null);
   // Phase C — repost modal visibility. Tapping the Repost button opens
@@ -186,6 +191,36 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
       isCancelled = true;
     };
   }, [item?.isLikedByCurrentUser, postID, user?.$id, isSupabasePost]);
+
+  // Fetch the post's reaction breakdown (which emojis have been used,
+  // and how many of each) so PostReactionStack can render every
+  // viewer's top emojis correctly — not just the current user's.
+  // Refetches when the total likeCount changes so a new reaction
+  // (added / removed / type-changed) updates the stack.
+  //
+  // Only meaningful for Supabase posts; Appwrite posts have no
+  // byEmoji breakdown server-side, so we skip and let the stack fall
+  // back to the legacy reactionKey-based rendering.
+  useEffect(() => {
+    if (!isSupabasePost || !postID) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const map = await getReactionCountsForTargets({ targetType: "post", targetIds: [postID] });
+        if (cancelled) return;
+        const byEmoji = map?.[postID]?.byEmoji || {};
+        const sorted = Object.entries(byEmoji)
+          .sort((a, b) => b[1] - a[1])
+          .map(([key]) => key);
+        setTopEmojis(sorted);
+      } catch (_) {
+        // Non-fatal — stack falls back to heart rendering on failure.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSupabasePost, postID, likeCount]);
 
   const syncLike = async () => {
     try {
@@ -347,6 +382,7 @@ const PostInformation = ({ item, handleLikesPress, handleCommentPress, handleSha
             <TouchableOpacity onPress={handleShowLikes} activeOpacity={0.7}>
               <PostReactionStack
                 reactionKey={userReactionKey}
+                topEmojis={topEmojis}
                 count={safeLikeCount}
                 textColor={subtleTextColor}
               />
